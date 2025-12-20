@@ -86,6 +86,24 @@ if [ "$UPDATED_VERSION" != "$VERSION_NUMBER" ]; then
 fi
 echo -e "${GREEN}✓ Updated CLI version to ${VERSION_NUMBER}${NC}"
 
+# Update version in plugin-sdk/package.json
+echo -e "${YELLOW}Updating version in plugin-sdk/package.json...${NC}"
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    # macOS
+    sed -i '' "s/\"version\": \".*\"/\"version\": \"${VERSION_NUMBER}\"/" plugin-sdk/package.json
+else
+    # Linux
+    sed -i "s/\"version\": \".*\"/\"version\": \"${VERSION_NUMBER}\"/" plugin-sdk/package.json
+fi
+
+# Verify the SDK change
+SDK_UPDATED_VERSION=$(grep '"version":' plugin-sdk/package.json | head -1 | cut -d'"' -f4)
+if [ "$SDK_UPDATED_VERSION" != "$VERSION_NUMBER" ]; then
+    echo -e "${RED}Error: Failed to update version in plugin-sdk/package.json${NC}"
+    exit 1
+fi
+echo -e "${GREEN}✓ Updated plugin-sdk version to ${VERSION_NUMBER}${NC}"
+
 # Update uv.lock to match new version
 echo -e "${YELLOW}Updating uv.lock...${NC}"
 cd cli
@@ -95,7 +113,7 @@ echo -e "${GREEN}✓ Updated uv.lock${NC}"
 
 # Commit version bump
 echo -e "${YELLOW}Committing version bump...${NC}"
-git add cli/pyproject.toml cli/uv.lock
+git add cli/pyproject.toml cli/uv.lock plugin-sdk/package.json
 git commit -m "Bump version to ${VERSION}"
 echo -e "${GREEN}✓ Committed version bump${NC}"
 
@@ -210,8 +228,9 @@ echo ""
 echo "The GitHub Actions workflow will now:"
 echo "  1. Run tests"
 echo "  2. Publish CLI to PyPI"
-echo "  3. Build CLI binaries for all platforms"
-echo "  4. Upload all binaries to the GitHub Release"
+echo "  3. Publish plugin-sdk to npm"
+echo "  4. Build CLI binaries for all platforms"
+echo "  5. Upload all binaries to the GitHub Release"
 echo ""
 echo "Monitor progress at: https://github.com/treeline-money/treeline/actions"
 echo "View release at: https://github.com/treeline-money/treeline/releases/tag/${VERSION}"
