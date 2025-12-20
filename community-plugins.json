@@ -1,0 +1,33 @@
+{
+  "description": "Community plugins for Treeline. Submit a PR to add your plugin!",
+  "plugins": [
+    {
+      "id": "emergency-fund",
+      "name": "Emergency Fund",
+      "description": "Track emergency fund runway based on your actual expenses",
+      "author": "Treeline",
+      "repo": "https://github.com/treeline-money/plugin-emergency-fund"
+    },
+    {
+      "id": "goals",
+      "name": "Savings Goals",
+      "description": "Track savings goals like emergency funds, house down payments, and more",
+      "author": "Treeline",
+      "repo": "https://github.com/treeline-money/plugin-goals"
+    },
+    {
+      "id": "subscriptions",
+      "name": "Subscriptions",
+      "description": "Detect recurring charges and track subscription costs",
+      "author": "Treeline",
+      "repo": "https://github.com/treeline-money/plugin-subscriptions"
+    },
+    {
+      "id": "cashflow",
+      "name": "Cash Flow",
+      "description": "Plan your future balance by scheduling expected income and expenses",
+      "author": "Treeline",
+      "repo": "https://github.com/treeline-money/plugin-cashflow"
+    }
+  ]
+}
