@@ -8,7 +8,6 @@ from pydantic import BaseModel
 from rich.console import Console
 from rich.table import Table
 
-from treeline.app.container import Container
 from treeline.theme import get_theme
 
 console = Console()

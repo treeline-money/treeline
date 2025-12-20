@@ -365,7 +365,7 @@ def _interactive_preview_loop(
 
         if show_initial_preview:
             console.print(f"\n[{theme.ui_header}]Preview - First 5 Transactions:[/{theme.ui_header}]\n")
-            _display_preview_table(preview_txs[:5], currency)
+            _display_preview_table(preview_txs[:5])
             console.print(f"\n[{theme.muted}]({len(preview_txs)} total transactions in file)[/{theme.muted}]")
             console.print(f"[{theme.ui_header}]Preview Check[/{theme.ui_header}]")
             console.print(f"[{theme.muted}]Spending should appear as NEGATIVE ({theme.negative_amount}), income/refunds as POSITIVE ({theme.positive_amount})[/{theme.muted}]\n")
@@ -388,7 +388,7 @@ def _interactive_preview_loop(
             return flip_signs, debit_negative
         elif choice == "2":
             console.print(f"\n[{theme.ui_header}]Extended Preview - First 15 Transactions:[/{theme.ui_header}]\n")
-            _display_preview_table(preview_txs[:15], currency)
+            _display_preview_table(preview_txs[:15])
             console.print()
             show_initial_preview = False
         elif choice == "3":

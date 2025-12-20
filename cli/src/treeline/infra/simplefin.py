@@ -114,7 +114,7 @@ class SimpleFINProvider(DataAggregationProvider, IntegrationProvider):
             logger = get_logger("infra.simplefin")
             logger.error(f"Timeout fetching SimpleFIN accounts: {e}", exc_info=True)
             return Fail(
-                f"Failed to fetch SimpleFIN accounts: Connection timed out after 30 seconds"
+                "Failed to fetch SimpleFIN accounts: Connection timed out after 30 seconds"
             )
         except httpx.ConnectError as e:
             logger = get_logger("infra.simplefin")
@@ -122,7 +122,7 @@ class SimpleFINProvider(DataAggregationProvider, IntegrationProvider):
                 f"Connection error fetching SimpleFIN accounts: {e}", exc_info=True
             )
             return Fail(
-                f"Failed to fetch SimpleFIN accounts: Unable to connect to SimpleFIN servers"
+                "Failed to fetch SimpleFIN accounts: Unable to connect to SimpleFIN servers"
             )
         except Exception as e:
             logger = get_logger("infra.simplefin")
@@ -238,7 +238,7 @@ class SimpleFINProvider(DataAggregationProvider, IntegrationProvider):
             logger = get_logger("infra.simplefin")
             logger.error(f"Timeout fetching SimpleFIN transactions: {e}", exc_info=True)
             return Fail(
-                f"Failed to fetch SimpleFIN transactions: Connection timed out after 30 seconds"
+                "Failed to fetch SimpleFIN transactions: Connection timed out after 30 seconds"
             )
         except httpx.ConnectError as e:
             logger = get_logger("infra.simplefin")
@@ -246,7 +246,7 @@ class SimpleFINProvider(DataAggregationProvider, IntegrationProvider):
                 f"Connection error fetching SimpleFIN transactions: {e}", exc_info=True
             )
             return Fail(
-                f"Failed to fetch SimpleFIN transactions: Unable to connect to SimpleFIN servers"
+                "Failed to fetch SimpleFIN transactions: Unable to connect to SimpleFIN servers"
             )
         except Exception as e:
             logger = get_logger("infra.simplefin")
@@ -304,7 +304,7 @@ class SimpleFINProvider(DataAggregationProvider, IntegrationProvider):
             logger.error(
                 f"Timeout during SimpleFIN integration setup: {e}", exc_info=True
             )
-            return Fail(f"Integration setup failed: Connection timed out")
+            return Fail("Integration setup failed: Connection timed out")
         except httpx.ConnectError as e:
             logger = get_logger("infra.simplefin")
             logger.error(
@@ -312,7 +312,7 @@ class SimpleFINProvider(DataAggregationProvider, IntegrationProvider):
                 exc_info=True,
             )
             return Fail(
-                f"Integration setup failed: Unable to connect to SimpleFIN servers"
+                "Integration setup failed: Unable to connect to SimpleFIN servers"
             )
         except Exception as e:
             logger = get_logger("infra.simplefin")

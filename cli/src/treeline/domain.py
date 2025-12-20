@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 from decimal import Decimal
-from types import MappingProxyType
 from typing import Any, Dict, Generic, Mapping, Type, TypeVar
 
 from uuid import UUID

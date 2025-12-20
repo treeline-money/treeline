@@ -140,7 +140,6 @@ def display_report(report, verbose: bool, currency: str) -> None:
 
 def display_check(check, verbose: bool, currency: str) -> None:
     """Display a single health check result."""
-    from treeline.app.preferences_service import format_currency
 
     # Choose icon and color based on status
     if check.status == "pass":

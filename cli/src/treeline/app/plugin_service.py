@@ -115,7 +115,7 @@ class PluginService:
                     f'write: ["sys_plugin_{table_safe_name}"]',
                 )
                 index_ts_path.write_text(content)
-            except Exception as e:
+            except Exception:
                 # Non-fatal, manifest.json is the source of truth
                 pass
 

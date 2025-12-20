@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import List
 
 from treeline.abstractions import BackupStorageProvider
-from treeline.domain import BackupMetadata, Fail, Ok, Result
+from treeline.domain import BackupMetadata, Fail, Result
 from treeline.utils import get_logger
 
 logger = get_logger("backup")

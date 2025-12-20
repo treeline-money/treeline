@@ -1,6 +1,5 @@
 """Service for database operations."""
 
-from pathlib import Path
 from typing import Any, Dict
 
 from treeline.abstractions import Repository

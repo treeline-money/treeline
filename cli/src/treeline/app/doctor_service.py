@@ -396,8 +396,8 @@ class DoctorService:
         # For each transaction, count how many categories it matches
         category_conditions = []
         for cat in categories:
-            cat_id = cat[0]
-            cat_name = cat[1]
+            _cat_id = cat[0]
+            _cat_name = cat[1]
             tags = cat[2] if cat[2] else []
             require_all = cat[3]
 
