@@ -263,6 +263,8 @@ export interface Command {
   id: string;
   /** Display name */
   name: string;
+  /** Optional description */
+  description?: string;
   /** Category for grouping */
   category?: string;
   /** Keyboard shortcut */

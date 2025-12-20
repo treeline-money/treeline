@@ -1,4 +1,4 @@
-import type { Plugin, PluginContext } from "@treeline-money/plugin-sdk";
+import type { Plugin, PluginContext, PluginSDK } from "@treeline-money/plugin-sdk";
 import HelloWorldView from "./HelloWorldView.svelte";
 import { mount, unmount } from "svelte";
 
@@ -27,7 +27,7 @@ export const plugin: Plugin = {
       id: "hello-world-view",
       name: "Hello World",
       icon: "zap",
-      mount: (target: HTMLElement, props: Record<string, any>) => {
+      mount: (target: HTMLElement, props: { sdk: PluginSDK }) => {
         // Mount the Svelte component using our bundled Svelte runtime
         const instance = mount(HelloWorldView, {
           target,
