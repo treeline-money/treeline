@@ -3,8 +3,9 @@ set -e
 
 # Treeline Release Script
 # Automates version bumping, tagging, and GitHub release creation
-# Usage: ./scripts/release.sh <version>
+# Usage: ./scripts/release.sh <version> [-m "release notes"]
 # Example: ./scripts/release.sh v0.2.0
+# Example: ./scripts/release.sh v0.2.0 -m "Bug fixes and improvements"
 
 # Colors for output
 RED='\033[0;31m'
@@ -12,15 +13,36 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-# Check if version argument provided
-if [ -z "$1" ]; then
+# Parse arguments
+VERSION=""
+NOTES=""
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -m|--notes)
+            NOTES="$2"
+            shift 2
+            ;;
+        -*)
+            echo -e "${RED}Unknown option: $1${NC}"
+            exit 1
+            ;;
+        *)
+            if [ -z "$VERSION" ]; then
+                VERSION="$1"
+            fi
+            shift
+            ;;
+    esac
+done
+
+if [ -z "$VERSION" ]; then
     echo -e "${RED}Error: Version argument required${NC}"
-    echo "Usage: ./scripts/release.sh <version>"
+    echo "Usage: ./scripts/release.sh <version> [-m \"release notes\"]"
     echo "Example: ./scripts/release.sh v0.2.0"
+    echo "Example: ./scripts/release.sh v0.2.0 -m \"Bug fixes and improvements\""
     exit 1
 fi
-
-VERSION=$1
 
 # Remove 'v' prefix if present for pyproject.toml
 VERSION_NUMBER=${VERSION#v}
@@ -128,34 +150,35 @@ git push origin main
 git push origin "${VERSION}"
 echo -e "${GREEN}✓ Pushed commits and tags${NC}"
 
-# Generate release notes
-echo -e "${YELLOW}Generating release notes...${NC}"
+# Generate release notes if not provided via -m flag
+if [ -z "$NOTES" ]; then
+    echo -e "${YELLOW}Generating release notes...${NC}"
 
-# Get the previous tag
-PREV_TAG=$(git describe --tags --abbrev=0 "${VERSION}^" 2>/dev/null || echo "")
+    # Get the previous tag
+    PREV_TAG=$(git describe --tags --abbrev=0 "${VERSION}^" 2>/dev/null || echo "")
 
-if [ -n "$PREV_TAG" ]; then
-    COMMITS=$(git log --pretty=format:"- %s" "${PREV_TAG}..${VERSION}" 2>/dev/null | head -50)
-else
-    COMMITS=$(git log --pretty=format:"- %s" -20 2>/dev/null)
-fi
+    if [ -n "$PREV_TAG" ]; then
+        COMMITS=$(git log --pretty=format:"- %s" "${PREV_TAG}..${VERSION}" 2>/dev/null | head -50)
+    else
+        COMMITS=$(git log --pretty=format:"- %s" -20 2>/dev/null)
+    fi
 
-# Create release notes file
-NOTES_FILE=$(mktemp)
-trap "rm -f $NOTES_FILE" EXIT
+    # Create release notes file
+    NOTES_FILE=$(mktemp)
+    trap "rm -f $NOTES_FILE" EXIT
 
-# Check if claude CLI is available for AI-generated notes
-CLAUDE_CMD=""
-if [ -x "$HOME/.claude/local/claude" ]; then
-    CLAUDE_CMD="$HOME/.claude/local/claude"
-elif command -v claude &> /dev/null; then
-    CLAUDE_CMD="claude"
-fi
+    # Check if claude CLI is available for AI-generated notes
+    CLAUDE_CMD=""
+    if [ -x "$HOME/.claude/local/claude" ]; then
+        CLAUDE_CMD="$HOME/.claude/local/claude"
+    elif command -v claude &> /dev/null; then
+        CLAUDE_CMD="claude"
+    fi
 
-if [ -n "$CLAUDE_CMD" ]; then
-    echo -e "${YELLOW}Using Claude to generate user-friendly release notes...${NC}"
+    if [ -n "$CLAUDE_CMD" ]; then
+        echo -e "${YELLOW}Using Claude to generate user-friendly release notes...${NC}"
 
-    PROMPT="Generate concise, user-friendly release notes for Treeline CLI (a personal finance CLI tool) version ${VERSION}.
+        PROMPT="Generate concise, user-friendly release notes for Treeline CLI (a personal finance CLI tool) version ${VERSION}.
 
 Here are the commits since the last release:
 ${COMMITS}
@@ -169,57 +192,57 @@ Write release notes in this format:
 Keep it concise (max 10 bullet points). Focus on what users will notice, not implementation details.
 Skip version bump commits. If there are no user-facing changes, just write 'Minor improvements and bug fixes.'"
 
-    # Use claude CLI to generate notes
-    # Note: Using background job + wait with timeout for macOS compatibility
-    if ( "$CLAUDE_CMD" -p "$PROMPT" > "$NOTES_FILE" 2>/dev/null ) &
-       CLAUDE_PID=$!
-       ( sleep 60 && kill $CLAUDE_PID 2>/dev/null ) &
-       TIMEOUT_PID=$!
-       wait $CLAUDE_PID 2>/dev/null
-       kill $TIMEOUT_PID 2>/dev/null
-       [ -s "$NOTES_FILE" ]; then
-        echo -e "${GREEN}✓ Generated AI release notes${NC}"
+        # Use claude CLI to generate notes
+        if ( "$CLAUDE_CMD" -p "$PROMPT" > "$NOTES_FILE" 2>/dev/null ) &
+           CLAUDE_PID=$!
+           ( sleep 60 && kill $CLAUDE_PID 2>/dev/null ) &
+           TIMEOUT_PID=$!
+           wait $CLAUDE_PID 2>/dev/null
+           kill $TIMEOUT_PID 2>/dev/null
+           [ -s "$NOTES_FILE" ]; then
+            echo -e "${GREEN}✓ Generated AI release notes${NC}"
+        else
+            echo -e "${YELLOW}Claude generation failed or timed out, using commit list${NC}"
+            echo "## What's New in ${VERSION}" > "$NOTES_FILE"
+            echo "" >> "$NOTES_FILE"
+            echo "${COMMITS}" >> "$NOTES_FILE"
+        fi
     else
-        echo -e "${YELLOW}Claude generation failed or timed out, using commit list${NC}"
+        echo -e "${YELLOW}Claude CLI not found, using commit list${NC}"
         echo "## What's New in ${VERSION}" > "$NOTES_FILE"
         echo "" >> "$NOTES_FILE"
         echo "${COMMITS}" >> "$NOTES_FILE"
     fi
-else
-    echo -e "${YELLOW}Claude CLI not found, using commit list${NC}"
-    echo "## What's New in ${VERSION}" > "$NOTES_FILE"
-    echo "" >> "$NOTES_FILE"
-    echo "${COMMITS}" >> "$NOTES_FILE"
+
+    echo ""
+    echo -e "${YELLOW}Generated release notes:${NC}"
+    echo "----------------------------------------"
+    cat "$NOTES_FILE"
+    echo "----------------------------------------"
+    echo ""
+
+    # Ask user to confirm or edit
+    read -p "Proceed with these release notes? (y/n/e to edit): " CONFIRM
+    case $CONFIRM in
+        [eE])
+            ${EDITOR:-nano} "$NOTES_FILE"
+            ;;
+        [yY])
+            ;;
+        *)
+            echo -e "${RED}Release cancelled${NC}"
+            exit 1
+            ;;
+    esac
+
+    NOTES=$(cat "$NOTES_FILE")
 fi
 
-echo ""
-echo -e "${YELLOW}Generated release notes:${NC}"
-echo "----------------------------------------"
-cat "$NOTES_FILE"
-echo "----------------------------------------"
-echo ""
-
-# Ask user to confirm or edit
-read -p "Proceed with these release notes? (y/n/e to edit): " CONFIRM
-case $CONFIRM in
-    [eE])
-        # Open in default editor
-        ${EDITOR:-nano} "$NOTES_FILE"
-        ;;
-    [yY])
-        # Continue
-        ;;
-    *)
-        echo -e "${RED}Release cancelled${NC}"
-        exit 1
-        ;;
-esac
-
-# Create GitHub release with generated notes
+# Create GitHub release
 echo -e "${YELLOW}Creating GitHub release...${NC}"
 gh release create "${VERSION}" \
     --title "Release ${VERSION}" \
-    --notes-file "$NOTES_FILE" \
+    --notes "$NOTES" \
     --verify-tag
 
 echo ""
