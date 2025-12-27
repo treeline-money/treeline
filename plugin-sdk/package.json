@@ -1,6 +1,6 @@
 {
   "name": "@treeline-money/plugin-sdk",
-  "version": "0.1.54",
+  "version": "0.1.55",
   "description": "TypeScript SDK for building Treeline plugins",
   "type": "module",
   "main": "./dist/index.js",
