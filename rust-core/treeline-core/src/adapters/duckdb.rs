@@ -16,6 +16,7 @@ use crate::services::MigrationService;
 pub struct DuckDbRepository {
     conn: Mutex<Connection>,
     db_path: PathBuf,
+    encryption_key: Option<String>,
 }
 
 impl DuckDbRepository {
@@ -54,6 +55,7 @@ impl DuckDbRepository {
         Ok(Self {
             conn: Mutex::new(conn),
             db_path: db_path.to_path_buf(),
+            encryption_key: encryption_key.map(|k| k.to_string()),
         })
     }
 
@@ -741,8 +743,110 @@ impl DuckDbRepository {
     // === Maintenance operations ===
 
     pub fn compact(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute_batch("CHECKPOINT; VACUUM;")?;
+        use std::fs;
+
+        // Proper DuckDB compaction: COPY FROM DATABASE to a new file
+        // Note: VACUUM does not reclaim space in DuckDB - only COPY FROM DATABASE does
+        // Reference: https://duckdb.org/docs/stable/operations_manual/footprint_of_duckdb/reclaiming_space
+
+        // Create temp path for the compacted database
+        let temp_db = self.db_path.with_extension("duckdb.tmp");
+
+        // Remove temp file if it exists from a previous failed run
+        let _ = fs::remove_file(&temp_db);
+
+        // Create a new in-memory connection for the compact operation
+        // This allows us to attach both source and target databases
+        let config = duckdb::Config::default()
+            .enable_autoload_extension(false)?;
+        let compact_conn = Connection::open_in_memory_with_flags(config)?;
+
+        // Attach the source database (current db_path)
+        if let Some(key) = &self.encryption_key {
+            compact_conn.execute(
+                &format!(
+                    "ATTACH '{}' AS source_db (ENCRYPTION_KEY '{}')",
+                    self.db_path.display(),
+                    key
+                ),
+                [],
+            )?;
+        } else {
+            compact_conn.execute(
+                &format!("ATTACH '{}' AS source_db", self.db_path.display()),
+                [],
+            )?;
+        }
+
+        // Attach the target database (temp file)
+        if let Some(key) = &self.encryption_key {
+            compact_conn.execute(
+                &format!(
+                    "ATTACH '{}' AS target_db (ENCRYPTION_KEY '{}')",
+                    temp_db.display(),
+                    key
+                ),
+                [],
+            )?;
+        } else {
+            compact_conn.execute(
+                &format!("ATTACH '{}' AS target_db", temp_db.display()),
+                [],
+            )?;
+        }
+
+        // Workaround for DuckDB issue #16785: COPY FROM DATABASE with foreign keys
+        // Setting threads to 1 may help with foreign key constraint ordering
+        compact_conn.execute("SET threads TO 1", [])?;
+
+        // Copy all data from source to target
+        // This copies schema (tables, constraints, indexes, sequences, macros) and data
+        compact_conn.execute("COPY FROM DATABASE source_db TO target_db", [])?;
+
+        // Detach both databases to ensure they're flushed
+        compact_conn.execute("DETACH source_db", [])?;
+        compact_conn.execute("DETACH target_db", [])?;
+
+        // Close the compact connection
+        drop(compact_conn);
+
+        // Close the main database connection temporarily
+        drop(self.conn.lock().unwrap());
+
+        // Replace the old database with the compacted one
+        // Backup the original first, then move temp in place
+        let backup_db = self.db_path.with_extension("duckdb.old");
+        let _ = fs::remove_file(&backup_db); // Remove old backup if exists
+        fs::rename(&self.db_path, &backup_db)?;
+        fs::rename(&temp_db, &self.db_path)?;
+
+        // Reopen the connection to the new compacted database
+        let new_conn = if let Some(key) = &self.encryption_key {
+            let config = duckdb::Config::default()
+                .enable_autoload_extension(false)?;
+            let conn = Connection::open_in_memory_with_flags(config)?;
+            conn.execute(
+                &format!(
+                    "ATTACH '{}' AS main_db (ENCRYPTION_KEY '{}')",
+                    self.db_path.display(),
+                    key
+                ),
+                [],
+            )?;
+            conn.execute("USE main_db", [])?;
+            conn
+        } else {
+            let config = duckdb::Config::default()
+                .enable_autoload_extension(false)?;
+            Connection::open_with_flags(&self.db_path, config)?
+        };
+
+        // Replace the connection in the mutex
+        *self.conn.lock().unwrap() = new_conn;
+
+        // Clean up the backup file
+        let _ = fs::remove_file(&backup_db);
+
         Ok(())
     }
 
