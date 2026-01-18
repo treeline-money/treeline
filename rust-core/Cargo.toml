@@ -44,7 +44,7 @@ anyhow = "1.0"
 regex = "1.0"
 
 # SQL parsing (for syntax validation)
-sqlparser = "0.41"
+sqlparser = "0.60.0"
 
 # CSV parsing
 csv = "1.3"
