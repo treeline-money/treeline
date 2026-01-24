@@ -74,8 +74,11 @@ impl TreelineContext {
         let sync_service = SyncService::new(Arc::clone(&repository), treeline_dir.to_path_buf());
         let query_service = QueryService::new(Arc::clone(&repository));
         let tag_service = TagService::new(Arc::clone(&repository));
-        let backup_service =
-            BackupService::new(treeline_dir.to_path_buf(), db_filename.to_string());
+        let backup_service = BackupService::new_with_repository(
+            treeline_dir.to_path_buf(),
+            db_filename.to_string(),
+            Arc::clone(&repository),
+        );
         let compact_service = CompactService::new(Arc::clone(&repository));
         let doctor_service =
             DoctorService::new(Arc::clone(&repository), treeline_dir.to_path_buf());

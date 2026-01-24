@@ -143,6 +143,22 @@ impl DuckDbRepository {
         Ok(())
     }
 
+    /// Force a checkpoint to flush WAL to the main database file.
+    ///
+    /// This should be called before any operation that reads the raw database file
+    /// (like backups) to ensure data consistency. Without this, data in the WAL
+    /// file may not be included in the backup.
+    pub fn checkpoint(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute_batch("CHECKPOINT")?;
+        Ok(())
+    }
+
+    /// Get the path to the database file
+    pub fn db_path(&self) -> &Path {
+        &self.db_path
+    }
+
     // === Account operations ===
 
     pub fn get_accounts(&self) -> Result<Vec<Account>> {
@@ -164,7 +180,7 @@ impl DuckDbRepository {
         )?;
 
         let accounts = stmt
-            .query_map([], |row| Ok(self.row_to_account(row)))?
+            .query_map([], |row| self.row_to_account(row))?
             .filter_map(|r| r.ok())
             .collect();
 
@@ -188,14 +204,12 @@ impl DuckDbRepository {
              FROM sys_accounts a WHERE a.account_id = ?",
         )?;
 
-        let account = stmt
-            .query_row([id], |row| Ok(self.row_to_account(row)))
-            .ok();
+        let account = stmt.query_row([id], |row| self.row_to_account(row)).ok();
 
         Ok(account)
     }
 
-    fn row_to_account(&self, row: &duckdb::Row) -> Account {
+    fn row_to_account(&self, row: &duckdb::Row) -> std::result::Result<Account, duckdb::Error> {
         // Column indices from SELECT:
         // 0: account_id, 1: name, 2: nickname, 3: account_type, 4: currency,
         // 5: external_ids, 6: institution_name, 7: institution_url, 8: institution_domain,
@@ -204,14 +218,19 @@ impl DuckDbRepository {
         // 19: sf_balance_date, 20: sf_org_name, 21: sf_org_url, 22: sf_org_domain, 23: sf_extra,
         // 24: lf_id, 25: lf_name, 26: lf_institution_name, 27: lf_institution_logo,
         // 28: lf_provider, 29: lf_currency, 30: lf_status
-        let id_str: String = row.get(0).unwrap_or_default();
+        let id_str: String = row.get(0)?;
         // Note: column 5 (external_ids) is read but not used - kept for backwards compat
         let created_str: String = row.get(9).unwrap_or_default();
         let updated_str: String = row.get(10).unwrap_or_default();
         let sf_extra_json: Option<String> = row.get(23).ok();
 
-        Account {
-            id: Uuid::parse_str(&id_str).unwrap_or_else(|_| Uuid::new_v4()),
+        // Parse UUID - if this fails, skip the row rather than creating a new UUID
+        let id = Uuid::parse_str(&id_str).map_err(|e| {
+            duckdb::Error::FromSqlConversionFailure(0, duckdb::types::Type::Text, Box::new(e))
+        })?;
+
+        Ok(Account {
+            id,
             name: row.get(1).unwrap_or_default(),
             nickname: row.get(2).ok(),
             account_type: row.get::<_, Option<String>>(3).ok().flatten(),
@@ -253,7 +272,7 @@ impl DuckDbRepository {
             lf_provider: row.get(28).ok(),
             lf_currency: row.get(29).ok(),
             lf_status: row.get(30).ok(),
-        }
+        })
     }
 
     pub fn upsert_account(&self, account: &Account) -> Result<()> {
@@ -348,8 +367,14 @@ impl DuckDbRepository {
     /// 3. Delete the account itself
     ///
     /// Note: We intentionally don't wrap this in an explicit transaction because
-    /// DuckDB has issues with FK constraint checking inside transactions.
-    /// Each statement auto-commits, and the delete order ensures FK constraints are satisfied.
+    /// DuckDB validates foreign key constraints at statement-level, not at commit
+    /// time. Within a transaction, the DELETE from sys_accounts fails FK validation
+    /// because it doesn't "see" the earlier deletes of child records.
+    ///
+    /// Data consistency is maintained by:
+    /// 1. Filesystem lock preventing concurrent access
+    /// 2. Delete order respecting FK constraints (children before parent)
+    /// 3. Each statement auto-committing on success
     pub fn delete_account(&self, account_id: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
 
@@ -395,7 +420,7 @@ impl DuckDbRepository {
         )?;
 
         let transactions = stmt
-            .query_map([], |row| Ok(self.row_to_transaction(row)))?
+            .query_map([], |row| self.row_to_transaction(row))?
             .filter_map(|r| r.ok())
             .collect();
 
@@ -418,7 +443,7 @@ impl DuckDbRepository {
         )?;
 
         let transactions = stmt
-            .query_map([account_id], |row| Ok(self.row_to_transaction(row)))?
+            .query_map([account_id], |row| self.row_to_transaction(row))?
             .filter_map(|r| r.ok())
             .collect();
 
@@ -472,15 +497,18 @@ impl DuckDbRepository {
         })
     }
 
-    fn row_to_transaction(&self, row: &duckdb::Row) -> Transaction {
+    fn row_to_transaction(
+        &self,
+        row: &duckdb::Row,
+    ) -> std::result::Result<Transaction, duckdb::Error> {
         // Column indices from SELECT:
         // 0: transaction_id, 1: account_id, 2: amount, 3: description, 4: transaction_date,
         // 5: posted_date, 6: tags, 7: external_ids, 8: deleted_at, 9: parent_transaction_id,
         // 10: created_at, 11: updated_at, 12: csv_fingerprint, 13: csv_batch_id, 14: is_manual, 15: tags_auto_applied,
         // 16: sf_id, 17: sf_posted, 18: sf_amount, 19: sf_description, 20: sf_transacted_at, 21: sf_pending, 22: sf_extra,
         // 23: lf_id, 24: lf_account_id, 25: lf_amount, 26: lf_currency, 27: lf_date, 28: lf_merchant, 29: lf_description, 30: lf_is_pending
-        let id_str: String = row.get(0).unwrap_or_default();
-        let account_id_str: String = row.get(1).unwrap_or_default();
+        let id_str: String = row.get(0)?;
+        let account_id_str: String = row.get(1)?;
         let amount: f64 = row.get(2).unwrap_or(0.0);
         let tx_date_str: String = row.get(4).unwrap_or_default();
         let posted_date_str: String = row.get(5).unwrap_or_default();
@@ -497,10 +525,23 @@ impl DuckDbRepository {
         let sf_extra_json: Option<String> = row.get(22).ok();
         let lf_date_str: Option<String> = row.get(27).ok();
 
-        Transaction {
-            id: Uuid::parse_str(&id_str).unwrap_or_else(|_| Uuid::new_v4()),
-            account_id: Uuid::parse_str(&account_id_str).unwrap_or_else(|_| Uuid::new_v4()),
-            amount: Decimal::try_from(amount).unwrap_or_default(),
+        // Parse UUIDs - if these fail, skip the row rather than creating new UUIDs
+        let id = Uuid::parse_str(&id_str).map_err(|e| {
+            duckdb::Error::FromSqlConversionFailure(0, duckdb::types::Type::Text, Box::new(e))
+        })?;
+        let account_id = Uuid::parse_str(&account_id_str).map_err(|e| {
+            duckdb::Error::FromSqlConversionFailure(1, duckdb::types::Type::Text, Box::new(e))
+        })?;
+
+        // Parse amount - if conversion fails, this is a data integrity issue
+        let amount = Decimal::try_from(amount).map_err(|e| {
+            duckdb::Error::FromSqlConversionFailure(2, duckdb::types::Type::Text, Box::new(e))
+        })?;
+
+        Ok(Transaction {
+            id,
+            account_id,
+            amount,
             description: row.get(3).ok(),
             transaction_date: parse_date(&tx_date_str),
             posted_date: parse_date(&posted_date_str),
@@ -545,7 +586,7 @@ impl DuckDbRepository {
             lf_merchant: row.get(28).ok(),
             lf_description: row.get(29).ok(),
             lf_is_pending: row.get(30).ok(),
-        }
+        })
     }
 
     pub fn upsert_transaction(&self, tx: &Transaction) -> Result<()> {
@@ -783,7 +824,7 @@ impl DuckDbRepository {
         )?;
 
         let tx = stmt
-            .query_row([id], |row| Ok(self.row_to_transaction(row)))
+            .query_row([id], |row| self.row_to_transaction(row))
             .ok();
 
         Ok(tx)

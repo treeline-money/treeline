@@ -11,6 +11,3 @@ pub mod demo;
 pub mod duckdb;
 pub mod lunchflow;
 pub mod simplefin;
-
-#[cfg(test)]
-pub mod lunchflow_mock;

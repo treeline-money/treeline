@@ -6,6 +6,7 @@
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -13,22 +14,49 @@ use serde::Serialize;
 use zip::write::SimpleFileOptions;
 use zip::{ZipArchive, ZipWriter};
 
+use crate::adapters::duckdb::DuckDbRepository;
 use crate::domain::BackupMetadata;
 
 /// Config files to include in backup (relative to treeline dir)
 const CONFIG_FILES: &[&str] = &["settings.json", "encryption.json"];
 
 /// Backup service for database backup management
+///
+/// The repository is optional - if provided, create() will checkpoint
+/// before copying to ensure WAL data is flushed. For operations that
+/// don't need the database (list, restore, clear), use new() without
+/// a repository.
 pub struct BackupService {
     treeline_dir: PathBuf,
     db_filename: String,
+    repository: Option<Arc<DuckDbRepository>>,
 }
 
 impl BackupService {
+    /// Create a new BackupService without repository access.
+    ///
+    /// Use this for operations that don't need database access (list, restore, clear).
+    /// Note: create() will skip checkpointing when called without a repository.
     pub fn new(treeline_dir: PathBuf, db_filename: String) -> Self {
         Self {
             treeline_dir,
             db_filename,
+            repository: None,
+        }
+    }
+
+    /// Create a new BackupService with repository access.
+    ///
+    /// This enables checkpointing before backup to ensure WAL data is flushed.
+    pub fn new_with_repository(
+        treeline_dir: PathBuf,
+        db_filename: String,
+        repository: Arc<DuckDbRepository>,
+    ) -> Self {
+        Self {
+            treeline_dir,
+            db_filename,
+            repository: Some(repository),
         }
     }
 
@@ -37,6 +65,10 @@ impl BackupService {
     }
 
     /// Create a backup of the database and config files as a ZIP archive
+    ///
+    /// If a repository is available, this method first forces a checkpoint
+    /// to flush any pending WAL data to the main database file, ensuring
+    /// backup consistency.
     pub fn create(&self, max_backups: Option<usize>) -> Result<BackupMetadata> {
         let backups_dir = self.backups_dir();
         fs::create_dir_all(&backups_dir)?;
@@ -44,6 +76,13 @@ impl BackupService {
         let db_path = self.treeline_dir.join(&self.db_filename);
         if !db_path.exists() {
             anyhow::bail!("Database file not found");
+        }
+
+        // Force checkpoint to flush WAL to main database file before backup.
+        // This ensures the backup contains all committed data.
+        // If no repository is available (e.g., during encryption), skip checkpointing.
+        if let Some(ref repo) = self.repository {
+            repo.checkpoint()?;
         }
 
         let now = Utc::now();
