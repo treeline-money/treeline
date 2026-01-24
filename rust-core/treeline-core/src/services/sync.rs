@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
-use chrono::{Duration, NaiveDate, Utc};
+use chrono::{Duration, Utc};
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -20,7 +20,7 @@ use crate::services::TagService;
 pub struct SyncService {
     repository: Arc<DuckDbRepository>,
     tag_service: TagService,
-    treeline_dir: PathBuf,
+    _treeline_dir: PathBuf,
     providers: HashMap<String, Arc<dyn DataAggregationProvider>>,
     integration_providers: HashMap<String, Arc<dyn IntegrationProvider>>,
 }
@@ -50,7 +50,7 @@ impl SyncService {
         Self {
             repository,
             tag_service,
-            treeline_dir,
+            _treeline_dir: treeline_dir,
             providers,
             integration_providers,
         }
@@ -433,6 +433,7 @@ pub struct IntegrationInfo {
 mod tests {
     use super::*;
     use crate::domain::Transaction;
+    use chrono::NaiveDate;
     use rust_decimal::Decimal;
 
     #[test]

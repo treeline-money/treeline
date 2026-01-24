@@ -2,14 +2,10 @@
 //!
 //! Run with: cargo test --test connection_retry_test -- --nocapture
 
-use std::fs::OpenOptions;
 use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
-
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
 
 use treeline_core::adapters::duckdb::DuckDbRepository;
 

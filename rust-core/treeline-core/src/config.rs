@@ -53,7 +53,7 @@ pub struct Config {
     pub demo_mode: bool,
     pub import_profiles: HashMap<String, ImportProfile>,
     // Keep the raw settings for preservation when saving
-    raw_settings: SettingsFile,
+    _raw_settings: SettingsFile,
 }
 
 impl Default for Config {
@@ -61,7 +61,7 @@ impl Default for Config {
         Self {
             demo_mode: false,
             import_profiles: HashMap::new(),
-            raw_settings: SettingsFile::default(),
+            _raw_settings: SettingsFile::default(),
         }
     }
 }
@@ -92,7 +92,7 @@ impl Config {
         Ok(Self {
             demo_mode,
             import_profiles: raw.import_profiles.profiles.clone(),
-            raw_settings: raw,
+            _raw_settings: raw,
         })
     }
 

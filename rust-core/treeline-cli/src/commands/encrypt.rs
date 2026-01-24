@@ -7,7 +7,6 @@ use clap::Subcommand;
 use colored::Colorize;
 use dialoguer::{Password, Confirm};
 
-use super::get_treeline_dir;
 use treeline_core::config::Config;
 use treeline_core::services::{BackupService, EncryptionService};
 

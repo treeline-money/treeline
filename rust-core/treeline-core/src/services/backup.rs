@@ -49,9 +49,9 @@ impl BackupService {
         let now = Utc::now();
         let timestamp = now.format("%Y-%m-%dT%H-%M-%S");
         let micros = now.timestamp_subsec_micros();
-        /// COMMENT: the previous Python CLI allowed users to provide
-        /// a backup name, the generated one was a fallback. I'm ok with this,
-        /// cause at least it works. But consider it.
+        // COMMENT: the previous Python CLI allowed users to provide
+        // a backup name, the generated one was a fallback. I'm ok with this,
+        // cause at least it works. But consider it.
         let backup_name = format!("treeline-{}-{:06}.zip", timestamp, micros);
         let backup_path = backups_dir.join(&backup_name);
 

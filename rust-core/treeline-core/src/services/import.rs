@@ -695,6 +695,7 @@ fn strip_currency_suffix(s: &str) -> &str {
     s
 }
 
+#[allow(dead_code)]
 fn parse_amount(s: &str) -> Option<Decimal> {
     parse_amount_with_format(s, NumberFormat::Us)
 }

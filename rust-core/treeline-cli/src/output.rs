@@ -1,5 +1,7 @@
 //! Output formatting utilities
 
+#![allow(dead_code)]
+
 use colored::Colorize;
 use comfy_table::{presets::UTF8_FULL_CONDENSED, Table, ContentArrangement};
 
