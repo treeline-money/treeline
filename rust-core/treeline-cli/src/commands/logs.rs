@@ -1,7 +1,5 @@
 //! Logs command - view and manage application logs
 
-use std::path::PathBuf;
-
 use anyhow::Result;
 use clap::Subcommand;
 use colored::Colorize;
@@ -24,15 +22,6 @@ pub enum LogsCommands {
         #[arg(long)]
         json: bool,
     },
-    /// Export logs for troubleshooting
-    Export {
-        /// Output file path (defaults to treeline-logs.duckdb in current directory)
-        #[arg(short, long)]
-        output: Option<PathBuf>,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
     /// Clear old log entries
     Clear {
         /// Delete logs older than N days
@@ -45,7 +34,7 @@ pub enum LogsCommands {
         #[arg(long)]
         json: bool,
     },
-    /// Show log statistics
+    /// Show log statistics and database path
     Stats {
         /// Output as JSON
         #[arg(long)]
@@ -132,25 +121,6 @@ pub fn run(command: LogsCommands) -> Result<()> {
                         err.error_message.as_deref().unwrap_or("Unknown error")
                     );
                 }
-            }
-        }
-        LogsCommands::Export { output, json } => {
-            let service = get_logging_service()?;
-            let output_path = output.unwrap_or_else(|| PathBuf::from("treeline-logs.duckdb"));
-            let exported = service.export(&output_path)?;
-
-            if json {
-                println!(
-                    "{}",
-                    serde_json::json!({
-                        "exported": exported.to_string_lossy(),
-                        "count": service.count()?
-                    })
-                );
-            } else {
-                println!("{}", "Logs exported".green());
-                println!("  Path: {}", exported.display());
-                println!("  Entries: {}", service.count()?);
             }
         }
         LogsCommands::Clear {
