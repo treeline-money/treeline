@@ -83,10 +83,3 @@ pub fn get_context() -> Result<TreelineContext> {
         .context("Failed to initialize treeline context")
 }
 
-/// Check if demo mode is enabled
-#[allow(dead_code)]
-pub fn is_demo_mode() -> Result<bool> {
-    let treeline_dir = get_treeline_dir();
-    let config = treeline_core::config::Config::load(&treeline_dir).unwrap_or_default();
-    Ok(config.demo_mode)
-}
