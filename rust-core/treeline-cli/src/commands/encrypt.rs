@@ -5,8 +5,10 @@ use std::env;
 use anyhow::Result;
 use clap::Subcommand;
 use colored::Colorize;
-use dialoguer::{Password, Confirm};
+use dialoguer::{Confirm, Password};
+use treeline_core::LogEvent;
 
+use super::{get_logger, log_event};
 use treeline_core::config::Config;
 use treeline_core::services::{BackupService, EncryptionService};
 
@@ -97,6 +99,9 @@ pub fn run(command: Option<EncryptCommands>, password: Option<String>, json: boo
             }
         }
         None => {
+            let logger = get_logger();
+            log_event(&logger, LogEvent::new("encrypt_started").with_command("encrypt"));
+
             // Encrypt the database
             if encryption_service.is_encrypted()? {
                 anyhow::bail!("Database is already encrypted. Use 'tl decrypt' first.");
@@ -106,24 +111,40 @@ pub fn run(command: Option<EncryptCommands>, password: Option<String>, json: boo
 
             // Only show confirmation if running interactively (no password provided via flag/env)
             let skip_confirm = env::var("TREELINE_PASSWORD").is_ok();
-            if !skip_confirm && !Confirm::new()
-                .with_prompt("Are you sure you want to encrypt the database? A backup will be created.")
-                .interact()?
+            if !skip_confirm
+                && !Confirm::new()
+                    .with_prompt(
+                        "Are you sure you want to encrypt the database? A backup will be created.",
+                    )
+                    .interact()?
             {
                 println!("Cancelled.");
                 return Ok(());
             }
 
             // Create BackupService directly - don't need full context for encryption
-            let backup_service = BackupService::new(treeline_dir.clone(), "treeline.duckdb".to_string());
-            let result = encryption_service.encrypt(&pwd, &backup_service)?;
-
-            if json {
-                println!("{}", serde_json::to_string_pretty(&result)?);
-            } else {
-                println!("{}", "Database encrypted successfully".green());
-                if let Some(backup_name) = result.backup_name {
-                    println!("  Backup created: {}", backup_name);
+            let backup_service =
+                BackupService::new(treeline_dir.clone(), "treeline.duckdb".to_string());
+            match encryption_service.encrypt(&pwd, &backup_service) {
+                Ok(result) => {
+                    log_event(&logger, LogEvent::new("encrypt_completed").with_command("encrypt"));
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&result)?);
+                    } else {
+                        println!("{}", "Database encrypted successfully".green());
+                        if let Some(backup_name) = result.backup_name {
+                            println!("  Backup created: {}", backup_name);
+                        }
+                    }
+                }
+                Err(e) => {
+                    log_event(
+                        &logger,
+                        LogEvent::new("encrypt_failed")
+                            .with_command("encrypt")
+                            .with_error(&e.to_string()),
+                    );
+                    return Err(e);
                 }
             }
         }
@@ -133,6 +154,9 @@ pub fn run(command: Option<EncryptCommands>, password: Option<String>, json: boo
 }
 
 pub fn run_decrypt(password: Option<String>, json: bool) -> Result<()> {
+    let logger = get_logger();
+    log_event(&logger, LogEvent::new("decrypt_started").with_command("decrypt"));
+
     let treeline_dir = super::get_treeline_dir();
     let config = Config::load(&treeline_dir)?;
 
@@ -143,7 +167,10 @@ pub fn run_decrypt(password: Option<String>, json: bool) -> Result<()> {
     // Check demo mode
     if config.demo_mode {
         if json {
-            println!("{}", serde_json::json!({"error": "Demo database is not encrypted"}));
+            println!(
+                "{}",
+                serde_json::json!({"error": "Demo database is not encrypted"})
+            );
         } else {
             eprintln!("{}", "Demo database is not encrypted".red());
         }
@@ -158,14 +185,26 @@ pub fn run_decrypt(password: Option<String>, json: bool) -> Result<()> {
 
     // Create BackupService directly - don't need full context for decryption
     let backup_service = BackupService::new(treeline_dir.clone(), "treeline.duckdb".to_string());
-    let result = encryption_service.decrypt(&pwd, &backup_service)?;
-
-    if json {
-        println!("{}", serde_json::to_string_pretty(&result)?);
-    } else {
-        println!("{}", "Database decrypted successfully".green());
-        if let Some(backup_name) = result.backup_name {
-            println!("  Backup created: {}", backup_name);
+    match encryption_service.decrypt(&pwd, &backup_service) {
+        Ok(result) => {
+            log_event(&logger, LogEvent::new("decrypt_completed").with_command("decrypt"));
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                println!("{}", "Database decrypted successfully".green());
+                if let Some(backup_name) = result.backup_name {
+                    println!("  Backup created: {}", backup_name);
+                }
+            }
+        }
+        Err(e) => {
+            log_event(
+                &logger,
+                LogEvent::new("decrypt_failed")
+                    .with_command("decrypt")
+                    .with_error(&e.to_string()),
+            );
+            return Err(e);
         }
     }
 

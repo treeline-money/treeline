@@ -3,9 +3,10 @@
 use anyhow::Result;
 use clap::Subcommand;
 use colored::Colorize;
-use comfy_table::{Table, ContentArrangement};
+use comfy_table::{ContentArrangement, Table};
+use treeline_core::LogEvent;
 
-use super::{get_context, get_treeline_dir};
+use super::{get_context, get_logger, get_treeline_dir, log_event};
 use treeline_core::services::BackupService;
 
 #[derive(Subcommand)]
@@ -62,17 +63,33 @@ fn get_backup_service() -> BackupService {
 }
 
 pub fn run(command: BackupCommands) -> Result<()> {
+    let logger = get_logger();
+
     match command {
         BackupCommands::Create { max_backups, json } => {
+            log_event(&logger, LogEvent::new("backup_started").with_command("backup create"));
             // Create needs full context to access the database
             let ctx = get_context()?;
-            let result = ctx.backup_service.create(max_backups)?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&result)?);
-            } else {
-                println!("{}", "Backup created".green());
-                println!("  Name: {}", result.name);
-                println!("  Size: {} bytes", result.size_bytes);
+            match ctx.backup_service.create(max_backups) {
+                Ok(result) => {
+                    log_event(&logger, LogEvent::new("backup_completed").with_command("backup create"));
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&result)?);
+                    } else {
+                        println!("{}", "Backup created".green());
+                        println!("  Name: {}", result.name);
+                        println!("  Size: {} bytes", result.size_bytes);
+                    }
+                }
+                Err(e) => {
+                    log_event(
+                        &logger,
+                        LogEvent::new("backup_failed")
+                            .with_command("backup create")
+                            .with_error(&e.to_string()),
+                    );
+                    return Err(e);
+                }
             }
         }
         BackupCommands::List { json } => {
@@ -105,6 +122,7 @@ pub fn run(command: BackupCommands) -> Result<()> {
             println!("{}", table);
         }
         BackupCommands::Restore { name, force, json } => {
+            log_event(&logger, LogEvent::new("restore_started").with_command("backup restore"));
             // Restore doesn't need database access - it replaces the database
             let backup_service = get_backup_service();
             if !force && !json {
@@ -118,11 +136,24 @@ pub fn run(command: BackupCommands) -> Result<()> {
                     return Ok(());
                 }
             }
-            backup_service.restore(&name)?;
-            if json {
-                println!("{}", serde_json::json!({"restored": name}));
-            } else {
-                println!("Database restored from backup: {}", name);
+            match backup_service.restore(&name) {
+                Ok(()) => {
+                    log_event(&logger, LogEvent::new("restore_completed").with_command("backup restore"));
+                    if json {
+                        println!("{}", serde_json::json!({"restored": name}));
+                    } else {
+                        println!("Database restored from backup: {}", name);
+                    }
+                }
+                Err(e) => {
+                    log_event(
+                        &logger,
+                        LogEvent::new("restore_failed")
+                            .with_command("backup restore")
+                            .with_error(&e.to_string()),
+                    );
+                    return Err(e);
+                }
             }
         }
         BackupCommands::Clear { force, json } => {

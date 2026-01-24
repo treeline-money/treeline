@@ -5,6 +5,7 @@ pub mod compact;
 pub mod demo;
 pub mod doctor;
 pub mod encrypt;
+pub mod logs;
 pub mod plugin;
 pub mod query;
 pub mod status;
@@ -12,9 +13,26 @@ pub mod sync;
 pub mod tag;
 
 use std::path::PathBuf;
-use anyhow::{Result, Context};
-use treeline_core::TreelineContext;
+use anyhow::{Context, Result};
 use treeline_core::services::EncryptionService;
+use treeline_core::{EntryPoint, LogEvent, LoggingService, TreelineContext};
+
+/// Get the logging service for CLI operations
+///
+/// Returns None if logging fails to initialize (shouldn't block operations)
+pub fn get_logger() -> Option<LoggingService> {
+    let treeline_dir = get_treeline_dir();
+    // Ensure directory exists
+    std::fs::create_dir_all(&treeline_dir).ok()?;
+    LoggingService::new(&treeline_dir, EntryPoint::Cli, env!("CARGO_PKG_VERSION")).ok()
+}
+
+/// Log an event, ignoring any errors (logging should never break the app)
+pub fn log_event(logger: &Option<LoggingService>, event: LogEvent) {
+    if let Some(l) = logger {
+        let _ = l.log(event);
+    }
+}
 
 /// Get the treeline directory from environment or default
 pub fn get_treeline_dir() -> PathBuf {
