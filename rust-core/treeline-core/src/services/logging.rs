@@ -192,7 +192,10 @@ impl LoggingService {
 
     /// Run any pending migrations
     fn run_migrations(&self) -> Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("Lock poisoned: {}", e))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow!("Lock poisoned: {}", e))?;
 
         // Check if migrations table exists
         let table_exists: bool = conn
@@ -205,7 +208,9 @@ impl LoggingService {
 
         // Bootstrap migrations table if needed
         if !table_exists {
-            if let Some((name, sql)) = LOG_MIGRATIONS.iter().find(|(n, _)| *n == "000_migrations.sql")
+            if let Some((name, sql)) = LOG_MIGRATIONS
+                .iter()
+                .find(|(n, _)| *n == "000_migrations.sql")
             {
                 conn.execute_batch(sql)?;
                 conn.execute(
@@ -245,7 +250,10 @@ impl LoggingService {
     /// app_version, and platform are automatically added from the service
     /// configuration.
     pub fn log(&self, event: LogEvent) -> Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("Lock poisoned: {}", e))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow!("Lock poisoned: {}", e))?;
 
         conn.execute(
             r#"
@@ -300,7 +308,10 @@ impl LoggingService {
     ///
     /// Returns the most recent entries, up to the specified limit.
     pub fn get_recent(&self, limit: usize) -> Result<Vec<LogEntry>> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("Lock poisoned: {}", e))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow!("Lock poisoned: {}", e))?;
 
         let mut stmt = conn.prepare(
             r#"
@@ -336,7 +347,10 @@ impl LoggingService {
 
     /// Query log entries with errors
     pub fn get_errors(&self, limit: usize) -> Result<Vec<LogEntry>> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("Lock poisoned: {}", e))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow!("Lock poisoned: {}", e))?;
 
         let mut stmt = conn.prepare(
             r#"
@@ -373,18 +387,21 @@ impl LoggingService {
 
     /// Get the total number of log entries
     pub fn count(&self) -> Result<u64> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("Lock poisoned: {}", e))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow!("Lock poisoned: {}", e))?;
         let count: u64 = conn.query_row("SELECT COUNT(*) FROM sys_logs", [], |row| row.get(0))?;
         Ok(count)
     }
 
     /// Delete logs older than the specified timestamp (unix ms)
     pub fn delete_before(&self, timestamp_ms: i64) -> Result<u64> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("Lock poisoned: {}", e))?;
-        let deleted = conn.execute(
-            "DELETE FROM sys_logs WHERE timestamp < ?",
-            [timestamp_ms],
-        )?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow!("Lock poisoned: {}", e))?;
+        let deleted = conn.execute("DELETE FROM sys_logs WHERE timestamp < ?", [timestamp_ms])?;
         Ok(deleted as u64)
     }
 
@@ -392,7 +409,10 @@ impl LoggingService {
     ///
     /// Creates a copy of the logs database that can be sent for analysis.
     pub fn export(&self, output_path: &Path) -> Result<PathBuf> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("Lock poisoned: {}", e))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow!("Lock poisoned: {}", e))?;
 
         // Force checkpoint to ensure all data is written
         conn.execute("CHECKPOINT", [])?;
@@ -469,7 +489,10 @@ mod tests {
         let errors = service.get_errors(10).unwrap();
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].event, "sync_failed");
-        assert_eq!(errors[0].error_message, Some("Connection timeout".to_string()));
+        assert_eq!(
+            errors[0].error_message,
+            Some("Connection timeout".to_string())
+        );
         assert_eq!(errors[0].error_details, Some("at line 42".to_string()));
     }
 

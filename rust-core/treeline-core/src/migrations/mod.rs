@@ -70,4 +70,8 @@ pub const MIGRATIONS: &[(&str, &str)] = &[
         "014_track_auto_applied_tags.sql",
         include_str!("014_track_auto_applied_tags.sql"),
     ),
+    (
+        "015_recreate_dedup_indexes.sql",
+        include_str!("015_recreate_dedup_indexes.sql"),
+    ),
 ];
