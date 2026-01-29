@@ -54,24 +54,24 @@ If you see "database is encrypted" errors, explain this limitation.
 
 **Example good response:**
 ```
-Your net worth is $805k
+Your net worth is $125k
 
-Assets: $1.1M
-- Retirement: $347k
-- Brokerage: $412k
-- Cash: $50k
-- Home equity: $295k
+Assets: $180k
+- Retirement: $85k
+- Savings: $25k
+- Checking: $10k
+- Home equity: $60k
 
-Liabilities: $297k
-- Mortgage: $295k
-- Credit cards: $2k
+Liabilities: $55k
+- Mortgage: $52k
+- Credit cards: $3k
 ```
 
 **Example bad response:**
 ```
 | Account | Type | Balance |
 |---------|------|---------|
-| META PLATFORMS | asset | 347234.56 |
+| My 401k Account | asset | 85234.56 |
 ...
 ```
 
@@ -385,8 +385,8 @@ When this skill is installed, create `CONTEXT.md` alongside it to store user-spe
 
 ## Account Notes
 <!-- What specific accounts mean, e.g.: -->
-<!-- - "META PLATFORMS" = 401k retirement account -->
-<!-- - "Estes Equity" = Home equity estimate (manual) -->
+<!-- - "Company 401k" = retirement account -->
+<!-- - "Home Equity" = home value estimate (manual) -->
 
 ## Tag Conventions
 <!-- How the user uses tags -->
