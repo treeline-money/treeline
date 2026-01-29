@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 REPO="treeline-money/treeline"
-INSTALL_DIR="$HOME/.treeline/bin"
+INSTALL_DIR="/usr/local/bin"
 BINARY_NAME="tl"
 
 # Detect OS and architecture
@@ -105,56 +105,28 @@ install() {
 
     echo -e "${YELLOW}Downloading...${NC}"
 
-    # Download binary
+    # Download to temp location first
+    TMP_FILE=$(mktemp)
     if command -v curl &> /dev/null; then
-        curl -fsSL "$DOWNLOAD_URL" -o "$INSTALL_DIR/$BINARY_NAME"
+        curl -fsSL "$DOWNLOAD_URL" -o "$TMP_FILE"
     else
-        wget -q "$DOWNLOAD_URL" -O "$INSTALL_DIR/$BINARY_NAME"
+        wget -q "$DOWNLOAD_URL" -O "$TMP_FILE"
     fi
 
-    # Make executable
-    chmod +x "$INSTALL_DIR/$BINARY_NAME"
+    chmod +x "$TMP_FILE"
 
-    echo -e "${GREEN}Installed successfully!${NC}"
+    # Install to /usr/local/bin (may need sudo)
+    if [ -w "$INSTALL_DIR" ]; then
+        mv "$TMP_FILE" "$INSTALL_DIR/$BINARY_NAME"
+    else
+        echo -e "${YELLOW}Installing to $INSTALL_DIR requires sudo...${NC}"
+        sudo mv "$TMP_FILE" "$INSTALL_DIR/$BINARY_NAME"
+        sudo chmod +x "$INSTALL_DIR/$BINARY_NAME"
+    fi
+
     echo ""
-
-    # Add to PATH if not already there
-    if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
-        # Detect shell and profile file
-        SHELL_NAME=$(basename "$SHELL")
-        case "$SHELL_NAME" in
-            zsh)
-                PROFILE="$HOME/.zshrc"
-                ;;
-            bash)
-                if [ -f "$HOME/.bash_profile" ]; then
-                    PROFILE="$HOME/.bash_profile"
-                else
-                    PROFILE="$HOME/.bashrc"
-                fi
-                ;;
-            *)
-                PROFILE="$HOME/.profile"
-                ;;
-        esac
-
-        # Add to profile if not already there
-        PATH_EXPORT='export PATH="$HOME/.treeline/bin:$PATH"'
-        if ! grep -q ".treeline/bin" "$PROFILE" 2>/dev/null; then
-            echo "" >> "$PROFILE"
-            echo "# Treeline CLI" >> "$PROFILE"
-            echo "$PATH_EXPORT" >> "$PROFILE"
-            echo -e "${GREEN}Added to PATH in $PROFILE${NC}"
-            echo ""
-            echo "Restart your terminal or run:"
-            echo "  source $PROFILE"
-            echo ""
-        fi
-
-        # Also export for current session
-        export PATH="$INSTALL_DIR:$PATH"
-    fi
-
+    echo -e "${GREEN}Installed successfully to $INSTALL_DIR/$BINARY_NAME${NC}"
+    echo ""
     echo "Run 'tl --help' to get started."
 }
 
