@@ -118,15 +118,41 @@ install() {
     echo -e "${GREEN}Installed successfully!${NC}"
     echo ""
 
-    # Check if in PATH
+    # Add to PATH if not already there
     if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
-        echo -e "${YELLOW}Add to your PATH by adding this to your shell profile:${NC}"
-        echo ""
-        echo "  export PATH=\"\$HOME/.treeline/bin:\$PATH\""
-        echo ""
-        echo "Then restart your terminal or run:"
-        echo "  source ~/.bashrc  # or ~/.zshrc"
-        echo ""
+        # Detect shell and profile file
+        SHELL_NAME=$(basename "$SHELL")
+        case "$SHELL_NAME" in
+            zsh)
+                PROFILE="$HOME/.zshrc"
+                ;;
+            bash)
+                if [ -f "$HOME/.bash_profile" ]; then
+                    PROFILE="$HOME/.bash_profile"
+                else
+                    PROFILE="$HOME/.bashrc"
+                fi
+                ;;
+            *)
+                PROFILE="$HOME/.profile"
+                ;;
+        esac
+
+        # Add to profile if not already there
+        PATH_EXPORT='export PATH="$HOME/.treeline/bin:$PATH"'
+        if ! grep -q ".treeline/bin" "$PROFILE" 2>/dev/null; then
+            echo "" >> "$PROFILE"
+            echo "# Treeline CLI" >> "$PROFILE"
+            echo "$PATH_EXPORT" >> "$PROFILE"
+            echo -e "${GREEN}Added to PATH in $PROFILE${NC}"
+            echo ""
+            echo "Restart your terminal or run:"
+            echo "  source $PROFILE"
+            echo ""
+        fi
+
+        # Also export for current session
+        export PATH="$INSTALL_DIR:$PATH"
     fi
 
     echo "Run 'tl --help' to get started."
