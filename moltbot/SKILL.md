@@ -1,7 +1,7 @@
 ---
 name: treeline
-description: Chat with your finances. Query balances, spending, budgets, and transactions from Treeline Money - a local-first personal finance app where your data never leaves your computer.
-version: 0.0.2
+description: Chat with your finances. Query balances, spending, budgets, and transactions from Treeline Money - a local-first personal finance app with full data ownership.
+version: 0.0.3
 user-invocable: true
 homepage: https://treeline.money
 metadata: {"clawdbot":{"emoji":"🌲","requires":{"bins":["tl"]}}}
@@ -13,7 +13,7 @@ metadata: {"clawdbot":{"emoji":"🌲","requires":{"bins":["tl"]}}}
 
 ## What is Treeline?
 
-[Treeline Money](https://treeline.money) is a local-first personal finance app for Mac, Windows, and Linux. Your data stays on your computer - no cloud, no subscriptions, no selling your financial data.
+[Treeline Money](https://treeline.money) is a local-first, plugin-based personal finance app for Mac, Windows, and Linux. Your data lives in a local DuckDB database with full data ownership.
 
 - **Bank sync** via SimpleFIN (US/Canada) or manual CSV import
 - **Budgeting, goals, cash flow** via plugins
