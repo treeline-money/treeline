@@ -8,6 +8,7 @@ pub mod encrypt;
 pub mod logs;
 pub mod plugin;
 pub mod query;
+pub mod setup;
 pub mod status;
 pub mod sync;
 pub mod tag;

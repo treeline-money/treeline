@@ -9,7 +9,7 @@ use clap::{Parser, Subcommand};
 mod commands;
 mod output;
 
-use commands::{backup, compact, demo, doctor, encrypt, logs, plugin, query, status, sync, tag};
+use commands::{backup, compact, demo, doctor, encrypt, logs, plugin, query, setup, status, sync, tag};
 
 /// Treeline - personal finance in your terminal
 #[derive(Parser)]
@@ -125,6 +125,12 @@ enum Commands {
         command: Option<demo::DemoCommands>,
     },
 
+    /// Set up integrations (SimpleFIN, Lunchflow)
+    Setup {
+        #[command(subcommand)]
+        command: Option<setup::SetupCommands>,
+    },
+
     /// Manage plugins
     Plugin {
         #[command(subcommand)]
@@ -167,6 +173,7 @@ fn run(cli: Cli) -> Result<()> {
         Commands::Encrypt { command, password, json } => encrypt::run(command, password, json),
         Commands::Decrypt { password, json } => encrypt::run_decrypt(password, json),
         Commands::Demo { command } => demo::run(command),
+        Commands::Setup { command } => setup::run(command),
         Commands::Plugin { command } => plugin::run(command),
         Commands::Logs { command } => logs::run(command),
     }
