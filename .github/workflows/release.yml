@@ -95,3 +95,85 @@ jobs:
           files: ${{ matrix.artifact }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Verify CLI installation works on all platforms
+  verify-install:
+    needs: build-cli
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+          - os: macos-latest
+          - os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install CLI (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: |
+          chmod +x scripts/install.sh
+          sudo scripts/install.sh
+
+      - name: Install CLI (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          . .\scripts\install.ps1
+
+      - name: Verify CLI (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: |
+          set -e
+
+          echo "=== Verifying tl --version ==="
+          tl --version
+
+          echo "=== Verifying version matches release ==="
+          INSTALLED_VERSION=$(tl --version | head -1)
+          RELEASE_TAG="${{ github.ref_name }}"
+          echo "Installed: $INSTALLED_VERSION"
+          echo "Release tag: $RELEASE_TAG"
+          if [[ "$INSTALLED_VERSION" != *"${RELEASE_TAG#v}"* ]]; then
+            echo "ERROR: Version mismatch!"
+            exit 1
+          fi
+
+          echo "=== Verifying tl --help ==="
+          tl --help
+
+          echo "=== Verifying tl status ==="
+          # status may return non-zero if no data exists, but shouldn't crash
+          tl status || true
+
+          echo "=== All verification checks passed ==="
+
+      - name: Verify CLI (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $env:Path = "$env:USERPROFILE\.treeline\bin;$env:Path"
+
+          Write-Output "=== Verifying tl --version ==="
+          tl --version
+
+          Write-Output "=== Verifying version matches release ==="
+          $InstalledVersion = (tl --version | Select-Object -First 1)
+          $ReleaseTag = "${{ github.ref_name }}"
+          $ExpectedVersion = $ReleaseTag -replace '^v', ''
+          Write-Output "Installed: $InstalledVersion"
+          Write-Output "Release tag: $ReleaseTag"
+          if ($InstalledVersion -notlike "*$ExpectedVersion*") {
+            Write-Output "ERROR: Version mismatch!"
+            exit 1
+          }
+
+          Write-Output "=== Verifying tl --help ==="
+          tl --help
+
+          Write-Output "=== Verifying tl status ==="
+          # status may return non-zero if no data exists, but shouldn't crash
+          try { tl status } catch { }
+
+          Write-Output "=== All verification checks passed ==="
