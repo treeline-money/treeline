@@ -28,7 +28,7 @@ metadata: {"clawdbot":{"emoji":"🌲","requires":{"bins":["tl"]}}}
 ## Limitations
 
 **Encrypted databases not supported.** If the user has enabled database encryption in Treeline, CLI commands will fail. They'll need to either:
-- Disable encryption if they want moltbot access
+- Disable encryption if they want OpenClaw access
 - Use the Treeline app directly for encrypted databases
 
 If you see "database is encrypted" errors, explain this limitation.
