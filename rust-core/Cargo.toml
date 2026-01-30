@@ -3,7 +3,7 @@ resolver = "2"
 members = ["treeline-core", "treeline-cli"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.80"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/treeline-money/treeline"

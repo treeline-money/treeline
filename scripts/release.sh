@@ -108,9 +108,27 @@ if [ "$SDK_UPDATED_VERSION" != "$VERSION_NUMBER" ]; then
 fi
 echo -e "${GREEN}✓ Updated plugin-sdk version to ${VERSION_NUMBER}${NC}"
 
+# Update version in rust-core/Cargo.toml (workspace version)
+echo -e "${YELLOW}Updating version in rust-core/Cargo.toml...${NC}"
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    # macOS
+    sed -i '' "s/^version = \".*\"/version = \"${VERSION_NUMBER}\"/" rust-core/Cargo.toml
+else
+    # Linux
+    sed -i "s/^version = \".*\"/version = \"${VERSION_NUMBER}\"/" rust-core/Cargo.toml
+fi
+
+# Verify the Cargo.toml change
+CARGO_UPDATED_VERSION=$(grep '^version = ' rust-core/Cargo.toml | head -1 | cut -d'"' -f2)
+if [ "$CARGO_UPDATED_VERSION" != "$VERSION_NUMBER" ]; then
+    echo -e "${RED}Error: Failed to update version in rust-core/Cargo.toml${NC}"
+    exit 1
+fi
+echo -e "${GREEN}✓ Updated rust-core version to ${VERSION_NUMBER}${NC}"
+
 # Commit version bump
 echo -e "${YELLOW}Committing version bump...${NC}"
-git add plugin-sdk/package.json
+git add plugin-sdk/package.json rust-core/Cargo.toml
 git commit -m "Bump version to ${VERSION}"
 echo -e "${GREEN}✓ Committed version bump${NC}"
 
