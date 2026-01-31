@@ -1,0 +1,19 @@
+{
+  "name": "treeline-plugin-template",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite build --watch"
+  },
+  "dependencies": {
+    "@treeline-money/plugin-sdk": "^26.1.3101"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^5.0.4",
+    "@tsconfig/svelte": "^5.0.4",
+    "svelte": "^5.18.2",
+    "typescript": "^5.7.3",
+    "vite": "^6.0.11"
+  }
+}

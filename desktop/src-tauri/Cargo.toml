@@ -1,0 +1,51 @@
+[package]
+name = "treeline"
+version = "26.1.3101"
+description = "A plugin-based personal finance application"
+authors = ["treeline"]
+edition = "2021"
+
+[lib]
+name = "treeline_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset", "devtools"] }
+tauri-plugin-shell = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-process = "2"
+tauri-plugin-updater = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "5"
+# DuckDB 1.4.3 LTS - pinned for stability; json statically linked (no ICU - uses Rust dates)
+duckdb = { version = "=1.4.3", features = ["bundled", "json"] }
+arrow = "56"
+chrono = "0.4"
+argon2 = "0.5"
+base64 = "0.22"
+hex = "0.4"
+sqlparser = "0.60"
+csv = "1.3"
+rust_decimal = "1.37"
+
+# Treeline core library - direct integration (replaces CLI subprocess calls)
+treeline-core = { path = "../../core" }
+
+# Pin psm to 0.1.28 - version 0.1.29 (released 2026-01-24) depends on ar_archive_writer 0.5.1
+# which uses unstable Rust let-chain syntax not available in stable Rust
+psm = "=0.1.28"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

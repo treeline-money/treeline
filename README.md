@@ -10,9 +10,12 @@ Your financial data stays on your computer. No cloud accounts, no subscriptions,
 
 | Directory | Description |
 |-----------|-------------|
-| `rust-core/` | Rust CLI and core library |
-| `plugin-sdk/` | TypeScript SDK for building plugins ([npm](https://www.npmjs.com/package/@treeline-money/plugin-sdk)) |
-| `plugin-template/` | Starter template for new plugins |
+| `desktop/` | Desktop app (Tauri + Svelte) |
+| `core/` | Rust core library |
+| `cli/` | Rust CLI |
+| `sdk/` | TypeScript SDK for building plugins ([npm](https://www.npmjs.com/package/@treeline-money/plugin-sdk)) |
+| `template/` | Starter template for new plugins |
+| `plugins.json` | Registry of community plugins |
 
 ## Installing the CLI
 
@@ -20,7 +23,7 @@ Build from source (requires [Rust](https://rustup.rs/)):
 
 ```bash
 git clone https://github.com/treeline-money/treeline.git
-cd treeline/rust-core
+cd treeline
 cargo build --release
 
 # Add to your PATH or create an alias
@@ -106,7 +109,7 @@ Run `tl <command> --help` for detailed options.
 
 # Building Plugins
 
-Plugins extend Treeline with custom views, commands, and functionality. They're built with TypeScript and Svelte 5, and run inside the [Treeline desktop app](https://github.com/treeline-money/treeline-releases/releases).
+Plugins extend Treeline with custom views, commands, and functionality. They're built with TypeScript and Svelte 5, and run inside the [Treeline desktop app](https://github.com/treeline-money/treeline/releases).
 
 > **Note**: The CLI is for data management and plugin development. To use plugins, you need the desktop app.
 
@@ -451,7 +454,7 @@ tl plugin install .
 ## Release Your Plugin
 
 1. Create a GitHub repository for your plugin
-2. Include the GitHub Actions workflow (in `plugin-template/.github/workflows/release.yml`)
+2. Include the GitHub Actions workflow (in `template/.github/workflows/release.yml`)
 3. Run the release script:
 
 ```bash
@@ -462,10 +465,7 @@ This tags the release and pushes to GitHub. The workflow automatically builds an
 
 ## Submit to Community Plugins
 
-Once your plugin has a GitHub release:
-
-1. Fork [treeline-releases](https://github.com/treeline-money/treeline-releases)
-2. Add your plugin to `plugins.json`:
+Once your plugin has a GitHub release, open a PR to [treeline](https://github.com/treeline-money/treeline) adding your plugin to `plugins.json`:
 
 ```json
 {
@@ -476,8 +476,6 @@ Once your plugin has a GitHub release:
   "repo": "https://github.com/you/my-plugin"
 }
 ```
-
-3. Open a pull request
 
 Users can then install your plugin from Settings > Plugins in the app.
 

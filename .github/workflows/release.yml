@@ -1,179 +1,341 @@
 name: Release
 
+# Triggered manually via GitHub Actions UI or /release skill
 on:
-  release:
-    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'CalVer version (e.g., 26.1.3001)'
+        required: true
+        type: string
+      release_notes:
+        description: 'Release notes (markdown)'
+        required: false
+        type: string
+        default: ''
+      run_id:
+        description: 'CI workflow run ID to download artifacts from (leave empty for latest)'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: write
-  id-token: write
 
 jobs:
-  test:
+  release:
+    name: Create Release
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Validate CalVer format
+        run: |
+          VERSION="${{ inputs.version }}"
+          # CalVer format: YY.M.DDRR (e.g., 26.1.3001)
+          if ! echo "$VERSION" | grep -Eq '^[0-9]{2}\.[0-9]{1,2}\.[0-9]{3,4}$'; then
+            echo "Invalid CalVer format: $VERSION"
+            echo "Expected format: YY.M.DDRR (e.g., 26.1.3001)"
+            exit 1
+          fi
+          echo "Valid CalVer version: $VERSION"
 
-      - name: Run Rust tests
-        working-directory: rust-core
-        run: cargo test
+      - name: Get CI run ID
+        id: get-run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -n "${{ inputs.run_id }}" ]; then
+            RUN_ID="${{ inputs.run_id }}"
+          else
+            # Get latest successful CI run on main
+            RUN_ID=$(gh run list --workflow=ci.yml --branch=main --status=success --limit=1 --json databaseId --jq '.[0].databaseId')
+          fi
 
-  # Plugin SDK is still published to npm for community plugin development
-  publish-npm:
-    needs: test
-    runs-on: ubuntu-latest
-    environment: npm
-    permissions:
-      id-token: write
-    defaults:
-      run:
-        working-directory: plugin-sdk
-    steps:
-      - uses: actions/checkout@v4
+          if [ -z "$RUN_ID" ]; then
+            echo "No successful CI run found"
+            exit 1
+          fi
+
+          echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
+          echo "Using CI run: $RUN_ID"
+
+      - name: Download all artifacts from CI
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p artifacts
+          gh run download ${{ steps.get-run.outputs.run_id }} --dir artifacts
+          echo "Downloaded artifacts:"
+          ls -R artifacts
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 20
+          registry-url: 'https://registry.npmjs.org'
 
-      - name: Upgrade npm for OIDC support
-        run: npm install -g npm@latest
+      - name: Update version files
+        run: |
+          VERSION="${{ inputs.version }}"
 
-      - name: Install dependencies
-        run: npm ci
+          # Update desktop/package.json
+          jq ".version = \"$VERSION\"" desktop/package.json > tmp.json && mv tmp.json desktop/package.json
 
-      - name: Build
-        run: npm run build
+          # Update desktop/src-tauri/tauri.conf.json
+          jq ".version = \"$VERSION\"" desktop/src-tauri/tauri.conf.json > tmp.json && mv tmp.json desktop/src-tauri/tauri.conf.json
 
-      - name: Publish to npm with OIDC
-        run: npm publish --access public --provenance
+          # Update desktop/src-tauri/Cargo.toml
+          sed -i "s/^version = .*/version = \"$VERSION\"/" desktop/src-tauri/Cargo.toml
+
+          # Update sdk/package.json
+          jq ".version = \"$VERSION\"" sdk/package.json > tmp.json && mv tmp.json sdk/package.json
+
+          # Update core/Cargo.toml (via workspace)
+          # Update workspace version in root Cargo.toml
+          sed -i "s/^version = .*/version = \"$VERSION\"/" Cargo.toml
+
+          echo "Updated all version files to $VERSION"
+
+      - name: Commit version changes
+        run: |
+          VERSION="${{ inputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Release $VERSION" || echo "No changes to commit"
+          git tag "$VERSION"
+          git push origin main --tags
+
+      - name: Create GitHub release (treeline repo)
         env:
-          NODE_AUTH_TOKEN: ''
-
-  # Build and upload Rust CLI binaries for all platforms
-  build-cli:
-    needs: test
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            artifact: tl-linux-x64
-            binary: tl
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            artifact: tl-macos-arm64
-            binary: tl
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            artifact: tl-windows-x64.exe
-            binary: tl.exe
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - name: Build CLI
-        working-directory: rust-core
-        run: cargo build --release --target ${{ matrix.target }}
-
-      - name: Rename binary
-        shell: bash
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          cp rust-core/target/${{ matrix.target }}/release/${{ matrix.binary }} ${{ matrix.artifact }}
+          VERSION="${{ inputs.version }}"
+          RELEASE_NOTES="${{ inputs.release_notes }}"
 
-      - name: Upload to release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: ${{ matrix.artifact }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  # Verify CLI installation works on all platforms
-  verify-install:
-    needs: build-cli
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-          - os: macos-latest
-          - os: windows-latest
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install CLI (Linux/macOS)
-        if: runner.os != 'Windows'
-        run: |
-          chmod +x scripts/install.sh
-          sudo scripts/install.sh
-
-      - name: Install CLI (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          . .\scripts\install.ps1
-
-      - name: Verify CLI (Linux/macOS)
-        if: runner.os != 'Windows'
-        run: |
-          set -e
-
-          echo "=== Verifying tl --version ==="
-          tl --version
-
-          echo "=== Verifying version matches release ==="
-          INSTALLED_VERSION=$(tl --version | head -1)
-          RELEASE_TAG="${{ github.ref_name }}"
-          echo "Installed: $INSTALLED_VERSION"
-          echo "Release tag: $RELEASE_TAG"
-          if [[ "$INSTALLED_VERSION" != *"${RELEASE_TAG#v}"* ]]; then
-            echo "ERROR: Version mismatch!"
-            exit 1
+          if [ -z "$RELEASE_NOTES" ]; then
+            RELEASE_NOTES="Release $VERSION"
           fi
 
-          echo "=== Verifying tl --help ==="
-          tl --help
+          # Create release
+          gh release create "$VERSION" \
+            --title "Treeline $VERSION" \
+            --notes "$RELEASE_NOTES" \
+            || echo "Release may already exist"
 
-          echo "=== Verifying tl status ==="
-          # status may return non-zero if no data exists, but shouldn't crash
-          tl status || true
+          # Upload desktop artifacts
+          for f in artifacts/desktop-macos-arm64/*.dmg; do
+            [ -f "$f" ] && gh release upload "$VERSION" "$f" --clobber || true
+          done
+          for f in artifacts/desktop-macos-arm64/*.app.tar.gz; do
+            [ -f "$f" ] && gh release upload "$VERSION" "$f" --clobber || true
+          done
+          for f in artifacts/desktop-macos-arm64/*.sig; do
+            [ -f "$f" ] && gh release upload "$VERSION" "$f" --clobber || true
+          done
+          for f in artifacts/desktop-linux-x64/*.AppImage; do
+            [ -f "$f" ] && gh release upload "$VERSION" "$f" --clobber || true
+          done
+          for f in artifacts/desktop-linux-x64/*.AppImage.sig; do
+            [ -f "$f" ] && gh release upload "$VERSION" "$f" --clobber || true
+          done
+          for f in artifacts/desktop-windows-x64/*.exe; do
+            [ -f "$f" ] && gh release upload "$VERSION" "$f" --clobber || true
+          done
+          for f in artifacts/desktop-windows-x64/*.exe.sig; do
+            [ -f "$f" ] && gh release upload "$VERSION" "$f" --clobber || true
+          done
 
-          echo "=== All verification checks passed ==="
+          # Upload CLI binaries
+          for f in artifacts/cli-linux-x64/tl; do
+            [ -f "$f" ] && gh release upload "$VERSION" "$f#tl-linux-x64" --clobber || true
+          done
+          for f in artifacts/cli-macos-arm64/tl; do
+            [ -f "$f" ] && gh release upload "$VERSION" "$f#tl-macos-arm64" --clobber || true
+          done
+          for f in artifacts/cli-windows-x64/tl.exe; do
+            [ -f "$f" ] && gh release upload "$VERSION" "$f#tl-windows-x64.exe" --clobber || true
+          done
 
-      - name: Verify CLI (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
+      - name: Create GitHub release (treeline-releases - dual publish)
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
         run: |
-          $ErrorActionPreference = "Stop"
-          $env:Path = "$env:USERPROFILE\.treeline\bin;$env:Path"
+          VERSION="${{ inputs.version }}"
+          RELEASE_NOTES="${{ inputs.release_notes }}"
+          RELEASES_REPO="treeline-money/treeline-releases"
 
-          Write-Output "=== Verifying tl --version ==="
-          tl --version
+          if [ -z "$RELEASE_NOTES" ]; then
+            RELEASE_NOTES="Release $VERSION"
+          fi
 
-          Write-Output "=== Verifying version matches release ==="
-          $InstalledVersion = (tl --version | Select-Object -First 1)
-          $ReleaseTag = "${{ github.ref_name }}"
-          $ExpectedVersion = $ReleaseTag -replace '^v', ''
-          Write-Output "Installed: $InstalledVersion"
-          Write-Output "Release tag: $ReleaseTag"
-          if ($InstalledVersion -notlike "*$ExpectedVersion*") {
-            Write-Output "ERROR: Version mismatch!"
-            exit 1
-          }
+          # Create release in treeline-releases (for existing users)
+          gh release create "$VERSION" \
+            --repo "$RELEASES_REPO" \
+            --title "Treeline $VERSION" \
+            --notes "$RELEASE_NOTES" \
+            || echo "Release may already exist"
 
-          Write-Output "=== Verifying tl --help ==="
-          tl --help
+          # Copy latest.json from previous release to maintain production updates
+          PREV_RELEASE=$(gh release list --repo "$RELEASES_REPO" --limit 2 --json tagName --jq '.[1].tagName // empty')
+          if [ -n "$PREV_RELEASE" ]; then
+            echo "Copying latest.json from $PREV_RELEASE"
+            gh release download "$PREV_RELEASE" --repo "$RELEASES_REPO" --pattern "latest.json" --dir /tmp || true
+            if [ -f /tmp/latest.json ]; then
+              gh release upload "$VERSION" /tmp/latest.json --repo "$RELEASES_REPO" --clobber
+              rm /tmp/latest.json
+            fi
+          fi
 
-          Write-Output "=== Verifying tl status ==="
-          # status may return non-zero if no data exists, but shouldn't crash
-          try { tl status } catch { }
+          # Upload desktop artifacts
+          for f in artifacts/desktop-macos-arm64/*.dmg; do
+            [ -f "$f" ] && gh release upload "$VERSION" "$f" --repo "$RELEASES_REPO" --clobber || true
+          done
+          for f in artifacts/desktop-macos-arm64/*.app.tar.gz; do
+            [ -f "$f" ] && gh release upload "$VERSION" "$f" --repo "$RELEASES_REPO" --clobber || true
+          done
+          for f in artifacts/desktop-macos-arm64/*.sig; do
+            [ -f "$f" ] && gh release upload "$VERSION" "$f" --repo "$RELEASES_REPO" --clobber || true
+          done
+          for f in artifacts/desktop-linux-x64/*.AppImage; do
+            [ -f "$f" ] && gh release upload "$VERSION" "$f" --repo "$RELEASES_REPO" --clobber || true
+          done
+          for f in artifacts/desktop-linux-x64/*.AppImage.sig; do
+            [ -f "$f" ] && gh release upload "$VERSION" "$f" --repo "$RELEASES_REPO" --clobber || true
+          done
+          for f in artifacts/desktop-windows-x64/*.exe; do
+            [ -f "$f" ] && gh release upload "$VERSION" "$f" --repo "$RELEASES_REPO" --clobber || true
+          done
+          for f in artifacts/desktop-windows-x64/*.exe.sig; do
+            [ -f "$f" ] && gh release upload "$VERSION" "$f" --repo "$RELEASES_REPO" --clobber || true
+          done
 
-          Write-Output "=== All verification checks passed ==="
+      - name: Generate and upload latest-staging.json
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+        run: |
+          VERSION="${{ inputs.version }}"
+          RELEASE_NOTES="${{ inputs.release_notes }}"
+          RELEASES_REPO="treeline-money/treeline-releases"
+          PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          if [ -z "$RELEASE_NOTES" ]; then
+            RELEASE_NOTES="Release $VERSION"
+          fi
+          RELEASE_NOTES_ESCAPED=$(echo "$RELEASE_NOTES" | jq -Rs '.')
+
+          # Read signatures
+          LINUX_SIG=""
+          MACOS_SIG=""
+          WINDOWS_SIG=""
+
+          for f in artifacts/desktop-linux-x64/*.AppImage.sig; do
+            [ -f "$f" ] && LINUX_SIG=$(cat "$f") && break
+          done
+
+          for f in artifacts/desktop-macos-arm64/*.app.tar.gz.sig; do
+            [ -f "$f" ] && MACOS_SIG=$(cat "$f") && break
+          done
+
+          for f in artifacts/desktop-windows-x64/*.exe.sig; do
+            [ -f "$f" ] && WINDOWS_SIG=$(cat "$f") && break
+          done
+
+          # Find artifact filenames
+          LINUX_FILE=""
+          MACOS_FILE=""
+          WINDOWS_FILE=""
+
+          for f in artifacts/desktop-linux-x64/*.AppImage; do
+            [ -f "$f" ] && LINUX_FILE=$(basename "$f") && break
+          done
+
+          for f in artifacts/desktop-macos-arm64/*.app.tar.gz; do
+            [ -f "$f" ] && MACOS_FILE=$(basename "$f") && break
+          done
+
+          for f in artifacts/desktop-windows-x64/*.exe; do
+            [ -f "$f" ] && WINDOWS_FILE=$(basename "$f") && break
+          done
+
+          # Generate latest-staging.json
+          echo "{" > latest-staging.json
+          echo "  \"version\": \"${VERSION}\"," >> latest-staging.json
+          echo "  \"notes\": ${RELEASE_NOTES_ESCAPED}," >> latest-staging.json
+          echo "  \"pub_date\": \"${PUB_DATE}\"," >> latest-staging.json
+          echo "  \"platforms\": {" >> latest-staging.json
+
+          FIRST_PLATFORM=true
+
+          if [ -n "$LINUX_FILE" ] && [ -n "$LINUX_SIG" ]; then
+            if [ "$FIRST_PLATFORM" = false ]; then echo "," >> latest-staging.json; fi
+            FIRST_PLATFORM=false
+            echo "    \"linux-x86_64\": {" >> latest-staging.json
+            echo "      \"signature\": \"${LINUX_SIG}\"," >> latest-staging.json
+            echo "      \"url\": \"https://github.com/${RELEASES_REPO}/releases/download/${VERSION}/${LINUX_FILE}\"" >> latest-staging.json
+            echo "    }" >> latest-staging.json
+          fi
+
+          if [ -n "$MACOS_FILE" ] && [ -n "$MACOS_SIG" ]; then
+            if [ "$FIRST_PLATFORM" = false ]; then echo "," >> latest-staging.json; fi
+            FIRST_PLATFORM=false
+            echo "    \"darwin-aarch64\": {" >> latest-staging.json
+            echo "      \"signature\": \"${MACOS_SIG}\"," >> latest-staging.json
+            echo "      \"url\": \"https://github.com/${RELEASES_REPO}/releases/download/${VERSION}/${MACOS_FILE}\"" >> latest-staging.json
+            echo "    }" >> latest-staging.json
+          fi
+
+          if [ -n "$WINDOWS_FILE" ] && [ -n "$WINDOWS_SIG" ]; then
+            if [ "$FIRST_PLATFORM" = false ]; then echo "," >> latest-staging.json; fi
+            FIRST_PLATFORM=false
+            echo "    \"windows-x86_64\": {" >> latest-staging.json
+            echo "      \"signature\": \"${WINDOWS_SIG}\"," >> latest-staging.json
+            echo "      \"url\": \"https://github.com/${RELEASES_REPO}/releases/download/${VERSION}/${WINDOWS_FILE}\"" >> latest-staging.json
+            echo "    }" >> latest-staging.json
+          fi
+
+          echo "  }" >> latest-staging.json
+          echo "}" >> latest-staging.json
+
+          cat latest-staging.json
+
+          # Upload to both repos
+          gh release upload "$VERSION" latest-staging.json --clobber
+          gh release upload "$VERSION" latest-staging.json --repo "$RELEASES_REPO" --clobber
+
+      - name: Publish SDK to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          # Extract and publish the SDK tarball
+          cd artifacts/sdk-npm-package
+          npm publish *.tgz --access public
+
+      - name: Post to Discord #staging-releases
+        if: ${{ secrets.DISCORD_WEBHOOK_STAGING != '' }}
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_STAGING }}
+        run: |
+          VERSION="${{ inputs.version }}"
+          RELEASE_NOTES="${{ inputs.release_notes }}"
+
+          if [ -z "$RELEASE_NOTES" ]; then
+            RELEASE_NOTES="Release $VERSION"
+          fi
+          RELEASE_NOTES_ESCAPED=$(echo "$RELEASE_NOTES" | jq -Rs '.')
+
+          curl -X POST "$DISCORD_WEBHOOK" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"embeds\": [{
+                \"title\": \"Treeline $VERSION Release Candidate\",
+                \"description\": $RELEASE_NOTES_ESCAPED,
+                \"color\": 16761095,
+                \"footer\": {\"text\": \"Release Candidate - Test with ~/.treeline/use-staging-updates then run /promote\"}
+              }]
+            }"

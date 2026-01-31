@@ -6,9 +6,289 @@ on:
   pull_request:
     branches: [main]
 
+# Cancel in-progress builds when a new push arrives
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
+  # Run tests (always runs)
   test:
+    name: Tests
     runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            desktop/src-tauri -> target
+          shared-key: "ci"
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev
+
+      - name: Install UI dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - name: Type check (frontend)
+        working-directory: desktop
+        run: npm run check
+
+      - name: Build frontend
+        working-directory: desktop
+        run: npm run build
+
+      - name: Run Rust tests (core + cli)
+        run: cargo test
+
+      - name: Run Rust tests (desktop)
+        working-directory: desktop/src-tauri
+        run: cargo test
+
+  # Build desktop app (only on main pushes, not PRs)
+  build-desktop:
+    name: Build Desktop (${{ matrix.os }})
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target-triple: x86_64-unknown-linux-gnu
+            artifact-name: desktop-linux-x64
+          - os: macos-latest
+            target-triple: aarch64-apple-darwin
+            artifact-name: desktop-macos-arm64
+          - os: windows-latest
+            target-triple: x86_64-pc-windows-msvc
+            artifact-name: desktop-windows-x64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "desktop/src-tauri -> target"
+          shared-key: "build-desktop"
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install UI dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - name: Import Apple certificate
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          # Create a temporary keychain
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Import certificate
+          echo "$APPLE_CERTIFICATE" | base64 --decode > $RUNNER_TEMP/certificate.p12
+          security import $RUNNER_TEMP/certificate.p12 -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+
+          # Clean up certificate file
+          rm $RUNNER_TEMP/certificate.p12
+
+      - name: Write Apple API key (macOS)
+        if: runner.os == 'macOS'
+        run: echo "${{ secrets.APPLE_API_KEY_CONTENT }}" > $RUNNER_TEMP/AuthKey.p8
+
+      - name: Build Tauri app (non-macOS)
+        if: runner.os != 'macOS'
+        working-directory: desktop
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npm run build && npx tauri build
+
+      - name: Build Tauri app (macOS)
+        if: runner.os == 'macOS'
+        working-directory: desktop
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: npm run build && npx tauri build
+
+      - name: Notarize app (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          APP_PATH="desktop/src-tauri/target/release/bundle/macos/Treeline.app"
+          DMG_PATH="desktop/src-tauri/target/release/bundle/dmg"
+
+          echo "Creating zip for notarization..."
+          cd desktop/src-tauri/target/release/bundle/macos
+          zip -r Treeline.zip Treeline.app
+          cd -
+
+          echo "Submitting for notarization..."
+          xcrun notarytool submit \
+            desktop/src-tauri/target/release/bundle/macos/Treeline.zip \
+            --key ${{ runner.temp }}/AuthKey.p8 \
+            --key-id ${{ secrets.APPLE_API_KEY }} \
+            --issuer ${{ secrets.APPLE_API_ISSUER }} \
+            --wait
+
+          echo "Stapling notarization ticket to app..."
+          xcrun stapler staple "$APP_PATH"
+
+          # Re-create DMG with notarized app
+          echo "Re-creating DMG with notarized app..."
+          DMG_NAME=$(ls "$DMG_PATH"/*.dmg | head -1 | xargs basename)
+          rm -f "$DMG_PATH/$DMG_NAME"
+          hdiutil create -volname "Treeline" -srcfolder "$APP_PATH" -ov -format UDZO "$DMG_PATH/$DMG_NAME"
+
+          # Sign the DMG
+          SIGNING_IDENTITY=$(security find-identity -v -p codesigning | grep "Developer ID Application" | head -1 | awk -F'"' '{print $2}')
+          codesign --force --timestamp --sign "$SIGNING_IDENTITY" "$DMG_PATH/$DMG_NAME"
+
+          # Notarize and staple the DMG
+          xcrun notarytool submit "$DMG_PATH/$DMG_NAME" \
+            --key ${{ runner.temp }}/AuthKey.p8 \
+            --key-id ${{ secrets.APPLE_API_KEY }} \
+            --issuer ${{ secrets.APPLE_API_ISSUER }} \
+            --wait
+
+          xcrun stapler staple "$DMG_PATH/$DMG_NAME"
+
+          echo "Notarization complete!"
+
+      - name: Upload artifacts (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: |
+            desktop/src-tauri/target/release/bundle/dmg/*.dmg
+            desktop/src-tauri/target/release/bundle/dmg/*.dmg.sig
+            desktop/src-tauri/target/release/bundle/macos/*.app.tar.gz
+            desktop/src-tauri/target/release/bundle/macos/*.app.tar.gz.sig
+          retention-days: 90
+
+      - name: Smoke test AppImage (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          # Install xvfb for headless display
+          sudo apt-get install -y xvfb
+
+          # Find the AppImage
+          APPIMAGE=$(find desktop/src-tauri/target/release/bundle/appimage -name "*.AppImage" | head -1)
+          echo "Testing AppImage: $APPIMAGE"
+
+          # Make executable
+          chmod +x "$APPIMAGE"
+
+          # Run with virtual framebuffer, capture any errors
+          echo "Starting AppImage with xvfb..."
+          xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" "$APPIMAGE" &
+          APP_PID=$!
+
+          # Wait for app to initialize
+          sleep 10
+
+          # Check if process is still running (didn't crash)
+          if kill -0 $APP_PID 2>/dev/null; then
+            echo "AppImage started successfully and is running"
+            # Gracefully terminate
+            kill $APP_PID 2>/dev/null || true
+            sleep 2
+            kill -9 $APP_PID 2>/dev/null || true
+          else
+            echo "AppImage crashed or failed to start"
+            exit 1
+          fi
+
+      - name: Upload artifacts (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: |
+            desktop/src-tauri/target/release/bundle/appimage/*.AppImage
+            desktop/src-tauri/target/release/bundle/appimage/*.AppImage.sig
+          retention-days: 90
+
+      - name: Upload artifacts (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: |
+            desktop/src-tauri/target/release/bundle/nsis/*.exe
+            desktop/src-tauri/target/release/bundle/nsis/*.exe.sig
+          retention-days: 90
+
+  # Build CLI binaries (only on main pushes)
+  build-cli:
+    name: Build CLI (${{ matrix.os }})
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact-name: cli-linux-x64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact-name: cli-macos-arm64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact-name: cli-windows-x64
+
+    runs-on: ${{ matrix.os }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -18,9 +298,59 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: "rust-core -> target"
-          shared-key: "ci-rust"
+          shared-key: "build-cli"
 
-      - name: Run Rust tests
-        working-directory: rust-core
-        run: cargo test
+      - name: Build CLI
+        run: cargo build --release --bin tl
+
+      - name: Upload CLI artifact (Unix)
+        if: runner.os != 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: target/release/tl
+          retention-days: 90
+
+      - name: Upload CLI artifact (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: target/release/tl.exe
+          retention-days: 90
+
+  # Pack SDK (don't publish yet - that happens at release time)
+  pack-sdk:
+    name: Pack SDK
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: sdk/package-lock.json
+
+      - name: Install dependencies
+        working-directory: sdk
+        run: npm ci
+
+      - name: Build SDK
+        working-directory: sdk
+        run: npm run build
+
+      - name: Pack SDK (create tarball)
+        working-directory: sdk
+        run: npm pack
+
+      - name: Upload SDK tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdk-npm-package
+          path: sdk/*.tgz
+          retention-days: 90

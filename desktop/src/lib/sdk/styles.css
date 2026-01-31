@@ -1,0 +1,503 @@
+/**
+ * Treeline Plugin Styles
+ *
+ * Shared CSS classes for plugins to match the app's look and feel.
+ * Import this in your plugin: import '@treeline/sdk/styles.css'
+ *
+ * All classes are prefixed with `tl-` to avoid conflicts.
+ */
+
+/* ============================================================================
+ * Layout
+ * ============================================================================ */
+
+.tl-view {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-sans, system-ui, -apple-system, sans-serif);
+}
+
+.tl-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: var(--spacing-lg, 16px);
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.tl-header-left {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs, 4px);
+}
+
+.tl-header-right {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md, 12px);
+}
+
+.tl-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.tl-subtitle {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin: 0;
+}
+
+.tl-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--spacing-lg, 16px);
+}
+
+/* ============================================================================
+ * Buttons
+ * ============================================================================ */
+
+.tl-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: var(--radius-sm, 4px);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  border: none;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.tl-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.tl-btn-primary {
+  background: var(--accent-primary);
+  color: var(--bg-primary);
+}
+
+.tl-btn-primary:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.tl-btn-secondary {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-primary);
+}
+
+.tl-btn-secondary:hover:not(:disabled) {
+  background: var(--bg-secondary);
+}
+
+.tl-btn-danger {
+  background: var(--accent-danger);
+  color: white;
+}
+
+.tl-btn-danger:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.tl-btn-text {
+  background: transparent;
+  color: var(--text-secondary);
+  padding: 4px 8px;
+}
+
+.tl-btn-text:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
+}
+
+.tl-btn-icon {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm, 4px);
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  transition: all 0.15s;
+}
+
+.tl-btn-icon:hover:not(:disabled) {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+/* ============================================================================
+ * Cards
+ * ============================================================================ */
+
+.tl-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--spacing-md, 12px);
+  margin-bottom: var(--spacing-lg, 16px);
+}
+
+.tl-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md, 6px);
+  padding: var(--spacing-md, 12px);
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs, 4px);
+}
+
+.tl-card-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 500;
+}
+
+.tl-card-value {
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.tl-card-value-sm {
+  font-size: 18px;
+}
+
+/* ============================================================================
+ * Tables
+ * ============================================================================ */
+
+.tl-table-container {
+  overflow-x: auto;
+}
+
+.tl-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.tl-table th {
+  text-align: left;
+  padding: var(--spacing-sm, 8px) var(--spacing-md, 12px);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 2px solid var(--border-primary);
+  white-space: nowrap;
+}
+
+.tl-table th.tl-sortable {
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.15s;
+}
+
+.tl-table th.tl-sortable:hover {
+  color: var(--text-primary);
+}
+
+.tl-table th.tl-sorted {
+  color: var(--accent-primary);
+}
+
+.tl-table td {
+  padding: var(--spacing-sm, 8px) var(--spacing-md, 12px);
+  border-bottom: 1px solid var(--border-primary);
+  color: var(--text-primary);
+}
+
+.tl-table tbody tr:hover {
+  background: var(--bg-secondary);
+}
+
+.tl-table tbody tr.tl-selected {
+  background: var(--bg-active);
+}
+
+.tl-table tbody tr.tl-muted {
+  opacity: 0.5;
+}
+
+/* Table cell types */
+.tl-cell-mono {
+  font-family: var(--font-mono);
+}
+
+.tl-cell-number {
+  font-family: var(--font-mono);
+  text-align: right;
+}
+
+.tl-cell-date {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.tl-cell-positive {
+  color: var(--color-positive);
+  font-family: var(--font-mono);
+}
+
+.tl-cell-negative {
+  color: var(--color-negative);
+  font-family: var(--font-mono);
+}
+
+.tl-cell-actions {
+  display: flex;
+  gap: var(--spacing-xs, 4px);
+  justify-content: flex-end;
+}
+
+/* ============================================================================
+ * Badges
+ * ============================================================================ */
+
+.tl-badge {
+  display: inline-block;
+  padding: 3px 8px;
+  background: var(--bg-tertiary);
+  color: var(--accent-primary);
+  font-size: 10px;
+  font-weight: 600;
+  border-radius: var(--radius-sm, 4px);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.tl-badge-success {
+  background: rgba(63, 185, 80, 0.15);
+  color: var(--accent-success);
+}
+
+.tl-badge-warning {
+  background: rgba(210, 153, 34, 0.15);
+  color: var(--accent-warning);
+}
+
+.tl-badge-danger {
+  background: rgba(248, 81, 73, 0.15);
+  color: var(--accent-danger);
+}
+
+.tl-badge-muted {
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+}
+
+/* ============================================================================
+ * Form Elements
+ * ============================================================================ */
+
+.tl-input {
+  padding: 8px 12px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-sm, 4px);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: inherit;
+  transition: border-color 0.15s;
+}
+
+.tl-input:focus {
+  outline: none;
+  border-color: var(--accent-primary);
+}
+
+.tl-input::placeholder {
+  color: var(--text-muted);
+}
+
+.tl-select {
+  padding: 8px 28px 8px 12px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-sm, 4px);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: inherit;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%239ca3af' d='M2 4l4 4 4-4'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+
+.tl-select:focus {
+  outline: none;
+  border-color: var(--accent-primary);
+}
+
+.tl-select option {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+.tl-checkbox {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm, 8px);
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.tl-checkbox input {
+  accent-color: var(--accent-primary);
+}
+
+.tl-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  margin-bottom: var(--spacing-xs, 4px);
+}
+
+.tl-form-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs, 4px);
+  margin-bottom: var(--spacing-md, 12px);
+}
+
+/* ============================================================================
+ * Empty State
+ * ============================================================================ */
+
+.tl-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: var(--spacing-xl, 24px);
+  color: var(--text-muted);
+  min-height: 200px;
+}
+
+.tl-empty-icon {
+  font-size: 48px;
+  margin-bottom: var(--spacing-md, 12px);
+  opacity: 0.5;
+}
+
+.tl-empty-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: var(--spacing-sm, 8px);
+}
+
+.tl-empty-message {
+  font-size: 13px;
+  max-width: 400px;
+}
+
+/* ============================================================================
+ * Loading State
+ * ============================================================================ */
+
+.tl-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--spacing-xl, 24px);
+  color: var(--text-muted);
+  gap: var(--spacing-md, 12px);
+}
+
+.tl-spinner {
+  width: 24px;
+  height: 24px;
+  border: 2px solid var(--border-primary);
+  border-top-color: var(--accent-primary);
+  border-radius: 50%;
+  animation: tl-spin 0.8s linear infinite;
+}
+
+@keyframes tl-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ============================================================================
+ * Utility Classes
+ * ============================================================================ */
+
+.tl-mono {
+  font-family: var(--font-mono);
+}
+
+.tl-muted {
+  color: var(--text-muted);
+}
+
+.tl-positive {
+  color: var(--color-positive);
+}
+
+.tl-negative {
+  color: var(--color-negative);
+}
+
+.tl-text-sm {
+  font-size: 12px;
+}
+
+.tl-text-xs {
+  font-size: 11px;
+}
+
+.tl-font-semibold {
+  font-weight: 600;
+}
+
+.tl-truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tl-gap-sm {
+  gap: var(--spacing-sm, 8px);
+}
+
+.tl-gap-md {
+  gap: var(--spacing-md, 12px);
+}
+
+.tl-mt-md {
+  margin-top: var(--spacing-md, 12px);
+}
+
+.tl-mb-md {
+  margin-bottom: var(--spacing-md, 12px);
+}

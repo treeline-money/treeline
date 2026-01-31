@@ -1,8 +1,8 @@
 # Rust
 target/
-Cargo.lock
+**/*.rs.bk
 
-# Node (for plugin-sdk and plugin-template)
+# Node (for sdk and template)
 node_modules/
 
 # IDEs
@@ -20,8 +20,13 @@ Thumbs.db
 *.db
 *.sqlite
 *.sqlite3
+*.duckdb
+*.duckdb.wal
 treeline-data/
 .treeline/
+
+# Tauri sidecars (not used - app embeds treeline-core directly)
+desktop/src-tauri/binaries/
 
 # Claude
 .claude/

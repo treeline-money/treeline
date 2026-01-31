@@ -1,0 +1,165 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@600&display=swap');
+@import "tailwindcss";
+
+/* Reset */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+/* Base styles */
+html,
+body {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Default theme variables - overridden by theme.ts at runtime */
+:root {
+  /* Backgrounds */
+  --bg-primary: #0d1117;
+  --bg-secondary: #161b22;
+  --bg-tertiary: #21262d;
+  --bg-hover: #30363d;
+  --bg-active: #388bfd22;
+
+  /* Borders */
+  --border-primary: #30363d;
+  --border-secondary: #21262d;
+  --border-focus: #58a6ff;
+
+  /* Text */
+  --text-primary: #e6edf3;
+  --text-secondary: #8b949e;
+  --text-muted: #6e7681;
+  --text-link: #58a6ff;
+
+  /* Accents */
+  --accent-primary: #58a6ff;
+  --accent-success: #3fb950;
+  --accent-warning: #d29922;
+  --accent-danger: #f85149;
+
+  /* Semantic colors */
+  --color-positive: #3fb950;
+  --color-negative: #f85149;
+  --color-income: #3fb950;
+  --color-expense: #f85149;
+
+  /* Sidebar */
+  --sidebar-bg: #010409;
+  --sidebar-border: #30363d;
+  --sidebar-item-hover: #161b22;
+  --sidebar-item-active: #0d1117;
+
+  /* Tabs */
+  --tab-bg: #0d1117;
+  --tab-active-bg: #161b22;
+  --tab-border: #30363d;
+
+  /* Status bar */
+  --statusbar-bg: #010409;
+  --statusbar-border: #30363d;
+
+  /* Command palette */
+  --palette-bg: #161b22;
+  --palette-border: #30363d;
+  --palette-item-hover: #21262d;
+
+  /* Input */
+  --input-bg: #0d1117;
+  --input-border: #30363d;
+  --input-focus-border: #58a6ff;
+
+  /* Code/monospace */
+  --code-bg: #161b22;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 10px 20px rgba(0, 0, 0, 0.5);
+
+  /* Fonts */
+  --font-mono: "JetBrains Mono", "Fira Code", "SF Mono", Consolas, monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+
+  /* Spacing */
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-md: 12px;
+  --spacing-lg: 16px;
+  --spacing-xl: 24px;
+
+  /* Border radius */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-primary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-primary);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+/* Focus styles */
+:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+}
+
+/* Selection */
+::selection {
+  background: var(--accent-primary);
+  color: white;
+}
+
+/* Remove default button styles */
+button {
+  font-family: inherit;
+}
+
+
+/* Monospace for numbers */
+.mono {
+  font-family: var(--font-mono);
+}
+
+/* Utility classes */
+.positive {
+  color: var(--color-positive);
+}
+
+.negative {
+  color: var(--color-negative);
+}
+
+.muted {
+  color: var(--text-muted);
+}

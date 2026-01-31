@@ -1,0 +1,45 @@
+{
+  "description": "Plugin registry for Treeline. Submit a PR to add your plugin!",
+  "plugins": [
+    {
+      "id": "budget",
+      "name": "Budget",
+      "description": "Track spending against tag-based budget categories with rollovers.",
+      "author": "Treeline",
+      "repo": "https://github.com/treeline-money/plugin-budget",
+      "featured": true
+    },
+    {
+      "id": "emergency-fund",
+      "name": "Emergency Fund",
+      "description": "See how long your emergency fund would last based on your actual spending patterns.",
+      "author": "Treeline",
+      "repo": "https://github.com/treeline-money/plugin-emergency-fund",
+      "featured": false
+    },
+    {
+      "id": "goals",
+      "name": "Savings Goals",
+      "description": "Set savings targets and track your progress toward each goal.",
+      "author": "Treeline",
+      "repo": "https://github.com/treeline-money/plugin-goals",
+      "featured": true
+    },
+    {
+      "id": "subscriptions",
+      "name": "Subscriptions",
+      "description": "Automatically detects recurring charges from your transaction history.",
+      "author": "Treeline",
+      "repo": "https://github.com/treeline-money/plugin-subscriptions",
+      "featured": false
+    },
+    {
+      "id": "cashflow",
+      "name": "Cash Flow",
+      "description": "Plan ahead by scheduling expected income and expenses.",
+      "author": "Treeline",
+      "repo": "https://github.com/treeline-money/plugin-cashflow",
+      "featured": true
+    }
+  ]
+}

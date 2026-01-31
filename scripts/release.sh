@@ -90,45 +90,45 @@ fi
 echo -e "${GREEN}Creating release ${VERSION}${NC}"
 echo ""
 
-# Update version in plugin-sdk/package.json
-echo -e "${YELLOW}Updating version in plugin-sdk/package.json...${NC}"
+# Update version in sdk/package.json
+echo -e "${YELLOW}Updating version in sdk/package.json...${NC}"
 if [[ "$OSTYPE" == "darwin"* ]]; then
     # macOS
-    sed -i '' "s/\"version\": \".*\"/\"version\": \"${VERSION_NUMBER}\"/" plugin-sdk/package.json
+    sed -i '' "s/\"version\": \".*\"/\"version\": \"${VERSION_NUMBER}\"/" sdk/package.json
 else
     # Linux
-    sed -i "s/\"version\": \".*\"/\"version\": \"${VERSION_NUMBER}\"/" plugin-sdk/package.json
+    sed -i "s/\"version\": \".*\"/\"version\": \"${VERSION_NUMBER}\"/" sdk/package.json
 fi
 
 # Verify the SDK change
-SDK_UPDATED_VERSION=$(grep '"version":' plugin-sdk/package.json | head -1 | cut -d'"' -f4)
+SDK_UPDATED_VERSION=$(grep '"version":' sdk/package.json | head -1 | cut -d'"' -f4)
 if [ "$SDK_UPDATED_VERSION" != "$VERSION_NUMBER" ]; then
-    echo -e "${RED}Error: Failed to update version in plugin-sdk/package.json${NC}"
+    echo -e "${RED}Error: Failed to update version in sdk/package.json${NC}"
     exit 1
 fi
-echo -e "${GREEN}✓ Updated plugin-sdk version to ${VERSION_NUMBER}${NC}"
+echo -e "${GREEN}✓ Updated sdk version to ${VERSION_NUMBER}${NC}"
 
-# Update version in rust-core/Cargo.toml (workspace version)
-echo -e "${YELLOW}Updating version in rust-core/Cargo.toml...${NC}"
+# Update version in Cargo.toml (workspace version)
+echo -e "${YELLOW}Updating version in Cargo.toml...${NC}"
 if [[ "$OSTYPE" == "darwin"* ]]; then
     # macOS
-    sed -i '' "s/^version = \".*\"/version = \"${VERSION_NUMBER}\"/" rust-core/Cargo.toml
+    sed -i '' "s/^version = \".*\"/version = \"${VERSION_NUMBER}\"/" Cargo.toml
 else
     # Linux
-    sed -i "s/^version = \".*\"/version = \"${VERSION_NUMBER}\"/" rust-core/Cargo.toml
+    sed -i "s/^version = \".*\"/version = \"${VERSION_NUMBER}\"/" Cargo.toml
 fi
 
 # Verify the Cargo.toml change
-CARGO_UPDATED_VERSION=$(grep '^version = ' rust-core/Cargo.toml | head -1 | cut -d'"' -f2)
+CARGO_UPDATED_VERSION=$(grep '^version = ' Cargo.toml | head -1 | cut -d'"' -f2)
 if [ "$CARGO_UPDATED_VERSION" != "$VERSION_NUMBER" ]; then
-    echo -e "${RED}Error: Failed to update version in rust-core/Cargo.toml${NC}"
+    echo -e "${RED}Error: Failed to update version in Cargo.toml${NC}"
     exit 1
 fi
-echo -e "${GREEN}✓ Updated rust-core version to ${VERSION_NUMBER}${NC}"
+echo -e "${GREEN}✓ Updated workspace version to ${VERSION_NUMBER}${NC}"
 
 # Commit version bump
 echo -e "${YELLOW}Committing version bump...${NC}"
-git add plugin-sdk/package.json rust-core/Cargo.toml
+git add sdk/package.json Cargo.toml
 git commit -m "Bump version to ${VERSION}"
 echo -e "${GREEN}✓ Committed version bump${NC}"
 
@@ -228,7 +228,7 @@ echo -e "${GREEN}✓ Release ${VERSION} created successfully!${NC}"
 echo ""
 echo "The GitHub Actions workflow will now:"
 echo "  1. Run Rust tests"
-echo "  2. Publish plugin-sdk to npm"
+echo "  2. Publish SDK to npm"
 echo ""
 echo "Monitor progress at: https://github.com/treeline-money/treeline/actions"
 echo "View release at: https://github.com/treeline-money/treeline/releases/tag/${VERSION}"
