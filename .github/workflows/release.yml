@@ -304,9 +304,15 @@ jobs:
 
           cat latest-staging.json
 
-          # Upload to both repos
-          gh release upload "$VERSION" latest-staging.json --clobber
+          # Upload to treeline-releases repo (using RELEASES_TOKEN)
           gh release upload "$VERSION" latest-staging.json --repo "$RELEASES_REPO" --clobber
+
+      - name: Upload latest-staging.json to treeline repo
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ inputs.version }}"
+          gh release upload "$VERSION" latest-staging.json --clobber
 
       - name: Publish SDK to npm
         env:
