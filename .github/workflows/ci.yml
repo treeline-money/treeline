@@ -303,6 +303,40 @@ jobs:
       - name: Build CLI
         run: cargo build --release --bin tl
 
+      - name: Verify CLI (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          set -e
+          echo "=== Verifying tl --version ==="
+          ./target/release/tl --version
+
+          echo "=== Verifying tl --help ==="
+          ./target/release/tl --help
+
+          echo "=== Verifying tl status ==="
+          # status may return non-zero if no data exists, but shouldn't crash
+          ./target/release/tl status || true
+
+          echo "=== CLI verification passed ==="
+
+      - name: Verify CLI (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Output "=== Verifying tl --version ==="
+          .\target\release\tl.exe --version
+
+          Write-Output "=== Verifying tl --help ==="
+          .\target\release\tl.exe --help
+
+          Write-Output "=== Verifying tl status ==="
+          # status may return non-zero if no data exists, but shouldn't crash
+          try { .\target\release\tl.exe status } catch { }
+
+          Write-Output "=== CLI verification passed ==="
+
       - name: Upload CLI artifact (Unix)
         if: runner.os != 'Windows'
         uses: actions/upload-artifact@v4
