@@ -317,10 +317,14 @@ jobs:
           npm publish *.tgz --access public
 
       - name: Post to Discord #staging-releases
-        if: ${{ secrets.DISCORD_WEBHOOK_STAGING != '' }}
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_STAGING }}
         run: |
+          if [ -z "$DISCORD_WEBHOOK" ]; then
+            echo "DISCORD_WEBHOOK_STAGING not set, skipping Discord notification"
+            exit 0
+          fi
+
           VERSION="${{ inputs.version }}"
           RELEASE_NOTES="${{ inputs.release_notes }}"
 
