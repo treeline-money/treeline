@@ -129,14 +129,14 @@ jobs:
             --notes "$RELEASE_NOTES" \
             || echo "Release may already exist"
 
-          # Upload desktop artifacts
-          for f in artifacts/desktop-macos-arm64/*.dmg; do
+          # Upload desktop artifacts (macOS has nested dmg/ and macos/ subdirs)
+          for f in artifacts/desktop-macos-arm64/dmg/*.dmg; do
             [ -f "$f" ] && gh release upload "$VERSION" "$f" --clobber || true
           done
-          for f in artifacts/desktop-macos-arm64/*.app.tar.gz; do
+          for f in artifacts/desktop-macos-arm64/macos/*.app.tar.gz; do
             [ -f "$f" ] && gh release upload "$VERSION" "$f" --clobber || true
           done
-          for f in artifacts/desktop-macos-arm64/*.sig; do
+          for f in artifacts/desktop-macos-arm64/macos/*.sig; do
             [ -f "$f" ] && gh release upload "$VERSION" "$f" --clobber || true
           done
           for f in artifacts/desktop-linux-x64/*.AppImage; do
@@ -193,14 +193,14 @@ jobs:
             fi
           fi
 
-          # Upload desktop artifacts
-          for f in artifacts/desktop-macos-arm64/*.dmg; do
+          # Upload desktop artifacts (macOS has nested dmg/ and macos/ subdirs)
+          for f in artifacts/desktop-macos-arm64/dmg/*.dmg; do
             [ -f "$f" ] && gh release upload "$VERSION" "$f" --repo "$RELEASES_REPO" --clobber || true
           done
-          for f in artifacts/desktop-macos-arm64/*.app.tar.gz; do
+          for f in artifacts/desktop-macos-arm64/macos/*.app.tar.gz; do
             [ -f "$f" ] && gh release upload "$VERSION" "$f" --repo "$RELEASES_REPO" --clobber || true
           done
-          for f in artifacts/desktop-macos-arm64/*.sig; do
+          for f in artifacts/desktop-macos-arm64/macos/*.sig; do
             [ -f "$f" ] && gh release upload "$VERSION" "$f" --repo "$RELEASES_REPO" --clobber || true
           done
           for f in artifacts/desktop-linux-x64/*.AppImage; do
@@ -239,7 +239,7 @@ jobs:
             [ -f "$f" ] && LINUX_SIG=$(cat "$f") && break
           done
 
-          for f in artifacts/desktop-macos-arm64/*.app.tar.gz.sig; do
+          for f in artifacts/desktop-macos-arm64/macos/*.app.tar.gz.sig; do
             [ -f "$f" ] && MACOS_SIG=$(cat "$f") && break
           done
 
@@ -256,7 +256,7 @@ jobs:
             [ -f "$f" ] && LINUX_FILE=$(basename "$f") && break
           done
 
-          for f in artifacts/desktop-macos-arm64/*.app.tar.gz; do
+          for f in artifacts/desktop-macos-arm64/macos/*.app.tar.gz; do
             [ -f "$f" ] && MACOS_FILE=$(basename "$f") && break
           done
 
@@ -319,6 +319,19 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "NPM_TOKEN not set, skipping npm publish"
+            exit 0
+          fi
+
+          VERSION="${{ inputs.version }}"
+
+          # Check if version already exists on npm
+          if npm view "@treeline-money/plugin-sdk@$VERSION" version 2>/dev/null; then
+            echo "Version $VERSION already published to npm, skipping"
+            exit 0
+          fi
+
           # Extract and publish the SDK tarball
           cd artifacts/sdk-npm-package
           npm publish *.tgz --access public
