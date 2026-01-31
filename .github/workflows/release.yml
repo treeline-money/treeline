@@ -109,8 +109,15 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add -A
           git commit -m "Release $VERSION" || echo "No changes to commit"
-          git tag "$VERSION"
-          git push origin main --tags
+
+          # Create tag if it doesn't exist
+          if git rev-parse "$VERSION" >/dev/null 2>&1; then
+            echo "Tag $VERSION already exists, skipping tag creation"
+          else
+            git tag "$VERSION"
+          fi
+
+          git push origin main --tags || echo "Push completed (may have no new changes)"
 
       - name: Create GitHub release (treeline repo)
         env:
@@ -152,16 +159,19 @@ jobs:
             [ -f "$f" ] && gh release upload "$VERSION" "$f" --clobber || true
           done
 
-          # Upload CLI binaries
-          for f in artifacts/cli-linux-x64/tl; do
-            [ -f "$f" ] && gh release upload "$VERSION" "$f#tl-linux-x64" --clobber || true
-          done
-          for f in artifacts/cli-macos-arm64/tl; do
-            [ -f "$f" ] && gh release upload "$VERSION" "$f#tl-macos-arm64" --clobber || true
-          done
-          for f in artifacts/cli-windows-x64/tl.exe; do
-            [ -f "$f" ] && gh release upload "$VERSION" "$f#tl-windows-x64.exe" --clobber || true
-          done
+          # Upload CLI binaries (copy with platform suffix for clarity)
+          if [ -f "artifacts/cli-linux-x64/tl" ]; then
+            cp artifacts/cli-linux-x64/tl tl-linux-x64
+            gh release upload "$VERSION" tl-linux-x64 --clobber || true
+          fi
+          if [ -f "artifacts/cli-macos-arm64/tl" ]; then
+            cp artifacts/cli-macos-arm64/tl tl-macos-arm64
+            gh release upload "$VERSION" tl-macos-arm64 --clobber || true
+          fi
+          if [ -f "artifacts/cli-windows-x64/tl.exe" ]; then
+            cp artifacts/cli-windows-x64/tl.exe tl-windows-x64.exe
+            gh release upload "$VERSION" tl-windows-x64.exe --clobber || true
+          fi
 
       - name: Create GitHub release (treeline-releases - dual publish)
         env:
