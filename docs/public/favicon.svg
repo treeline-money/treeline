@@ -1,0 +1,8 @@
+<svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Snow cap with V notch pointing up -->
+  <path d="M32 12 L20 35 L35 40 L44 35 Z" fill="#f5f5f4"/>
+  <!-- Trees -->
+  <path d="M20 35 L35 40 L44 35 L54 52 L10 52 Z" fill="#4a8a63"/>
+  <!-- Bold outline -->
+  <path d="M32 12 L54 52 L10 52 Z" stroke="#4a8a63" stroke-width="2.5" fill="none"/>
+</svg>

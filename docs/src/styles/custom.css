@@ -1,0 +1,131 @@
+/* Treeline Docs Custom Theme
+ * Based on Treeline desktop app themes
+ * Colors derived from dark.json and light.json
+ */
+
+/* Import Outfit font for brand text */
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&display=swap');
+
+/* ===== Dark Mode (Default) ===== */
+:root,
+::backdrop {
+  /* Accent colors - Treeline green */
+  --sl-color-accent-low: hsl(145, 30%, 22%);
+  --sl-color-accent: hsl(145, 35%, 54%);
+  --sl-color-accent-high: hsl(145, 40%, 75%);
+
+  /* Gray scale - warm grays from Treeline dark theme
+     In dark mode: white=light, black=dark, gray-1=lightest, gray-6=darkest */
+  --sl-color-white: #ffffff;
+  --sl-color-gray-1: #e7e7e6;
+  --sl-color-gray-2: #c5c5c4;
+  --sl-color-gray-3: #858584;
+  --sl-color-gray-4: #454544;
+  --sl-color-gray-5: #363635;
+  --sl-color-gray-6: #232322;
+  --sl-color-black: #1a1a19;
+
+  /* Hues for semantic colors */
+  --sl-hue-green: 145;
+  --sl-hue-orange: 41;
+  --sl-hue-red: 0;
+  --sl-hue-blue: 200;
+  --sl-hue-purple: 280;
+
+  /* Semantic colors matching Treeline */
+  --sl-color-green-low: hsl(145, 30%, 22%);
+  --sl-color-green: hsl(145, 35%, 54%);
+  --sl-color-green-high: hsl(145, 40%, 75%);
+
+  --sl-color-orange-low: hsl(41, 39%, 22%);
+  --sl-color-orange: hsl(41, 70%, 62%);
+  --sl-color-orange-high: hsl(41, 70%, 82%);
+
+  --sl-color-red-low: hsl(0, 39%, 22%);
+  --sl-color-red: hsl(0, 70%, 65%);
+  --sl-color-red-high: hsl(0, 70%, 82%);
+
+  --sl-color-blue-low: hsl(200, 39%, 22%);
+  --sl-color-blue: hsl(200, 50%, 55%);
+  --sl-color-blue-high: hsl(200, 50%, 78%);
+
+  --sl-color-purple-low: hsl(280, 39%, 22%);
+  --sl-color-purple: hsl(280, 50%, 60%);
+  --sl-color-purple-high: hsl(280, 50%, 82%);
+
+  /* Typography - matching Treeline fonts */
+  --sl-font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --sl-font-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', Consolas, monospace;
+}
+
+/* ===== Light Mode ===== */
+:root[data-theme='light'],
+[data-theme='light'] ::backdrop {
+  /* In light mode: white=dark (for text), black=light (for bg)
+     gray-1=darkest, gray-7=lightest */
+  --sl-color-white: #1c1c1c;
+  --sl-color-gray-1: #1c1c1c;
+  --sl-color-gray-2: #525252;
+  --sl-color-gray-3: #787878;
+  --sl-color-gray-4: #a0a09f;
+  --sl-color-gray-5: #c5c5c4;
+  --sl-color-gray-6: #e7e7e6;
+  --sl-color-gray-7: #f5f5f4;
+  --sl-color-black: #ffffff;
+
+  /* Accent colors - darker green for light mode
+     In light mode: low=light bg, high=dark text */
+  --sl-color-accent-high: hsl(145, 40%, 28%);
+  --sl-color-accent: hsl(145, 40%, 42%);
+  --sl-color-accent-low: hsl(145, 50%, 88%);
+
+  /* Semantic colors for light mode (low=light bg, high=dark text) */
+  --sl-color-green-high: hsl(145, 50%, 25%);
+  --sl-color-green: hsl(145, 50%, 40%);
+  --sl-color-green-low: hsl(145, 50%, 88%);
+
+  --sl-color-orange-high: hsl(41, 80%, 25%);
+  --sl-color-orange: hsl(41, 80%, 45%);
+  --sl-color-orange-low: hsl(41, 80%, 88%);
+
+  --sl-color-red-high: hsl(0, 60%, 32%);
+  --sl-color-red: hsl(0, 65%, 50%);
+  --sl-color-red-low: hsl(0, 70%, 90%);
+
+  --sl-color-blue-high: hsl(200, 60%, 28%);
+  --sl-color-blue: hsl(200, 70%, 45%);
+  --sl-color-blue-low: hsl(200, 70%, 90%);
+
+  --sl-color-purple-high: hsl(280, 60%, 30%);
+  --sl-color-purple: hsl(280, 60%, 50%);
+  --sl-color-purple-low: hsl(280, 60%, 90%);
+}
+
+/* ===== Component Customizations ===== */
+
+/* Site title - match landing page style */
+.site-title {
+  font-family: 'Outfit', ui-sans-serif, system-ui, sans-serif !important;
+  font-weight: 600 !important;
+  color: var(--sl-color-white) !important;
+  gap: 0.5rem !important;
+}
+
+.site-title:hover {
+  opacity: 0.8;
+}
+
+/* Site header styling */
+header.header {
+  backdrop-filter: blur(8px);
+}
+
+/* Focus states - match Treeline's green focus ring */
+:focus-visible {
+  outline-color: var(--sl-color-accent);
+}
+
+/* Selection styling */
+::selection {
+  background-color: var(--sl-color-accent-low);
+}
