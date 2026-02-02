@@ -15,6 +15,9 @@ export default defineConfig({
 				{ icon: 'discord', label: 'Discord', href: 'https://discord.gg/EcNvBnSft5' },
 			],
 			customCss: ['./src/styles/custom.css'],
+			components: {
+				Head: './src/components/Head.astro',
+			},
 			sidebar: [
 				{ label: 'Welcome', slug: 'index' },
 				{
