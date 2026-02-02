@@ -1,0 +1,99 @@
+---
+title: CLI
+description: The Treeline command-line interface for power users and automation.
+---
+
+The Treeline CLI (`tl`) provides terminal access to your financial data.
+
+## Installation
+
+The CLI is bundled with the desktop app. After installing Treeline, run `tl` from your terminal.
+
+## Available Commands
+
+- `tl status` - Show account status and summary
+- `tl sync` - Sync accounts and transactions from integrations
+- `tl query` - Execute SQL query against the database
+- `tl tag` - Apply tags to transactions
+- `tl backup` - Manage backups
+- `tl compact` - Compact the database
+- `tl doctor` - Run database health checks
+- `tl encrypt` - Encrypt the database
+- `tl decrypt` - Decrypt the database
+- `tl demo` - Manage demo mode
+- `tl setup` - Set up integrations (SimpleFIN, Lunchflow)
+- `tl plugin` - Manage plugins
+- `tl logs` - View and manage application logs
+- `tl help` - Print help for any command
+
+```bash
+tl --help          # Show all commands
+tl <command> -h    # Help for a specific command
+```
+
+Most commands support `--json` for scripting.
+
+## Workflows
+
+### Automated Sync
+
+Sync every morning at 8am:
+
+```bash
+crontab -e
+# Add:
+0 8 * * * /usr/local/bin/tl sync >> ~/.treeline/sync.log 2>&1
+```
+
+With macOS notification:
+
+```bash
+#!/bin/bash
+result=$(tl sync --json 2>&1)
+new_count=$(echo "$result" | jq -r '.results[0].transaction_stats.new // 0')
+if [ "$new_count" -gt 0 ]; then
+  osascript -e "display notification \"$new_count new transactions\" with title \"Treeline\""
+fi
+```
+
+### SQL Queries
+
+Export to CSV:
+
+```bash
+tl query --format csv "SELECT * FROM transactions WHERE transaction_date >= '2026-01-01'" > jan.csv
+```
+
+Monthly summary:
+
+```bash
+tl query "SELECT strftime('%Y-%m', transaction_date) as month,
+          SUM(CASE WHEN amount < 0 THEN amount ELSE 0 END) as spent,
+          SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as income
+          FROM transactions GROUP BY month ORDER BY month DESC LIMIT 6"
+```
+
+### Bulk Tagging
+
+Tag all coffee purchases:
+
+```bash
+ids=$(tl query "SELECT transaction_id FROM transactions WHERE description ILIKE '%coffee%'" --format csv | tail -n +2 | tr '\n' ',')
+tl tag coffee --ids "$ids"
+```
+
+### Plugin Development
+
+```bash
+tl plugin new my-plugin
+cd my-plugin && npm install
+npm run build
+tl plugin install .
+# Restart the app to load the plugin
+```
+
+Install from GitHub:
+
+```bash
+tl plugin install https://github.com/treeline-money/plugin-budget
+```

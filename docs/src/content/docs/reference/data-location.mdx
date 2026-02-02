@@ -1,0 +1,172 @@
+---
+title: Data Location
+description: Where Treeline stores your data and how to manage it.
+---
+
+Treeline follows the local-first philosophy. All your financial data stays on your computer in a single directory. No cloud accounts, no subscriptions, no data harvesting.
+
+## The Treeline Directory
+
+All Treeline data lives in `~/.treeline/`:
+
+```
+~/.treeline/
+├── treeline.duckdb      # Main database (your financial data)
+├── treeline.duckdb.wal  # Write-ahead log (temporary)
+├── settings.json        # App and plugin settings
+├── imports/             # Watch folder for CSV imports
+├── backups/             # Database backups
+├── logs.duckdb          # Troubleshooting logs
+├── plugins/             # Installed plugins
+└── encryption.json      # Encryption metadata (when enabled)
+```
+
+## Main Database
+
+**Location:** `~/.treeline/treeline.duckdb`
+
+Your transactions, accounts, and balance snapshots all live in this single DuckDB file. This makes backups simple: copy the file and you have everything.
+
+The `.wal` (write-ahead log) file is temporary and handled automatically by DuckDB. It's merged into the main file during normal operation.
+
+**Demo mode:** When demo mode is enabled (`tl demo on`), Treeline uses a separate database at `~/.treeline/demo.duckdb`. Your real data remains untouched.
+
+## Imports Folder
+
+**Location:** `~/.treeline/imports/`
+
+Drop CSV files here for automatic import. Treeline watches this folder and processes new files when the desktop app is running.
+
+After successful import, files are moved to `imports/imported/`.
+
+```
+imports/
+├── chase_transactions.csv     # Waiting to be processed
+└── imported/
+    └── chase_transactions.csv # Successfully imported
+```
+
+## Backups
+
+**Location:** `~/.treeline/backups/`
+
+Treeline creates backups when requested via CLI or before potentially destructive operations.
+
+```bash
+# Create a backup
+tl backup create
+
+# List available backups
+tl backup list
+
+# Restore from a backup (use the backup name from `tl backup list`)
+tl backup restore treeline-20260115143022-123456.zip
+```
+
+Backup files are ZIP archives named with timestamps: `treeline-{timestamp}-{micros}.zip`
+
+**Recommendation:** Periodically copy backups to external storage or a cloud backup service. Backup archives contain the DuckDB database file.
+
+## Logs Database
+
+**Location:** `~/.treeline/logs.duckdb`
+
+Treeline maintains structured logs for troubleshooting. These logs stay on your computer and are never sent anywhere automatically. If you need help debugging an issue, you can choose to share relevant log entries, but collection is never automatic.
+
+**What gets logged:**
+- Event names (sync started, import completed, etc.)
+- Integration names (SimpleFIN, Lunch Flow)
+- Sanitized error messages
+- Timestamps and durations
+
+**What never gets logged:**
+- Transaction descriptions or amounts
+- Account names or numbers
+- File paths containing usernames
+- Any personally identifiable information
+
+View logs for troubleshooting:
+
+```bash
+# Show recent log entries
+tl logs list
+
+# Show only errors
+tl logs list --errors
+
+# Show log statistics and database path
+tl logs stats
+```
+
+## Plugins Directory
+
+**Location:** `~/.treeline/plugins/`
+
+Each installed plugin lives in its own subdirectory:
+
+```
+plugins/
+├── budget/
+│   ├── manifest.json
+│   └── dist/
+│       └── index.js
+├── goals/
+│   ├── manifest.json
+│   └── dist/
+│       └── index.js
+└── subscriptions/
+    ├── manifest.json
+    └── dist/
+        └── index.js
+```
+
+Install plugins with `tl plugin install` or via Settings > Plugins in the desktop app.
+
+## Configuration
+
+**Location:** `~/.treeline/settings.json`
+
+App settings, plugin configurations, and import profiles are stored in `settings.json`. This file is automatically created when you first configure the app.
+
+**Encryption:** When database encryption is enabled, encryption metadata is stored in `~/.treeline/encryption.json`. The main database file is encrypted at rest. Use `tl encrypt` and `tl decrypt` to manage encryption.
+
+## Database Maintenance
+
+**Compact the database:**
+
+```bash
+tl compact
+```
+
+Removes deleted data and optimizes storage. Safe to run periodically.
+
+**Run health checks:**
+
+```bash
+tl doctor
+```
+
+Checks for common issues like orphaned records or corrupted indexes.
+
+**Check status:**
+
+```bash
+tl status
+```
+
+Shows account count, transaction count, and date range of your data.
+
+## External Access
+
+:::caution[Close Treeline First]
+Do not access the database directly while Treeline (desktop app or CLI) is running. While the CLI and desktop app have conflict mechanisms between themselves, direct database access from external tools can cause data corruption or unexpected behavior. Always quit the app completely before connecting with external tools.
+:::
+
+If you need to query your data directly, first close Treeline, then connect with any DuckDB-compatible tool:
+
+```python
+import duckdb
+conn = duckdb.connect('~/.treeline/treeline.duckdb', read_only=True)
+```
+
+See [Database Schema](/reference/database-schema) for table documentation.

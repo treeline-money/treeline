@@ -1,0 +1,63 @@
+---
+title: CSV Import
+description: Import transactions from any bank's CSV export.
+---
+
+CSV import works with any bank. Download a statement, import it, and Treeline handles the rest.
+
+## Quick Start
+
+1. Download a CSV from your bank's website
+2. In Treeline, select the account to import into
+3. Click **Import** and select your file
+4. Map columns if needed (usually auto-detected)
+5. Preview and confirm
+
+Treeline deduplicates automatically, so you can safely re-import overlapping date ranges.
+
+## Column Mapping
+
+Treeline auto-detects common column names. If detection fails, map manually:
+
+**Required:**
+- **Date** - Transaction date
+- **Amount** - Single column with positive/negative values, OR separate Debit/Credit columns
+
+**Optional:**
+- **Description** - Transaction details (may be called Memo, Payee, or Details)
+- **Balance** - Running balance (creates balance snapshots)
+
+## Sign Handling
+
+Banks export amounts differently. Two options fix common issues:
+
+**Flip signs** - Enable when charges appear as positive (common with credit cards like Amex, Discover). Reverses all signs.
+
+**Negate debits** - Enable when using separate Debit/Credit columns with unsigned values (common with Bank of America, Capital One).
+
+## Number Formats
+
+Select your region's format if amounts look wrong:
+
+- **US**: `1,234.56` (comma thousands, period decimal)
+- **EU**: `1.234,56` (period thousands, comma decimal)
+
+## Import Profiles
+
+Save your settings for repeat imports:
+
+1. Complete a successful import
+2. Enter a profile name (e.g., `chase-checking`)
+3. Save
+
+Next time, select the profile to auto-apply column mappings and settings.
+
+## Troubleshooting
+
+**Wrong sign direction** - Try "Flip signs"
+
+**Amounts look wrong** - Check number format (US vs EU)
+
+**Description is blank** - Map a different column (Memo, Payee, Details)
+
+**Duplicates appearing** - Check if your CSV has actual duplicate rows, or if amounts differ slightly due to rounding

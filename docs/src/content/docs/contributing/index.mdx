@@ -1,0 +1,104 @@
+---
+title: Contributing
+description: How to contribute to Treeline.
+---
+
+Treeline is open source and we'd love your help.
+
+## Build a Plugin
+
+The best way to contribute is to **build a plugin**. Plugins extend Treeline without touching core code - if you have an idea for something Treeline doesn't do yet, a plugin is the way to make it happen.
+
+See [Creating Plugins](/plugins/creating-plugins) to get started. When your plugin is ready, open a PR to add it to `plugins.json` and we'll add it to the community catalog.
+
+## Other Ways to Help
+
+- **Report bugs** - [Open an issue](https://github.com/treeline-money/treeline/issues) when something breaks
+- **Fix bugs** - Browse issues and submit a PR
+- **Improve docs** - Typos, unclear explanations, missing examples
+- **Answer questions** - Help others in [Discord](https://discord.gg/EcNvBnSft5)
+
+## Development Setup
+
+Want to work on the desktop app, CLI, or core library? Here's how to get running.
+
+### Prerequisites
+
+**Rust** - Install via [rustup](https://rustup.rs/):
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+**Node.js 18+** - We recommend [fnm](https://github.com/Schniz/fnm):
+
+```bash
+fnm install 20
+fnm use 20
+```
+
+**Platform dependencies:**
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+<Tabs>
+  <TabItem label="macOS">
+    ```bash
+    xcode-select --install
+    ```
+  </TabItem>
+  <TabItem label="Linux">
+    ```bash
+    sudo apt update
+    sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file libssl-dev libayatana-appindicator3-dev librsvg2-dev
+    ```
+  </TabItem>
+  <TabItem label="Windows">
+    Install [Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with the "Desktop development with C++" workload.
+  </TabItem>
+</Tabs>
+
+### Clone and Run
+
+```bash
+git clone https://github.com/treeline-money/treeline.git
+cd treeline/desktop
+npm install
+npm run tauri:dev
+```
+
+That's it. The app starts with hot reloading - frontend changes reload automatically, backend changes need a restart.
+
+To build the CLI instead:
+
+```bash
+cd treeline
+cargo build --release
+./target/release/tl --version
+```
+
+### Tips
+
+**Isolate dev data** - Keep your real data safe by using a separate directory:
+
+```bash
+export TREELINE_DIR=~/.treeline-dev
+```
+
+**Demo mode** - Test with sample data:
+
+```bash
+./target/release/tl demo on
+```
+
+**Run tests:**
+
+```bash
+cargo test
+```
+
+## Questions?
+
+The best way to get help is to join [Discord](https://discord.gg/EcNvBnSft5) and post in #feedback. For bugs, you can also [open an issue on GitHub](https://github.com/treeline-money/treeline/issues).
+
+Thanks for being part of Treeline.

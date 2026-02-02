@@ -6,6 +6,10 @@ Your financial data stays on your computer. No cloud accounts, no subscriptions,
 
 > **Early Stage Software**: Treeline is in active development. Back up your data and expect breaking changes.
 
+## Documentation
+
+Full documentation is available at **[treeline.money/docs](https://treeline.money/docs)**.
+
 ## What's Here
 
 | Directory | Description |
@@ -19,7 +23,24 @@ Your financial data stays on your computer. No cloud accounts, no subscriptions,
 
 ## Installing the CLI
 
-Build from source (requires [Rust](https://rustup.rs/)):
+**macOS / Linux:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/treeline-money/treeline/main/scripts/install.sh | sh
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/treeline-money/treeline/main/scripts/install.ps1 | iex
+```
+
+This installs the `tl` binary to `/usr/local/bin` (macOS/Linux) or `~/.treeline/bin` (Windows).
+
+<details>
+<summary>Build from source</summary>
+
+Requires [Rust](https://rustup.rs/):
 
 ```bash
 git clone https://github.com/treeline-money/treeline.git
@@ -29,6 +50,7 @@ cargo build --release
 # Add to your PATH or create an alias
 alias tl="$(pwd)/target/release/tl"
 ```
+</details>
 
 Verify installation:
 
@@ -103,7 +125,7 @@ tl demo off
 | `tl plugin uninstall <id>` | Uninstall a plugin |
 | `tl plugin new <name>` | Create a new plugin from template |
 
-Run `tl <command> --help` for detailed options.
+Run `tl <command> --help` for detailed options. See the [CLI documentation](https://treeline.money/docs/cli) for more details.
 
 ---
 
@@ -478,6 +500,8 @@ Once your plugin has a GitHub release, open a PR to [treeline](https://github.co
 ```
 
 Users can then install your plugin from Settings > Plugins in the app.
+
+> **Full SDK Reference**: See the complete [Plugin SDK documentation](https://treeline.money/docs/plugins) for detailed API reference, examples, and best practices.
 
 ---
 

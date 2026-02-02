@@ -1,0 +1,84 @@
+---
+title: Plugins
+description: Extend Treeline with custom views, commands, and functionality.
+---
+
+Plugins are how you make Treeline your own. They add new views, commands, and functionality to the desktop app. Everything in Treeline is built on the same plugin system you have access to.
+
+## What Plugins Can Do
+
+Plugins have access to a powerful SDK that lets you:
+
+- **Query your data** - Read transactions, accounts, and balance history with SQL
+- **Create custom views** - Build Svelte components that appear in the app
+- **Store plugin data** - Create tables in your own schema for plugin-specific storage
+- **Show notifications** - Toast messages for success, error, warning, and info states
+- **React to changes** - Subscribe to data refresh events when syncs or imports complete
+- **Navigate the app** - Open other views, including built-in and plugin views
+- **Persist settings** - Store user preferences that survive app restarts
+
+## Available Plugins
+
+In addition to the built-in plugins (Accounts, Transactions, Query), Treeline has a growing collection of plugins:
+
+| Plugin | Description |
+|--------|-------------|
+| **Budget** | Track spending against tag-based budget categories with rollovers |
+| **Savings Goals** | Set savings targets and track your progress toward each goal |
+| **Cash Flow** | Plan ahead by scheduling expected income and expenses |
+| **Subscriptions** | Automatically detects recurring charges from your transaction history |
+| **Emergency Fund** | See how long your emergency fund would last based on actual spending |
+
+Browse and install plugins from **Settings > Plugins** in the desktop app, or visit [treeline.money/plugins](https://treeline.money/plugins) for the full catalog.
+
+### CLI Installation
+
+You can also install plugins from the command line:
+
+```bash
+# Install from GitHub
+tl plugin install https://github.com/treeline-money/plugin-budget
+
+# Install from a local directory (for development)
+tl plugin install /path/to/my-plugin
+```
+
+After installing via CLI, restart the desktop app to load the new plugin.
+
+## Plugin Architecture
+
+Plugins are self-contained JavaScript bundles built with Svelte 5. Each plugin:
+
+- Declares its metadata and permissions in `manifest.json`
+- Exports a `plugin` object with `activate()` and optional `deactivate()` functions
+- Registers views, sidebar items, and commands during activation
+- Receives an SDK instance when views are mounted
+
+```
+my-plugin/
+├── manifest.json      # Plugin identity and permissions
+├── src/
+│   ├── index.ts       # Entry point - registers views and commands
+│   └── MyView.svelte  # Svelte 5 component
+└── dist/
+    └── index.js       # Built bundle (generated)
+```
+
+## Data Access
+
+Plugins operate in a sandboxed environment:
+
+- **Read access** - Declare which core tables you need in `permissions.read`
+- **Write access** - Plugins have full read/write to their own schema (`plugin_<id>.*`). Plugins can also write to other tables if explicitly listed in `permissions.write`
+
+The SDK handles permission validation automatically. If you try to access a table you haven't declared, the query will fail.
+
+## Building Plugins
+
+Ready to build something? Here's the path:
+
+1. **[Creating Plugins](/plugins/creating-plugins/)** - Scaffold a new plugin with `tl plugin new`
+2. **[SDK Reference](/plugins/sdk-reference/)** - Full API documentation
+3. **[Publishing](/plugins/publishing/)** - Share your plugin with others
+
+The plugin system is designed for tinkering. Start with the template, experiment with the SDK, and build the features you want to see.

@@ -2,7 +2,7 @@
 # Treeline CLI Installer
 # Usage: curl -fsSL https://treeline.money/install.sh | sh
 #
-# Installs the Treeline CLI to ~/.treeline/bin/tl
+# Installs the Treeline CLI to /usr/local/bin/tl
 
 set -e
 

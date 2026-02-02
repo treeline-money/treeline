@@ -46,7 +46,7 @@
     try {
       // Use sdk.query() to fetch data
       const accounts = await sdk.query<{ count: number }>(
-        "SELECT COUNT(*) as count FROM sys_accounts"
+        "SELECT COUNT(*) as count FROM accounts"
       );
       accountCount = accounts[0]?.count ?? 0;
 

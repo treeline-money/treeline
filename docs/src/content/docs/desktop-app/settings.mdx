@@ -1,0 +1,50 @@
+---
+title: Settings
+description: Configure integrations, encryption, and preferences.
+---
+
+Open Settings with `Cmd+,` (Mac) or `Ctrl+,` (Windows/Linux).
+
+## Integrations
+
+### SimpleFIN
+
+SimpleFIN provides read-only access to US and Canadian bank accounts.
+
+1. Sign up at [SimpleFIN](https://beta-bridge.simplefin.org/)
+2. Create a setup token
+3. Paste the token in Treeline
+4. Select which accounts to sync
+
+**Balances only** mode syncs just balance updates, not individual transactions. Useful for investment accounts where you don't need transaction detail.
+
+### Lunch Flow
+
+Lunch Flow provides bank sync for accounts in the US, Canada, Brazil, EU, UK, and Asia.
+
+1. Get an API key from [Lunch Flow](https://www.lunchflow.app/?atp=treeline)
+2. Enter your API key in Treeline
+3. Connect banks through the Lunch Flow portal
+4. Select which accounts to sync
+
+## Database Encryption
+
+Encrypt your database to protect financial data at rest. Uses AES-256-GCM encryption with Argon2id key derivation.
+
+After enabling encryption, you'll need to enter your password each time you open Treeline.
+
+**If you forget your password, your data cannot be recovered.** Keep a backup.
+
+## Import Profiles
+
+Import profiles save CSV column mappings for reuse. When you import from the same source multiple times, Treeline remembers how to parse the file. Profiles can be linked to specific accounts.
+
+## Backup & Restore
+
+Backups are saved to `~/.treeline/backups/`. You can create, restore, or delete backups from Settings > Storage.
+
+**Compact Database** reclaims space by removing deleted data. Run occasionally if your database seems larger than expected.
+
+## Plugins
+
+Toggle built-in views on/off or browse the plugin registry for additional features like budgets, savings goals, and cash flow forecasting.

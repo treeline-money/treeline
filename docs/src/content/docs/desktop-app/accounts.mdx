@@ -1,0 +1,34 @@
+---
+title: Accounts
+description: Track balances and net worth.
+---
+
+The Accounts view displays all accounts grouped by Assets and Liabilities. Select an account to see its balance history chart and snapshots.
+
+## Assets vs Liabilities
+
+**Assets** (checking, savings, investments) have positive balances. **Liabilities** (credit cards, loans) are stored as negative values internally but displayed as positive for readability. Your **net worth** is assets minus liabilities.
+
+For liability accounts, the chart inverts trend colors: decreasing balances are good (paying down debt).
+
+## Balance Snapshots
+
+Snapshots record your balance at a point in time. They're created:
+- Automatically during bank sync
+- Manually via **+ Add Balance** (`s`)
+- When recalculating from transactions
+
+## Recalculating Balances
+
+If your balance history seems off, you can recompute it from transactions:
+
+1. Select the account and press `r`
+2. Enter a known starting balance and date
+3. Treeline computes daily balances forward from that point
+
+This replaces existing snapshots.
+
+## Deleting an Account
+
+Deleting an account (`d`) also deletes all its transactions and snapshots. This cannot be undone.
+

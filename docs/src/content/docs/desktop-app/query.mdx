@@ -1,0 +1,58 @@
+---
+title: Query
+description: Explore your data with SQL.
+---
+
+The Query view gives you direct SQL access to your financial data via DuckDB.
+
+Press `Cmd+Enter` to run a query. Click **Schema** to see available tables and columns.
+
+## Example Queries
+
+### Spending by Tag
+```sql
+SELECT tag, SUM(amount) as total
+FROM (
+  SELECT unnest(tags) as tag, amount
+  FROM transactions
+  WHERE amount < 0
+)
+GROUP BY tag
+ORDER BY total
+```
+
+### Monthly Spending
+```sql
+SELECT
+  strftime('%Y-%m', transaction_date) as month,
+  SUM(amount) as total
+FROM transactions
+WHERE amount < 0
+GROUP BY month
+ORDER BY month DESC
+LIMIT 12
+```
+
+### Untagged Transactions
+```sql
+SELECT transaction_date, description, amount
+FROM transactions
+WHERE CAST(tags AS VARCHAR) = '[]'
+ORDER BY transaction_date DESC
+```
+
+## Schema Reference
+
+For the complete database schema including all tables and columns, see [Database Schema](/reference/database-schema/).
+
+## Tips
+
+- Use `unnest(tags)` to expand tag arrays for grouping
+- Use `ILIKE '%term%'` for case-insensitive text matching
+- Date filtering: `transaction_date >= CURRENT_DATE - INTERVAL '30 days'`
+
+## Write Mode
+
+By default, only `SELECT` queries are allowed. Enable **Write mode** to run `INSERT`, `UPDATE`, or `DELETE` queries. Treeline will offer to create a backup first.
+
+Write queries cannot be undone.

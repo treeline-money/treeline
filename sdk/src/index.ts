@@ -48,7 +48,7 @@ export interface PluginPermissions {
    * Tables this plugin can SELECT from (outside its own schema).
    * Use "*" for unrestricted read access (e.g., query plugin).
    *
-   * @example ["transactions", "accounts", "sys_balance_snapshots"]
+   * @example ["transactions", "accounts", "balance_snapshots"]
    */
   read?: string[];
 

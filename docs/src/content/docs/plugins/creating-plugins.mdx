@@ -1,0 +1,425 @@
+---
+title: Creating Plugins
+description: Build your own Treeline plugin with TypeScript and Svelte.
+---
+
+Plugins are built with TypeScript and Svelte 5. The CLI scaffolds everything you need to get started.
+
+## Prerequisites
+
+- Node.js 18 or later
+- npm
+- The `tl` CLI ([installation guide](/getting-started/installation/))
+
+## Create a New Plugin
+
+```bash
+tl plugin new my-plugin
+cd my-plugin
+npm install
+```
+
+This creates a ready-to-build plugin with:
+
+- `manifest.json` - Plugin metadata
+- `src/index.ts` - Entry point
+- `src/HelloWorldView.svelte` - Example Svelte component
+- `vite.config.ts` - Build configuration
+- `scripts/release.sh` - Release automation
+- `.github/workflows/release.yml` - GitHub Actions workflow
+
+The plugin name is already configured in `manifest.json`. Rename `HelloWorldView.svelte` to match your plugin.
+
+## Project Structure
+
+```
+my-plugin/
+├── manifest.json          # Plugin identity and permissions
+├── package.json           # Dependencies (includes plugin-sdk)
+├── src/
+│   ├── index.ts           # Entry point - registers views, commands
+│   └── MyPluginView.svelte # Svelte 5 component
+├── dist/
+│   └── index.js           # Built bundle (generated)
+├── scripts/
+│   └── release.sh         # Tag and push releases
+├── .github/
+│   └── workflows/
+│       └── release.yml    # GitHub Actions build
+├── vite.config.ts
+└── tsconfig.json
+```
+
+## manifest.json
+
+The manifest defines your plugin's identity and permissions:
+
+```json
+{
+  "id": "my-plugin",
+  "name": "My Plugin",
+  "version": "0.1.0",
+  "description": "What your plugin does",
+  "author": "Your Name",
+  "main": "index.js",
+  "permissions": {
+    "read": ["transactions", "accounts"],
+    "schemaName": "plugin_my_plugin"
+  }
+}
+```
+
+### Fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `id` | Yes | Unique identifier (lowercase, hyphens allowed) |
+| `name` | Yes | Display name shown in the UI |
+| `version` | Yes | Semantic version (e.g., `0.1.0`) |
+| `description` | Yes | Short description of what the plugin does |
+| `author` | Yes | Your name or organization |
+| `main` | Yes | Entry point file (always `index.js`) |
+| `permissions` | No | Data access permissions |
+
+### Permissions
+
+- **`read`** - Core tables your plugin can SELECT from (e.g., `transactions`, `accounts`)
+- **`write`** - Tables outside your schema that your plugin can write to (optional)
+- **`schemaName`** - Your plugin's database schema (defaults to `plugin_<id>`)
+
+Your plugin automatically has full read/write access to its own schema. You don't need to declare write permissions for tables in your schema. If your plugin needs to write to tables outside its schema, list them explicitly in `permissions.write`.
+
+## Entry Point (index.ts)
+
+The entry point exports a `plugin` object that implements the `Plugin` interface:
+
+```typescript
+import type { Plugin, PluginContext, PluginSDK, PluginMigration } from "@treeline-money/plugin-sdk";
+import MyPluginView from "./MyPluginView.svelte";
+import { mount, unmount } from "svelte";
+
+// Database migrations (optional)
+const migrations: PluginMigration[] = [
+  {
+    version: 1,
+    name: "create_items_table",
+    up: `
+      CREATE TABLE IF NOT EXISTS plugin_my_plugin.items (
+        id VARCHAR PRIMARY KEY,
+        name VARCHAR NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `,
+  },
+];
+
+export const plugin: Plugin = {
+  // Must match manifest.json
+  manifest: {
+    id: "my-plugin",
+    name: "My Plugin",
+    version: "0.1.0",
+    description: "What your plugin does",
+    author: "Your Name",
+    permissions: {
+      read: ["transactions", "accounts"],
+      schemaName: "plugin_my_plugin",
+    },
+  },
+
+  // Database migrations
+  migrations,
+
+  // Called when the plugin loads
+  activate(context: PluginContext) {
+    // Register a view
+    context.registerView({
+      id: "my-plugin-view",
+      name: "My Plugin",
+      icon: "target",
+      mount: (target: HTMLElement, props: { sdk: PluginSDK }) => {
+        const instance = mount(MyPluginView, { target, props });
+        return () => unmount(instance);
+      },
+    });
+
+    // Add to sidebar
+    context.registerSidebarItem({
+      sectionId: "main",
+      id: "my-plugin",
+      label: "My Plugin",
+      icon: "target",
+      viewId: "my-plugin-view",
+    });
+
+    // Register a command (appears in command palette)
+    context.registerCommand({
+      id: "my-plugin.do-something",
+      name: "Do Something",
+      execute: () => {
+        // Your command logic
+      },
+    });
+  },
+
+  // Called when the plugin unloads (optional)
+  deactivate() {
+    // Cleanup if needed
+  },
+};
+```
+
+### Plugin Lifecycle
+
+1. **Load** - App reads `manifest.json` and loads `dist/index.js`
+2. **Migrations** - Any pending migrations run in order
+3. **Activate** - `plugin.activate(context)` is called
+4. **Mount** - When user opens a view, `mount()` is called with SDK
+5. **Deactivate** - `plugin.deactivate()` is called when app closes or plugin is disabled
+
+## Svelte Views
+
+Views are Svelte 5 components that receive the SDK via props:
+
+```svelte
+<script lang="ts">
+  import { onMount, onDestroy } from "svelte";
+  import type { PluginSDK } from "@treeline-money/plugin-sdk";
+
+  interface Props {
+    sdk: PluginSDK;
+  }
+  let { sdk }: Props = $props();
+
+  // State using Svelte 5 runes
+  let items = $state<any[]>([]);
+  let isLoading = $state(true);
+
+  // Cleanup function for subscriptions
+  let unsubscribe: (() => void) | null = null;
+
+  onMount(async () => {
+    // Subscribe to data refresh events
+    unsubscribe = sdk.onDataRefresh(() => loadData());
+
+    // Load initial data
+    await loadData();
+  });
+
+  onDestroy(() => {
+    if (unsubscribe) unsubscribe();
+  });
+
+  async function loadData() {
+    isLoading = true;
+    try {
+      items = await sdk.query(
+        "SELECT * FROM transactions ORDER BY posted_date DESC LIMIT 10"
+      );
+    } catch (e) {
+      sdk.toast.error("Failed to load", e instanceof Error ? e.message : String(e));
+    } finally {
+      isLoading = false;
+    }
+  }
+</script>
+
+<div class="container">
+  <h1>My Plugin</h1>
+
+  {#if isLoading}
+    <p>Loading...</p>
+  {:else}
+    <ul>
+      {#each items as item}
+        <li>{item.posted_date}: {sdk.currency.format(item.amount)}</li>
+      {/each}
+    </ul>
+  {/if}
+</div>
+
+<style>
+  .container {
+    padding: 24px;
+  }
+</style>
+```
+
+### Svelte 5 Runes
+
+Treeline plugins use Svelte 5 with runes for reactivity:
+
+- `$state()` - Reactive state
+- `$derived()` - Computed values
+- `$props()` - Component props
+- `$effect()` - Side effects
+
+See the [Svelte 5 documentation](https://svelte.dev/docs) for details.
+
+### Theme Support
+
+React to theme changes to keep your UI consistent:
+
+```svelte
+<script lang="ts">
+  let theme = $state<"light" | "dark">("light");
+
+  onMount(() => {
+    theme = sdk.theme.current();
+    sdk.theme.subscribe((newTheme) => {
+      theme = newTheme as "light" | "dark";
+    });
+  });
+</script>
+
+<div class:dark={theme === "dark"}>
+  <!-- Your content -->
+</div>
+
+<style>
+  div {
+    background: #ffffff;
+    color: #1a1a1a;
+  }
+  div.dark {
+    background: #1a1a1a;
+    color: #e5e5e5;
+  }
+</style>
+```
+
+## Database Migrations
+
+Migrations create and modify your plugin's database tables. They run automatically in order when the plugin loads.
+
+```typescript
+const migrations: PluginMigration[] = [
+  {
+    version: 1,
+    name: "initial_schema",
+    up: `
+      CREATE TABLE plugin_my_plugin.items (
+        id VARCHAR PRIMARY KEY,
+        name VARCHAR NOT NULL,
+        amount DOUBLE
+      )
+    `,
+  },
+  {
+    version: 2,
+    name: "add_created_at",
+    up: `
+      ALTER TABLE plugin_my_plugin.items
+      ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    `,
+  },
+  {
+    version: 3,
+    name: "add_index",
+    up: `
+      CREATE INDEX idx_items_created
+      ON plugin_my_plugin.items (created_at)
+    `,
+  },
+];
+```
+
+### Migration Rules
+
+- **Version numbers must be unique** and should increment
+- **Migrations are one-way** - there's no down migration
+- **Migrations run once** - Treeline tracks which versions have run in `plugin_<id>.schema_migrations`
+- **Use your schema name** - All tables should be in `plugin_<id>.*`
+
+### Available Core Tables
+
+Plugins can read these tables (when declared in `permissions.read`):
+
+| Table | Description |
+|-------|-------------|
+| `transactions` | Enriched view with transaction details, account info, and tags |
+| `accounts` | Account information with current balances |
+| `balance_snapshots` | Historical balance data points |
+
+These are views that provide convenient access to the underlying data. Always use these view names (not the underlying `sys_*` tables) in both your manifest permissions and queries.
+
+Query the schema for column details:
+
+```sql
+SELECT column_name, data_type
+FROM information_schema.columns
+WHERE table_name = 'transactions'
+```
+
+## Build and Test
+
+### Build Your Plugin
+
+```bash
+npm run build
+```
+
+This creates `dist/index.js`.
+
+### Install Locally
+
+```bash
+tl plugin install .
+```
+
+### Open the Treeline App
+
+After building and installing, open the Treeline app (or restart it if already open) to load your plugin.
+
+### Development Workflow
+
+1. Make changes to your code
+2. Run `npm run build` (or use `npm run dev` for watch mode)
+3. Restart the Treeline app to reload the plugin
+4. Test your changes
+
+**Note:** The app must be restarted to pick up plugin changes. Watch mode (`npm run dev`) automatically rebuilds when you save files, but you still need to restart the app to see your updates.
+
+## Icons
+
+Use [Lucide](https://lucide.dev/icons/) icon names for sidebar items and views:
+
+```typescript
+icon: "target"       // Target/crosshair
+icon: "piggy-bank"   // Savings
+icon: "credit-card"  // Payments
+icon: "calendar"     // Scheduling
+icon: "chart-line"   // Analytics
+```
+
+Common icons: `target`, `repeat`, `shield`, `wallet`, `credit-card`, `chart-line`, `tag`, `tags`, `calendar`, `settings`, `search`, `plus`, `check`, `x`, `alert-triangle`, `info`, `activity`, `gift`, `piggy-bank`.
+
+## Debugging
+
+### Console Logs
+
+Use the browser developer tools to see console output:
+
+1. Open **View > Toggle Developer Tools**
+2. Go to the Console tab
+3. Your `console.log()` statements appear here
+
+### Error Handling
+
+Always handle errors gracefully:
+
+```typescript
+try {
+  const data = await sdk.query("SELECT * FROM transactions");
+} catch (e) {
+  sdk.toast.error(
+    "Query failed",
+    e instanceof Error ? e.message : String(e)
+  );
+}
+```
+
+## Next Steps
+
+- **[SDK Reference](/plugins/sdk-reference/)** - Full API documentation
+- **[Publishing](/plugins/publishing/)** - Share your plugin with others

@@ -1,0 +1,304 @@
+---
+title: Database Schema
+description: Understanding Treeline's DuckDB database structure, tables, and how to query your data.
+---
+
+Treeline stores all your financial data in a local DuckDB database. This page documents the schema so you can write custom queries, build plugins, or integrate with external tools.
+
+## Architecture
+
+Treeline uses a two-layer schema design:
+
+- **System tables** (`sys_*`) - The raw data with all technical details
+- **User views** - Simplified views that join related data for convenience
+
+When querying, prefer the views (`transactions`, `accounts`, `balance_snapshots`) unless you need low-level access.
+
+## Views
+
+These are the recommended tables for querying. They join related data and hide internal complexity.
+
+### transactions
+
+The primary view for transaction data. Joins transaction records with their account information.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `transaction_id` | VARCHAR | Unique identifier (UUID) |
+| `account_id` | VARCHAR | Foreign key to accounts |
+| `amount` | DECIMAL(15,2) | Transaction amount (negative = expense) |
+| `description` | VARCHAR | Transaction description from bank |
+| `transaction_date` | DATE | When the transaction occurred |
+| `posted_date` | DATE | When the transaction posted |
+| `tags` | VARCHAR[] | Array of user-applied tags |
+| `tags_auto_applied` | BOOLEAN | Whether tags came from auto-tag rules |
+| `parent_transaction_id` | VARCHAR | For split transactions, references parent |
+| `source` | VARCHAR | Where this transaction came from |
+| `account_name` | VARCHAR | Joined from accounts table |
+| `account_type` | VARCHAR | Account type (checking, credit, etc.) |
+| `currency` | VARCHAR | Currency code (USD, EUR, etc.) |
+| `institution_name` | VARCHAR | Bank or institution name |
+
+**Source values:**
+- `simplefin` - Synced via SimpleFIN
+- `lunchflow` - Synced via Lunch Flow
+- `csv_import` - Imported from CSV file
+- `split` - Created by splitting another transaction
+- `manual` - Manually entered
+- `unknown` - Legacy data without tracking
+
+### accounts
+
+All financial accounts (checking, savings, credit cards, investments, etc.). This view exposes all columns from `sys_accounts`.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `account_id` | VARCHAR | Unique identifier |
+| `name` | VARCHAR | Account name from institution |
+| `nickname` | VARCHAR | User-defined display name |
+| `account_type` | VARCHAR | Type (depository, credit, loan, investment) |
+| `classification` | VARCHAR | Asset or liability |
+| `currency` | VARCHAR | Currency code |
+| `balance` | DECIMAL(15,2) | Current balance |
+| `institution_name` | VARCHAR | Bank or institution name |
+| `institution_url` | VARCHAR | Institution website |
+| `institution_domain` | VARCHAR | Institution domain |
+| `is_manual` | BOOLEAN | Whether manually created |
+| `created_at` | TIMESTAMP | When account was added |
+| `updated_at` | TIMESTAMP | Last modification time |
+
+**Provider-specific columns** (prefixed with `sf_` for SimpleFIN, `lf_` for Lunch Flow) contain raw data from each provider for deduplication and debugging.
+
+### balance_snapshots
+
+Historical balance records captured during each sync.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `snapshot_id` | VARCHAR | Unique identifier |
+| `account_id` | VARCHAR | Foreign key to accounts |
+| `balance` | DECIMAL(15,2) | Balance at snapshot time |
+| `snapshot_time` | TIMESTAMP | When the balance was recorded |
+| `source` | VARCHAR | How the snapshot was created |
+| `created_at` | TIMESTAMP | When the record was created |
+| `updated_at` | TIMESTAMP | Last modification time |
+| `account_name` | VARCHAR | Joined from accounts table |
+| `institution_name` | VARCHAR | Joined from accounts table |
+
+**Source values:**
+- `sync` - Captured during bank sync
+- `manual` - Manually recorded
+- `backfill` - Generated to fill gaps
+
+## System Tables
+
+These tables store raw data. Query them when you need access to technical details not exposed in views.
+
+### sys_migrations
+
+Tracks which schema migrations have been applied.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `migration_name` | VARCHAR | Primary key, name of the migration file |
+| `applied_at` | TIMESTAMP | When the migration was applied |
+
+### sys_accounts
+
+Raw account data including external IDs from connected providers.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `account_id` | VARCHAR | Primary key |
+| `name` | VARCHAR | Account name from institution |
+| `nickname` | VARCHAR | User-defined display name |
+| `account_type` | VARCHAR | Type (depository, credit, loan, investment) |
+| `classification` | VARCHAR | Asset or liability |
+| `currency` | VARCHAR | Currency code (default: USD) |
+| `balance` | DECIMAL(15,2) | Current balance |
+| `external_ids` | JSON | Legacy provider IDs (deprecated) |
+| `institution_name` | VARCHAR | Bank or institution name |
+| `institution_url` | VARCHAR | Institution website |
+| `institution_domain` | VARCHAR | Institution domain |
+| `is_manual` | BOOLEAN | Whether manually created |
+| `created_at` | TIMESTAMP | When account was added |
+| `updated_at` | TIMESTAMP | Last modification time |
+| `sf_id` | VARCHAR | SimpleFIN account ID |
+| `sf_name` | VARCHAR | SimpleFIN account name |
+| `sf_currency` | VARCHAR | SimpleFIN currency |
+| `sf_balance` | VARCHAR | SimpleFIN balance (string) |
+| `sf_available_balance` | VARCHAR | SimpleFIN available balance |
+| `sf_balance_date` | BIGINT | SimpleFIN balance timestamp |
+| `sf_org_name` | VARCHAR | SimpleFIN organization name |
+| `sf_org_url` | VARCHAR | SimpleFIN organization URL |
+| `sf_org_domain` | VARCHAR | SimpleFIN organization domain |
+| `sf_extra` | JSON | SimpleFIN extra fields |
+| `lf_id` | VARCHAR | Lunch Flow account ID |
+| `lf_name` | VARCHAR | Lunch Flow account name |
+| `lf_institution_name` | VARCHAR | Lunch Flow institution name |
+| `lf_institution_logo` | VARCHAR | Lunch Flow institution logo URL |
+| `lf_provider` | VARCHAR | Lunch Flow provider |
+| `lf_currency` | VARCHAR | Lunch Flow currency |
+| `lf_status` | VARCHAR | Lunch Flow account status |
+
+### sys_transactions
+
+The underlying transaction storage. Includes soft-delete support (`deleted_at`) and provider-specific columns for deduplication.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `transaction_id` | VARCHAR | Primary key |
+| `account_id` | VARCHAR | Foreign key to sys_accounts |
+| `amount` | DECIMAL(15,2) | Transaction amount |
+| `description` | VARCHAR | Transaction description |
+| `transaction_date` | DATE | When the transaction occurred |
+| `posted_date` | DATE | When the transaction posted |
+| `tags` | VARCHAR[] | Array of tags |
+| `tags_auto_applied` | BOOLEAN | Whether tags came from auto-tag rules |
+| `external_ids` | JSON | Legacy provider IDs (deprecated) |
+| `parent_transaction_id` | VARCHAR | For split transactions, references parent |
+| `deleted_at` | TIMESTAMP | Soft delete timestamp (NULL if active) |
+| `is_manual` | BOOLEAN | Whether manually entered |
+| `created_at` | TIMESTAMP | When transaction was created |
+| `updated_at` | TIMESTAMP | Last modification time |
+| `csv_fingerprint` | VARCHAR | CSV import dedup fingerprint |
+| `csv_batch_id` | VARCHAR | CSV import batch ID |
+| `sf_id` | VARCHAR | SimpleFIN transaction ID |
+| `sf_posted` | BIGINT | SimpleFIN posted timestamp |
+| `sf_amount` | VARCHAR | SimpleFIN amount (string) |
+| `sf_description` | VARCHAR | SimpleFIN description |
+| `sf_transacted_at` | BIGINT | SimpleFIN transaction timestamp |
+| `sf_pending` | BOOLEAN | SimpleFIN pending flag |
+| `sf_extra` | JSON | SimpleFIN extra fields |
+| `lf_id` | VARCHAR | Lunch Flow transaction ID |
+| `lf_account_id` | VARCHAR | Lunch Flow account ID |
+| `lf_amount` | DECIMAL(15,2) | Lunch Flow amount |
+| `lf_currency` | VARCHAR | Lunch Flow currency |
+| `lf_date` | DATE | Lunch Flow date |
+| `lf_merchant` | VARCHAR | Lunch Flow merchant |
+| `lf_description` | VARCHAR | Lunch Flow description |
+| `lf_is_pending` | BOOLEAN | Lunch Flow pending flag |
+
+### sys_balance_snapshots
+
+Raw balance snapshot records.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `snapshot_id` | VARCHAR | Primary key |
+| `account_id` | VARCHAR | Foreign key to sys_accounts |
+| `balance` | DECIMAL(15,2) | Balance at snapshot time |
+| `snapshot_time` | TIMESTAMP | When the balance was recorded |
+| `source` | VARCHAR | How the snapshot was created |
+| `created_at` | TIMESTAMP | When the record was created |
+| `updated_at` | TIMESTAMP | Last modification time |
+
+### sys_integrations
+
+Configuration for connected bank integrations (SimpleFIN, Lunch Flow).
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `integration_name` | VARCHAR | Primary key (e.g., "simplefin", "lunchflow") |
+| `integration_settings` | JSON | Integration configuration (tokens, API keys, account mappings) |
+| `created_at` | TIMESTAMP | When the integration was added |
+| `updated_at` | TIMESTAMP | Last modification time |
+
+### sys_transactions_rules
+
+Auto-tag rules that automatically apply tags to matching transactions.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `rule_id` | TEXT | Primary key |
+| `name` | TEXT | Display name for the rule |
+| `sql_condition` | TEXT | SQL WHERE clause for matching |
+| `display_conditions` | TEXT | JSON for UI rendering (optional) |
+| `tags` | TEXT[] | Tags to apply when matched |
+| `enabled` | BOOLEAN | Whether rule is active |
+| `sort_order` | INTEGER | Processing order |
+| `created_at` | TIMESTAMP | When the rule was created |
+| `updated_at` | TIMESTAMP | Last modification time |
+
+## Plugin Schemas
+
+Plugins store their data in dedicated DuckDB schemas, isolated from core tables. Each plugin creates its own schema (e.g., `plugin_budget`, `plugin_goals`, `plugin_subscriptions`).
+
+Community plugins define their own schemas and are documented in their respective repositories.
+
+## Querying Your Data
+
+Use `tl query` from the CLI or the Query plugin in the desktop app to run SQL against your data.
+
+```bash
+tl query "SELECT posted_date, amount, description FROM transactions LIMIT 10"
+```
+
+### Example Queries
+
+**Spending by tag this month:**
+
+```sql
+SELECT
+  UNNEST(tags) as tag,
+  SUM(-amount) as total
+FROM transactions
+WHERE amount < 0
+  AND posted_date >= DATE_TRUNC('month', CURRENT_DATE)
+GROUP BY tag
+ORDER BY total DESC
+```
+
+**Net worth over time:**
+
+```sql
+SELECT
+  DATE_TRUNC('month', snapshot_time) as month,
+  SUM(CASE
+    WHEN a.classification = 'asset' THEN balance
+    ELSE -balance
+  END) as net_worth
+FROM balance_snapshots b
+JOIN accounts a USING (account_id)
+GROUP BY month
+ORDER BY month
+```
+
+**Untagged transactions:**
+
+```sql
+SELECT posted_date, description, amount
+FROM transactions
+WHERE tags IS NULL OR ARRAY_LENGTH(tags) = 0
+ORDER BY posted_date DESC
+```
+
+**Account balances by type:**
+
+```sql
+SELECT
+  account_type,
+  classification,
+  SUM(balance) as total_balance
+FROM accounts
+GROUP BY account_type, classification
+ORDER BY classification, total_balance DESC
+```
+
+**Explore the schema:**
+
+```sql
+-- List all tables and views
+SELECT table_name, table_type
+FROM information_schema.tables
+WHERE table_schema = 'main'
+
+-- Describe a table's columns
+DESCRIBE transactions
+```
+
+## Best Practices
+
+1. **Query views, not system tables** unless you need raw provider data
+2. **Use the Query view** in the desktop app for interactive exploration
+3. **Back up before experiments** with `tl backup create`

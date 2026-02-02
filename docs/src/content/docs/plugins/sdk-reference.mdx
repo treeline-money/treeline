@@ -1,0 +1,686 @@
+---
+title: SDK Reference
+description: Complete API reference for the Treeline Plugin SDK.
+---
+
+The Plugin SDK provides everything your plugin needs to interact with Treeline. It's passed to your views via props when they mount.
+
+```typescript
+import type { PluginSDK } from "@treeline-money/plugin-sdk";
+
+interface Props {
+  sdk: PluginSDK;
+}
+let { sdk }: Props = $props();
+```
+
+## Database
+
+### sdk.query()
+
+Execute a read-only SQL query against the database.
+
+```typescript
+query<T = Record<string, unknown>>(
+  sql: string,
+  params?: QueryParam[]
+): Promise<T[]>
+```
+
+**Parameters:**
+- `sql` - SQL SELECT query with `?` placeholders for parameters
+- `params` - Optional array of values to bind to placeholders
+
+**Returns:** Array of row objects
+
+**Example:**
+
+```typescript
+// Simple query
+const accounts = await sdk.query<Account>("SELECT * FROM accounts");
+
+// Parameterized query (recommended for user input)
+const transactions = await sdk.query<Transaction>(
+  "SELECT * FROM transactions WHERE amount > ? AND posted_date > ?",
+  [100, "2024-01-01"]
+);
+
+// With type parameter
+interface Transaction {
+  id: string;
+  amount: number;
+  description: string;
+  posted_date: string;
+}
+const results = await sdk.query<Transaction>(
+  "SELECT * FROM transactions LIMIT 10"
+);
+```
+
+**Query Parameter Types:**
+
+```typescript
+type QueryParam = string | number | boolean | null | string[] | number[];
+```
+
+### sdk.execute()
+
+Execute a write SQL query (INSERT, UPDATE, DELETE, CREATE, DROP).
+
+```typescript
+execute(
+  sql: string,
+  params?: QueryParam[]
+): Promise<{ rowsAffected: number }>
+```
+
+**Parameters:**
+- `sql` - SQL write query with `?` placeholders
+- `params` - Optional array of values to bind
+
+**Returns:** Object with `rowsAffected` count
+
+**Example:**
+
+```typescript
+const schema = sdk.getSchemaName();
+
+// Insert with parameters
+await sdk.execute(
+  `INSERT INTO ${schema}.items (id, name, amount) VALUES (?, ?, ?)`,
+  [crypto.randomUUID(), "New Item", 100]
+);
+
+// Update
+const result = await sdk.execute(
+  `UPDATE ${schema}.items SET amount = ? WHERE id = ?`,
+  [150, itemId]
+);
+console.log(`Updated ${result.rowsAffected} rows`);
+
+// Delete
+await sdk.execute(
+  `DELETE FROM ${schema}.items WHERE id = ?`,
+  [itemId]
+);
+```
+
+### sdk.getSchemaName()
+
+Get the schema name for this plugin's tables.
+
+```typescript
+getSchemaName(): string
+```
+
+**Returns:** The plugin's schema name (e.g., `"plugin_goals"`)
+
+**Example:**
+
+```typescript
+const schema = sdk.getSchemaName(); // "plugin_my_plugin"
+
+// Use in queries
+await sdk.execute(`
+  CREATE TABLE IF NOT EXISTS ${schema}.items (
+    id VARCHAR PRIMARY KEY,
+    name VARCHAR NOT NULL
+  )
+`);
+```
+
+## Notifications
+
+### sdk.toast
+
+Show toast notifications to the user.
+
+```typescript
+toast: {
+  show: (message: string, description?: string) => void;
+  success: (message: string, description?: string) => void;
+  error: (message: string, description?: string) => void;
+  warning: (message: string, description?: string) => void;
+  info: (message: string, description?: string) => void;
+}
+```
+
+**Example:**
+
+```typescript
+// Success message
+sdk.toast.success("Saved!", "Your changes have been saved");
+
+// Error with details
+sdk.toast.error("Failed to save", error.message);
+
+// Warning
+sdk.toast.warning("Heads up", "This action cannot be undone");
+
+// Info
+sdk.toast.info("Tip", "Press Cmd+K to open the command palette");
+
+// Generic (same as info)
+sdk.toast.show("Hello", "This is a notification");
+```
+
+## Navigation
+
+### sdk.openView()
+
+Navigate to another view in the application.
+
+```typescript
+openView(viewId: string, props?: Record<string, unknown>): void
+```
+
+**Parameters:**
+- `viewId` - The view ID to open
+- `props` - Optional props to pass to the view
+
+**Example:**
+
+```typescript
+// Open a built-in view
+sdk.openView("accounts");
+
+// Open with props
+sdk.openView("query", {
+  initialQuery: "SELECT * FROM transactions LIMIT 10"
+});
+
+// Open another plugin's view
+sdk.openView("budget-view");
+```
+
+## Data Events
+
+### sdk.onDataRefresh()
+
+Subscribe to data refresh events. Called when data changes (sync, import, etc.).
+
+```typescript
+onDataRefresh(callback: () => void): () => void
+```
+
+**Parameters:**
+- `callback` - Function to call when data is refreshed
+
+**Returns:** Unsubscribe function
+
+**Example:**
+
+```typescript
+import { onMount, onDestroy } from "svelte";
+
+let unsubscribe: (() => void) | null = null;
+
+onMount(() => {
+  // Subscribe to data changes
+  unsubscribe = sdk.onDataRefresh(() => {
+    loadData(); // Reload your data
+  });
+});
+
+onDestroy(() => {
+  // Clean up subscription
+  if (unsubscribe) unsubscribe();
+});
+```
+
+### sdk.emitDataRefresh()
+
+Notify other views that data has changed. Call this after modifying data.
+
+```typescript
+emitDataRefresh(): void
+```
+
+**Example:**
+
+```typescript
+async function saveItem(item: Item) {
+  await sdk.execute(
+    `INSERT INTO ${sdk.getSchemaName()}.items (id, name) VALUES (?, ?)`,
+    [item.id, item.name]
+  );
+
+  // Notify other views
+  sdk.emitDataRefresh();
+
+  sdk.toast.success("Saved!");
+}
+```
+
+## Badge
+
+### sdk.updateBadge()
+
+Update the badge count shown on this plugin's sidebar item.
+
+```typescript
+updateBadge(count: number | undefined): void
+```
+
+**Parameters:**
+- `count` - Badge count to display (0 or undefined to hide)
+
+**Example:**
+
+```typescript
+// Show a badge
+sdk.updateBadge(5);
+
+// Hide the badge
+sdk.updateBadge(0);
+sdk.updateBadge(undefined);
+
+// Update based on data
+const pending = await sdk.query<{ count: number }>(
+  `SELECT COUNT(*) as count FROM ${sdk.getSchemaName()}.tasks WHERE done = false`
+);
+sdk.updateBadge(pending[0]?.count || 0);
+```
+
+## Theme
+
+### sdk.theme
+
+Theme utilities for adapting to light/dark mode.
+
+```typescript
+theme: {
+  current: () => "light" | "dark";
+  subscribe: (callback: (theme: string) => void) => () => void;
+}
+```
+
+### sdk.theme.current()
+
+Get the current theme.
+
+```typescript
+const theme = sdk.theme.current(); // "light" or "dark"
+```
+
+### sdk.theme.subscribe()
+
+Subscribe to theme changes.
+
+```typescript
+const unsubscribe = sdk.theme.subscribe((theme) => {
+  console.log("Theme changed to:", theme);
+});
+
+// Later, unsubscribe
+unsubscribe();
+```
+
+**Full Example:**
+
+```svelte
+<script lang="ts">
+  import { onMount } from "svelte";
+
+  let theme = $state<"light" | "dark">("light");
+
+  onMount(() => {
+    theme = sdk.theme.current();
+
+    sdk.theme.subscribe((newTheme) => {
+      theme = newTheme as "light" | "dark";
+    });
+  });
+</script>
+
+<div class:dark={theme === "dark"}>
+  <!-- Content adapts to theme -->
+</div>
+```
+
+## Currency
+
+### sdk.currency
+
+Currency formatting utilities that respect the user's currency preference.
+
+```typescript
+currency: {
+  format: (amount: number, currency?: string) => string;
+  formatCompact: (amount: number, currency?: string) => string;
+  formatAmount: (amount: number) => string;
+  getSymbol: (currency: string) => string;
+  getUserCurrency: () => string;
+  supportedCurrencies: string[];
+}
+```
+
+### sdk.currency.format()
+
+Format an amount with currency symbol.
+
+```typescript
+sdk.currency.format(1234.56);         // "$1,234.56" (user's currency)
+sdk.currency.format(1234.56, "EUR");  // "EUR 1,234.56"
+sdk.currency.format(-50);             // "-$50.00"
+```
+
+### sdk.currency.formatCompact()
+
+Format large amounts compactly.
+
+```typescript
+sdk.currency.formatCompact(1234567);      // "$1.2M"
+sdk.currency.formatCompact(50000);        // "$50K"
+sdk.currency.formatCompact(999);          // "$999"
+sdk.currency.formatCompact(1234567, "GBP"); // "GBP 1.2M"
+```
+
+### sdk.currency.formatAmount()
+
+Format just the number without currency symbol.
+
+```typescript
+sdk.currency.formatAmount(1234.56);  // "1,234.56"
+sdk.currency.formatAmount(-99.99);   // "-99.99"
+```
+
+### sdk.currency.getSymbol()
+
+Get the symbol for a currency code.
+
+```typescript
+sdk.currency.getSymbol("USD");   // "$"
+sdk.currency.getSymbol("EUR");   // "EUR"
+sdk.currency.getSymbol("GBP");   // "GBP"
+sdk.currency.getSymbol("JPY");   // "JPY"
+```
+
+### sdk.currency.getUserCurrency()
+
+Get the user's configured currency code.
+
+```typescript
+const currency = sdk.currency.getUserCurrency(); // "USD"
+```
+
+### sdk.currency.supportedCurrencies
+
+List of supported currency codes.
+
+```typescript
+sdk.currency.supportedCurrencies; // ["USD", "EUR", "GBP", "JPY", ...]
+```
+
+## Settings & State
+
+### sdk.settings
+
+Persistent settings scoped to your plugin. Survives app restarts.
+
+```typescript
+settings: {
+  get: <T extends Record<string, unknown>>() => Promise<T>;
+  set: <T extends Record<string, unknown>>(settings: T) => Promise<void>;
+}
+```
+
+**Example:**
+
+```typescript
+interface MySettings {
+  showCompleted: boolean;
+  sortOrder: "asc" | "desc";
+}
+
+// Load settings
+const settings = await sdk.settings.get<MySettings>();
+console.log(settings.showCompleted); // true or false
+
+// Save settings
+await sdk.settings.set<MySettings>({
+  showCompleted: true,
+  sortOrder: "desc",
+});
+```
+
+### sdk.state
+
+Ephemeral state scoped to your plugin. Cleared on app restart.
+
+```typescript
+state: {
+  read: <T>() => Promise<T | null>;
+  write: <T>(state: T) => Promise<void>;
+}
+```
+
+**Example:**
+
+```typescript
+interface MyState {
+  selectedId: string | null;
+  scrollPosition: number;
+}
+
+// Read state
+const state = await sdk.state.read<MyState>();
+
+// Write state
+await sdk.state.write<MyState>({
+  selectedId: "item-123",
+  scrollPosition: 500,
+});
+```
+
+**When to use which:**
+
+| Use Case | Tool |
+|----------|------|
+| User preferences | `sdk.settings` |
+| UI configuration | `sdk.settings` |
+| Selected items (temporary) | `sdk.state` |
+| Scroll position | `sdk.state` |
+| Form drafts | `sdk.state` |
+
+## Platform Utilities
+
+### sdk.modKey
+
+Platform-aware modifier key string.
+
+```typescript
+modKey: "Cmd" | "Ctrl"
+```
+
+**Example:**
+
+```typescript
+sdk.modKey; // "Cmd" on Mac, "Ctrl" on Windows/Linux
+
+// In UI
+<span>Press {sdk.modKey}+K to search</span>
+```
+
+### sdk.formatShortcut()
+
+Format a keyboard shortcut for display.
+
+```typescript
+formatShortcut(shortcut: string): string
+```
+
+**Parameters:**
+- `shortcut` - Shortcut string using `mod` for platform modifier
+
+**Returns:** Formatted shortcut for current platform
+
+**Example:**
+
+```typescript
+sdk.formatShortcut("mod+p");       // "Cmd+P" on Mac, "Ctrl+P" on Windows
+sdk.formatShortcut("mod+shift+k"); // "Cmd+Shift+K" on Mac
+sdk.formatShortcut("mod+enter");   // "Cmd+Enter" on Mac
+```
+
+## Registration Types
+
+These types are used when registering views, commands, and sidebar items in `activate()`.
+
+### ViewDefinition
+
+```typescript
+interface ViewDefinition {
+  id: string;                    // Unique view ID
+  name: string;                  // Display name (shown in tab)
+  icon: string;                  // Lucide icon name
+  mount: (target: HTMLElement, props: { sdk: PluginSDK }) => () => void;
+  allowMultiple?: boolean;       // Can multiple instances be open?
+}
+```
+
+### SidebarItem
+
+```typescript
+interface SidebarItem {
+  id: string;          // Unique ID
+  label: string;       // Display label
+  icon: string;        // Lucide icon name
+  sectionId: string;   // Section this belongs to ("main")
+  viewId: string;      // View to open when clicked
+  shortcut?: string;   // Keyboard shortcut hint
+  order?: number;      // Sort order within section
+}
+```
+
+### Command
+
+```typescript
+interface Command {
+  id: string;                              // Unique command ID
+  name: string;                            // Display name
+  description?: string;                    // Optional description
+  category?: string;                       // Category for grouping
+  shortcut?: string;                       // Keyboard shortcut
+  execute: () => void | Promise<void>;     // Function to execute
+}
+```
+
+### PluginMigration
+
+```typescript
+interface PluginMigration {
+  version: number;  // Unique version number (positive integer)
+  name: string;     // Human-readable name
+  up: string;       // SQL to execute
+}
+```
+
+## Complete Example
+
+Here's a complete example using multiple SDK features:
+
+```svelte
+<script lang="ts">
+  import { onMount, onDestroy } from "svelte";
+  import type { PluginSDK } from "@treeline-money/plugin-sdk";
+
+  interface Props {
+    sdk: PluginSDK;
+  }
+  let { sdk }: Props = $props();
+
+  interface Item {
+    id: string;
+    name: string;
+    amount: number;
+  }
+
+  let items = $state<Item[]>([]);
+  let isLoading = $state(true);
+  let theme = $state<"light" | "dark">("light");
+  let unsubscribe: (() => void) | null = null;
+
+  const schema = sdk.getSchemaName();
+
+  onMount(async () => {
+    // Get theme
+    theme = sdk.theme.current();
+    sdk.theme.subscribe((t) => (theme = t as "light" | "dark"));
+
+    // Subscribe to data refresh
+    unsubscribe = sdk.onDataRefresh(() => loadData());
+
+    // Load initial data
+    await loadData();
+  });
+
+  onDestroy(() => {
+    if (unsubscribe) unsubscribe();
+  });
+
+  async function loadData() {
+    isLoading = true;
+    try {
+      items = await sdk.query<Item>(
+        `SELECT * FROM ${schema}.items ORDER BY name`
+      );
+      sdk.updateBadge(items.length);
+    } catch (e) {
+      sdk.toast.error("Failed to load", e instanceof Error ? e.message : String(e));
+    } finally {
+      isLoading = false;
+    }
+  }
+
+  async function addItem() {
+    try {
+      await sdk.execute(
+        `INSERT INTO ${schema}.items (id, name, amount) VALUES (?, ?, ?)`,
+        [crypto.randomUUID(), "New Item", 0]
+      );
+      sdk.toast.success("Added!");
+      sdk.emitDataRefresh();
+      await loadData();
+    } catch (e) {
+      sdk.toast.error("Failed to add", e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function deleteItem(id: string) {
+    try {
+      await sdk.execute(
+        `DELETE FROM ${schema}.items WHERE id = ?`,
+        [id]
+      );
+      sdk.emitDataRefresh();
+      await loadData();
+    } catch (e) {
+      sdk.toast.error("Failed to delete", e instanceof Error ? e.message : String(e));
+    }
+  }
+</script>
+
+<div class="container" class:dark={theme === "dark"}>
+  <h1>My Items</h1>
+
+  <button onclick={addItem}>Add Item</button>
+
+  {#if isLoading}
+    <p>Loading...</p>
+  {:else if items.length === 0}
+    <p>No items yet</p>
+  {:else}
+    <ul>
+      {#each items as item}
+        <li>
+          {item.name}: {sdk.currency.format(item.amount)}
+          <button onclick={() => deleteItem(item.id)}>Delete</button>
+        </li>
+      {/each}
+    </ul>
+  {/if}
+
+  <p class="hint">Press {sdk.formatShortcut("mod+n")} to add</p>
+</div>
+```

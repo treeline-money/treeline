@@ -1,0 +1,49 @@
+---
+title: Importing Data
+description: Bring your financial data into Treeline.
+---
+
+Treeline supports CSV import (works with any bank) and automatic bank sync for supported institutions.
+
+## CSV Import
+
+Most banks let you download transaction history as CSV files.
+
+### How to Import
+
+1. Download a CSV from your bank's website
+2. Drag the file onto Treeline, or click **Import** in the toolbar
+3. Select the target account (or create a new one)
+4. Verify the column mappings and click **Import**
+
+Treeline auto-detects common column names like `date`, `amount`, `description`, `debit`, `credit`. If your CSV uses different names, use the dropdown menus to map them manually.
+
+### Common Adjustments
+
+- **Split debit/credit columns:** Toggle "Use debit/credit" if your bank exports separate columns instead of a single amount
+- **Flip signs:** Enable if charges show as positive (common with credit cards)
+- **Number format:** Switch between US (1,234.56) and EU (1.234,56) formatting
+
+### Import Profiles
+
+Save your settings as a profile (e.g., `chase`, `amex`) to reuse them for future imports to the same account.
+
+### Deduplication
+
+Treeline automatically skips duplicate transactions when you re-import overlapping date ranges.
+
+## Bank Sync
+
+For automatic transaction syncing, see [Bank Sync](/integrations/bank-sync/) to set up SimpleFIN or Lunch Flow.
+
+**Tip:** Set up bank sync first, then use CSV import for historical transactions from before your sync start date. There's no deduplication between bank sync and CSV imports.
+
+## Manual Entry
+
+For cash transactions or one-offs, navigate to an account and click **Add Transaction**.
+
+## What's Next
+
+- [Query View](/desktop-app/query) - Analyze your imported data with SQL
+- [Auto-Tag Rules](/desktop-app/rules) - Set up rules to categorize transactions automatically
+- [Bank Sync](/integrations/bank-sync/) - Connect your bank for automatic sync

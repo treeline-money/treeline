@@ -1,0 +1,87 @@
+---
+title: Bank Sync
+description: Automatic transaction sync with SimpleFIN or Lunch Flow.
+---
+
+Treeline supports automatic bank sync through two third-party services. Both are paid subscriptions that you manage separately from Treeline.
+
+| Service | Coverage | Price | Best For |
+|---------|----------|-------|----------|
+| [SimpleFIN](https://beta-bridge.simplefin.org/) | US & Canada | $1.50/month | US/Canada users |
+| [Lunch Flow](https://www.lunchflow.app/?atp=treeline) | Global | ~$3/month | US, Canada, Brazil, EU, UK, Asia |
+
+Both services are read-only. They cannot move money or make changes to your accounts.
+
+## Setup
+
+### SimpleFIN
+
+1. Create an account at [beta-bridge.simplefin.org](https://beta-bridge.simplefin.org/)
+2. Connect your bank accounts through their interface
+3. Create a new connection for Treeline and copy the setup token
+4. In Treeline: **Settings > Integrations > Add SimpleFIN**, paste the token
+
+Or via CLI:
+
+```bash
+tl setup simplefin <your-setup-token>
+```
+
+### Lunch Flow
+
+1. Create an account at [lunchflow.app](https://www.lunchflow.app/?atp=treeline)
+2. Connect your bank accounts
+3. Go to Destinations, create an API destination, and copy the API key
+4. In Treeline: **Settings > Integrations > Add Lunch Flow**, paste the key
+
+Or via CLI:
+
+```bash
+tl setup lunchflow <your-api-key>
+```
+
+## Syncing
+
+After setup, click the sync button in the header or run:
+
+```bash
+tl sync
+```
+
+**First sync** pulls 90 days of history (SimpleFIN) or all available history (Lunch Flow).
+
+**Future syncs** pull recent transactions with overlap to avoid gaps. Treeline deduplicates automatically - your edits (tags, descriptions) are preserved.
+
+## Account Mapping
+
+After your first sync, Treeline shows all discovered accounts. You can:
+
+- **Map** a synced account to an existing Treeline account
+- **Create** a new account automatically
+- **Exclude** accounts you don't want to track
+- **Balances only** - sync balance but skip transactions (useful for investment accounts)
+
+These settings persist between syncs.
+
+## Troubleshooting
+
+### Authentication errors (401, 403)
+
+Your credentials may have expired. Log into your provider's dashboard, verify bank connections are active, and generate a new token/key if needed.
+
+### Payment required (402)
+
+Your subscription needs renewal. Check your billing in the provider's dashboard.
+
+### Missing transactions
+
+Banks vary in reporting speed. Some update in real-time, others batch overnight. Wait 24-48 hours and sync again.
+
+### Removing an integration
+
+```bash
+tl setup remove simplefin
+tl setup remove lunchflow
+```
+
+Your transaction history stays in Treeline. Manage your subscription at the provider's site.

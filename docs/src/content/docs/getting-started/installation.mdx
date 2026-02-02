@@ -1,0 +1,61 @@
+---
+title: Installation
+description: Download and install the Treeline desktop app and CLI.
+---
+
+Treeline runs entirely on your machine. There are no accounts to create, no servers to connect to, and no data leaving your computer. Choose your installation method below.
+
+## Desktop App
+
+The desktop app provides a visual interface for managing your finances, running queries, and installing plugins.
+
+### Download
+
+Visit [treeline.money/download](https://treeline.money/download) to download the installer for your platform:
+
+- **macOS** - `.dmg` for Apple Silicon and Intel
+- **Windows** - `.exe` installer
+- **Linux** - `.AppImage`
+
+After installing, launch Treeline from your Applications folder (macOS), Start menu (Windows), or application launcher (Linux).
+
+On first launch, Treeline creates a data directory at `~/.treeline/` for your database and settings. No internet connection is required.
+
+## CLI Installation
+
+The `tl` command-line tool lets you manage accounts, import data, query transactions, and automate workflows from your terminal.
+
+### macOS and Linux
+
+```bash
+curl -fsSL https://treeline.money/install.sh | sh
+```
+
+This installs `tl` to `/usr/local/bin/tl`. You may be prompted for your password to write to this directory.
+
+### Windows
+
+Open PowerShell and run:
+
+```powershell
+irm https://treeline.money/install.ps1 | iex
+```
+
+This installs `tl.exe` to `~/.treeline/bin/` and adds it to your PATH. Restart your terminal after installation.
+
+### Verify Installation
+
+```bash
+tl --version
+```
+
+You should see output like:
+
+```
+tl 26.1.3001
+```
+
+## What's Next
+
+- [Quick Start](/getting-started/quick-start) - Take a tour of Treeline's features
+- [Importing Data](/getting-started/importing-data) - Bring in your financial data

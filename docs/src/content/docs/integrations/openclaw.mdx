@@ -1,0 +1,43 @@
+---
+title: OpenClaw
+description: Chat with your finances via Discord, WhatsApp, Telegram, and more.
+---
+
+OpenClaw is an open-source personal AI assistant that runs locally on your machine. With the Treeline skill, you can query your financial data through natural conversation in your favorite chat apps.
+
+:::caution[Security Note]
+This integration sends financial data through external services (chat platforms and LLM providers). Before using it, make sure you understand the [privacy considerations](#privacy-considerations) below and are comfortable with what data is shared.
+
+The existence of a Treeline integration does not mean we've audited or endorsed the security practices of third-party services. You are responsible for evaluating whether these tools meet your security requirements.
+:::
+
+## Requirements
+
+- [Treeline CLI](/cli/) installed and configured
+- Financial data already in Treeline (via import or bank sync)
+- OpenClaw installed on the same machine
+
+## Getting Started
+
+For installation and setup instructions, see the [OpenClaw documentation](https://openclaw.ai).
+
+The Treeline skill is available on ClawHub: [zack-schrag/treeline-money](https://www.clawhub.ai/zack-schrag/treeline-money)
+
+## Privacy Considerations
+
+Understanding what data goes where:
+
+**Your Treeline database stays local**: The Treeline skill reads directly from your local database file. Your raw financial data (transactions, accounts, balances) is not uploaded to any server.
+
+**Chat messages go through external platforms**: When you use Discord, WhatsApp, Telegram, or other chat apps, your messages travel through those platforms' servers. This includes your financial questions like "How much did I spend on groceries?"
+
+**LLM providers see your queries**: When using cloud-based LLMs (Claude, OpenAI), your questions are sent to those providers for processing. The skill queries your local database and includes relevant financial context in the prompt sent to the LLM.
+
+**What this means in practice**:
+- The chat platform sees: Your message text
+- The LLM provider sees: Your question plus formatted query results (e.g., "User asked about grocery spending. Results: $342.50 this month")
+- Neither sees: Your full database, account numbers, or data you didn't ask about
+
+**For maximum privacy**: OpenClaw supports local LLMs, which keeps everything on your machine. Responses may be slower and less accurate than cloud models.
+
+**Open source**: Both OpenClaw and the Treeline skill are open source. You can audit exactly what data is sent where.

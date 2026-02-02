@@ -1,0 +1,199 @@
+---
+title: Publishing Plugins
+description: Share your plugin with others.
+---
+
+Once your plugin is working, you can share it with others by publishing to GitHub and adding it to the plugin registry.
+
+## Preparing for Release
+
+Before publishing, verify your plugin is ready:
+
+### 1. Update manifest.json
+
+Ensure all fields are accurate:
+
+```json
+{
+  "id": "my-plugin",
+  "name": "My Plugin",
+  "version": "0.1.0",
+  "description": "Clear, concise description of what it does",
+  "author": "Your Name",
+  "main": "index.js",
+  "permissions": {
+    "read": ["transactions", "accounts"],
+    "schemaName": "plugin_my_plugin"
+  }
+}
+```
+
+### 2. Test Thoroughly
+
+- Build the plugin: `npm run build`
+- Install locally: `tl plugin install .`
+- Test all features in the desktop app
+- Verify it works with both light and dark themes
+- Test with real data (not just demo mode)
+
+### 3. Clean Up
+
+- Remove debug `console.log()` statements
+- Handle errors gracefully with `sdk.toast.error()`
+- Ensure subscriptions are cleaned up in `onDestroy()`
+
+## Releasing a Version
+
+The template includes automation for releasing. When you push a tag, GitHub Actions builds and publishes your plugin.
+
+### Using the Release Script
+
+```bash
+./scripts/release.sh 0.1.0
+```
+
+This script:
+
+1. Updates the version in `manifest.json`
+2. Builds the plugin
+3. Commits the version bump
+4. Creates a git tag
+5. Pushes to GitHub
+
+The GitHub Actions workflow then:
+
+1. Checks out the code
+2. Installs dependencies
+3. Builds the plugin
+4. Creates a GitHub release with `manifest.json` and `dist/index.js`
+
+## Version Management
+
+### Semantic Versioning
+
+Follow [semver](https://semver.org/) for version numbers:
+
+- **MAJOR** (1.0.0) - Breaking changes
+- **MINOR** (0.1.0) - New features, backwards compatible
+- **PATCH** (0.0.1) - Bug fixes
+
+### Version Consistency
+
+Keep versions in sync across:
+
+- `manifest.json` - `version` field
+- `package.json` - `version` field (optional but recommended)
+- Git tags - `v0.1.0` format
+
+## Adding to the Plugin Registry
+
+Once you have a GitHub release, submit your plugin to the plugin registry.
+
+### 1. Fork the Treeline Repository
+
+Fork [treeline-money/treeline](https://github.com/treeline-money/treeline) on GitHub.
+
+### 2. Edit plugins.json
+
+Add your plugin to `plugins.json`:
+
+```json
+{
+  "id": "my-plugin",
+  "name": "My Plugin",
+  "description": "Clear description of what it does",
+  "author": "Your Name",
+  "repo": "https://github.com/yourusername/my-plugin"
+}
+```
+
+**Fields:**
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `id` | Yes | Must match your manifest.json |
+| `name` | Yes | Display name |
+| `description` | Yes | Brief description (under 100 chars) |
+| `author` | Yes | Your name or organization |
+| `repo` | Yes | GitHub repository URL |
+| `featured` | No | Set by maintainers only |
+
+### 3. Submit a Pull Request
+
+Create a PR with:
+
+- Title: `Add [plugin-name] plugin`
+- Description: Brief explanation of what your plugin does
+- Link to your repository
+
+### 4. Review Process
+
+Maintainers will review your PR for:
+
+- Working GitHub release
+- Accurate manifest.json
+- Reasonable permissions (not requesting more than needed)
+- No malicious code
+
+## Plugin Guidelines
+
+### Do
+
+- Make plugins that solve real problems
+- Document your plugin's features
+- Respond to issues and PRs
+- Keep dependencies minimal
+- Test with the latest Treeline version
+
+### Don't
+
+- Request unnecessary permissions
+- Include tracking or analytics
+- Bundle large dependencies
+- Copy other plugins without attribution
+- Include offensive content
+
+### Security
+
+- Never log or transmit user financial data
+- Only access tables declared in permissions
+- Don't make network requests without user consent
+
+## Updating Your Plugin
+
+When you release a new version:
+
+1. Update `manifest.json` with the new version
+2. Run `./scripts/release.sh <version>`
+3. The new version appears automatically for users
+
+The registry pulls from your latest GitHub release. No PR needed for updates.
+
+## Support
+
+If you need help:
+
+- Check existing plugins for examples
+- Join [Discord](https://discord.gg/EcNvBnSft5) and post in #feedback
+- [Open an issue on GitHub](https://github.com/treeline-money/treeline/issues) for bugs
+
+## PLUGIN_PREVIEW.md
+
+All plugins should include a `PLUGIN_PREVIEW.md` file in their GitHub repository. This file is used to display plugin information on the [treeline.money](https://treeline.money) landing page and in the desktop app's plugin browser.
+
+See these plugins for examples of how to structure your PLUGIN_PREVIEW.md:
+
+- [plugin-budget](https://github.com/treeline-money/plugin-budget)
+- [plugin-goals](https://github.com/treeline-money/plugin-goals)
+
+## Example Plugins
+
+Study these plugins for inspiration:
+
+| Plugin | Description | Repo |
+|--------|-------------|------|
+| Budget | Tag-based budget tracking | [plugin-budget](https://github.com/treeline-money/plugin-budget) |
+| Goals | Savings goal tracking | [plugin-goals](https://github.com/treeline-money/plugin-goals) |
+| Cash Flow | Income/expense planning | [plugin-cashflow](https://github.com/treeline-money/plugin-cashflow) |
+| Subscriptions | Recurring charge detection | [plugin-subscriptions](https://github.com/treeline-money/plugin-subscriptions) |
+| Emergency Fund | Fund runway calculator | [plugin-emergency-fund](https://github.com/treeline-money/plugin-emergency-fund) |

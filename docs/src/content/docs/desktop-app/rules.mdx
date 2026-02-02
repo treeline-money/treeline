@@ -1,0 +1,40 @@
+---
+title: Auto-Tag Rules
+description: Automate transaction categorization with pattern-matching rules.
+---
+
+Rules automatically tag transactions during import and sync. Once you create a rule for "Starbucks" transactions, every future coffee purchase is tagged automatically.
+
+## Creating Rules
+
+The fastest way: tag 3+ similar transactions, then click **Save as Rule** in the toast notification.
+
+Or press `Shift+R` on any transaction to create a rule from its pattern.
+
+## Match Modes
+
+**Simple mode** matches against description text:
+
+| Type | Example | Matches |
+|------|---------|---------|
+| Contains | `starbucks` | "STARBUCKS #1234", "STARBUCKS COFFEE" |
+| Starts with | `AMZN` | "AMZN MARKETPLACE", "AMZN DIGITAL" |
+| Regex | `coffee\|starbucks` | "COFFEE HOUSE", "STARBUCKS" |
+
+All matches are case-insensitive.
+
+**SQL mode** gives full control:
+
+```sql
+description ILIKE '%grocery%' AND amount < -20
+```
+
+Available columns: `description`, `amount`, `account_name`, `transaction_date`
+
+## Applying to Existing Transactions
+
+Rules only apply to future imports by default. Check **Apply to existing transactions** when creating a rule to retroactively tag matches.
+
+## Managing Rules
+
+Open the Rules modal from the Transactions view overflow menu. Rules can be toggled on/off, edited, or deleted. The live preview shows matching transactions as you type.
