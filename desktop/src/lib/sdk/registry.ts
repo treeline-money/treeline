@@ -58,6 +58,16 @@ class PluginRegistry {
   // Event subscribers for global events (like data refresh)
   private eventSubscribers: Map<string, Set<() => void>> = new Map();
 
+  // Track registrations per plugin for cleanup during hot reload
+  private _pluginRegistrations: Map<string, {
+    sidebarSections: string[];
+    sidebarItems: string[];
+    views: string[];
+    commands: string[];
+    statusBarItems: string[];
+    eventUnsubscribers: (() => void)[];
+  }> = new Map();
+
   // ============================================================================
   // Subscription for reactivity
   // ============================================================================
@@ -325,6 +335,173 @@ class PluginRegistry {
     if (callbacks) {
       callbacks.forEach((cb) => cb());
     }
+  }
+
+  // ============================================================================
+  // Hot Reload Support
+  // ============================================================================
+
+  /**
+   * Initialize tracking for a plugin's registrations
+   */
+  initPluginTracking(pluginId: string): void {
+    this._pluginRegistrations.set(pluginId, {
+      sidebarSections: [],
+      sidebarItems: [],
+      views: [],
+      commands: [],
+      statusBarItems: [],
+      eventUnsubscribers: [],
+    });
+  }
+
+  /**
+   * Track a registration for a plugin
+   */
+  private trackRegistration(pluginId: string, type: keyof Omit<NonNullable<ReturnType<typeof this._pluginRegistrations.get>>, 'eventUnsubscribers'>, id: string): void {
+    const tracking = this._pluginRegistrations.get(pluginId);
+    if (tracking) {
+      tracking[type].push(id);
+    }
+  }
+
+  /**
+   * Track an event unsubscriber for a plugin
+   */
+  trackEventUnsubscriber(pluginId: string, unsubscriber: () => void): void {
+    const tracking = this._pluginRegistrations.get(pluginId);
+    if (tracking) {
+      tracking.eventUnsubscribers.push(unsubscriber);
+    }
+  }
+
+  /**
+   * Register a sidebar section with plugin tracking
+   */
+  registerSidebarSectionForPlugin(section: SidebarSection, pluginId: string): void {
+    this._sidebarSections.push(section);
+    this.trackRegistration(pluginId, 'sidebarSections', section.id);
+    this.notify();
+  }
+
+  /**
+   * Register a sidebar item with plugin tracking
+   */
+  registerSidebarItemForPlugin(item: SidebarItem, pluginId: string): void {
+    this._sidebarItems.push(item);
+    this.trackRegistration(pluginId, 'sidebarItems', item.id);
+    this.notify();
+  }
+
+  /**
+   * Register a view with plugin tracking
+   */
+  registerViewForPlugin(view: ViewDefinition, pluginId: string): void {
+    this._views.set(view.id, view);
+    this._viewToPlugin.set(view.id, pluginId);
+    this.trackRegistration(pluginId, 'views', view.id);
+    this.notify();
+  }
+
+  /**
+   * Register a command with plugin tracking
+   */
+  registerCommandForPlugin(command: Command, pluginId: string): void {
+    this._commands.set(command.id, command);
+    this.trackRegistration(pluginId, 'commands', command.id);
+    this.notify();
+  }
+
+  /**
+   * Register a status bar item with plugin tracking
+   */
+  registerStatusBarItemForPlugin(item: StatusBarItem, pluginId: string): void {
+    this._statusBarItems.push(item);
+    this.trackRegistration(pluginId, 'statusBarItems', item.id);
+    this.notify();
+  }
+
+  /**
+   * Unload a plugin: deactivate it and remove all its registrations
+   */
+  async unloadPlugin(pluginId: string): Promise<void> {
+    const plugin = this.plugins.get(pluginId);
+    const tracking = this._pluginRegistrations.get(pluginId);
+
+    // Call plugin's deactivate hook if it exists
+    if (plugin?.deactivate) {
+      try {
+        await plugin.deactivate();
+      } catch (error) {
+        console.error(`Error deactivating plugin ${pluginId}:`, error);
+      }
+    }
+
+    // Clean up event subscriptions
+    if (tracking) {
+      for (const unsubscribe of tracking.eventUnsubscribers) {
+        try {
+          unsubscribe();
+        } catch (error) {
+          console.error(`Error unsubscribing event for plugin ${pluginId}:`, error);
+        }
+      }
+
+      // Remove sidebar sections
+      this._sidebarSections = this._sidebarSections.filter(
+        s => !tracking.sidebarSections.includes(s.id)
+      );
+
+      // Remove sidebar items
+      this._sidebarItems = this._sidebarItems.filter(
+        i => !tracking.sidebarItems.includes(i.id)
+      );
+
+      // Remove views
+      for (const viewId of tracking.views) {
+        this._views.delete(viewId);
+        this._viewToPlugin.delete(viewId);
+      }
+
+      // Remove commands
+      for (const commandId of tracking.commands) {
+        this._commands.delete(commandId);
+      }
+
+      // Remove status bar items
+      this._statusBarItems = this._statusBarItems.filter(
+        i => !tracking.statusBarItems.includes(i.id)
+      );
+
+      // Close any open tabs for this plugin's views
+      const viewIds = new Set(tracking.views);
+      const tabsToClose = this._tabs.filter(t => viewIds.has(t.viewId));
+      for (const tab of tabsToClose) {
+        this.closeTab(tab.id);
+      }
+    }
+
+    // Clean up plugin tracking
+    this.plugins.delete(pluginId);
+    this._pluginRegistrations.delete(pluginId);
+    this._pluginPermissions.delete(pluginId);
+
+    this.notify();
+    console.log(`Unloaded plugin: ${pluginId}`);
+  }
+
+  /**
+   * Check if a plugin is loaded
+   */
+  isPluginLoaded(pluginId: string): boolean {
+    return this.plugins.has(pluginId);
+  }
+
+  /**
+   * Get all loaded plugin IDs
+   */
+  getLoadedPluginIds(): string[] {
+    return Array.from(this.plugins.keys());
   }
 }
 

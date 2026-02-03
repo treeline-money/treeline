@@ -5779,6 +5779,7 @@ dependencies = [
  "duckdb",
  "hex",
  "psm",
+ "reqwest",
  "rust_decimal",
  "serde",
  "serde_json",
@@ -5791,6 +5792,7 @@ dependencies = [
  "tauri-plugin-shell",
  "tauri-plugin-updater",
  "tempfile",
+ "tokio",
  "treeline-core",
 ]
 

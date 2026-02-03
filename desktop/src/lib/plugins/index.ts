@@ -14,10 +14,10 @@ import type { Plugin, PluginContext, PluginMigration } from "../sdk/types";
 import { plugin as queryPlugin } from "./query";
 import { plugin as transactionsPlugin } from "./transactions";
 import { plugin as accountsPlugin } from "./accounts";
+import { plugin as aiBuilderPlugin } from "./ai-builder";
 
 // List of core plugins (built into the app)
-// Budget is now an external plugin - only 3 core plugins remain
-const corePlugins: Plugin[] = [accountsPlugin, transactionsPlugin, queryPlugin];
+const corePlugins: Plugin[] = [accountsPlugin, transactionsPlugin, queryPlugin, aiBuilderPlugin];
 
 // ============================================================================
 // Plugin Migration Runner
@@ -304,4 +304,114 @@ export async function initializePlugins(): Promise<void> {
  */
 export function getCorePluginManifests() {
   return corePlugins.map(p => p.manifest);
+}
+
+// ============================================================================
+// Hot Reload Support
+// ============================================================================
+
+/**
+ * Hot reload a single external plugin by ID.
+ * This will:
+ * 1. Unload the existing plugin (if loaded)
+ * 2. Re-import the plugin module with cache busting
+ * 3. Run any new migrations
+ * 4. Activate the plugin
+ */
+export async function hotReloadPlugin(pluginId: string): Promise<{ success: boolean; error?: string }> {
+  try {
+    console.log(`Hot reloading plugin: ${pluginId}`);
+
+    // Unload existing plugin if loaded
+    if (registry.isPluginLoaded(pluginId)) {
+      await registry.unloadPlugin(pluginId);
+    }
+
+    // Get the plugins directory path
+    const pluginsDir = await invoke<string>("get_plugins_dir");
+
+    // Discover the plugin info
+    const discovered = await invoke<ExternalPluginInfo[]>("discover_plugins");
+    const pluginInfo = discovered.find(p => p.manifest.id === pluginId);
+
+    if (!pluginInfo) {
+      return { success: false, error: `Plugin not found: ${pluginId}` };
+    }
+
+    // Construct the path with cache busting
+    const pluginPath = `${pluginsDir}/${pluginInfo.manifest.id}/${pluginInfo.manifest.main}`;
+    const assetUrl = convertFileSrc(pluginPath);
+    const cacheBustedUrl = `${assetUrl}?t=${Date.now()}`;
+
+    console.log(`Loading plugin from: ${cacheBustedUrl}`);
+
+    // Dynamically import the plugin module
+    const module = await import(/* @vite-ignore */ cacheBustedUrl);
+
+    if (!module.plugin) {
+      return { success: false, error: `Plugin ${pluginId} does not export 'plugin'` };
+    }
+
+    const plugin: Plugin = module.plugin;
+
+    // Set up permissions
+    const permissions = pluginInfo.manifest.permissions ?? {};
+    const tablePermissions = {
+      read: permissions.read ?? permissions.tables?.read,
+      write: permissions.write ?? permissions.tables?.write,
+      create: permissions.create ?? permissions.tables?.create,
+      schemaName: permissions.schemaName,
+    };
+    registry.setPluginPermissions(pluginId, tablePermissions);
+
+    // Run migrations if any
+    const schemaName = getPluginSchemaName(pluginId, tablePermissions);
+    if (plugin.migrations && plugin.migrations.length > 0) {
+      await runPluginMigrations(pluginId, schemaName, plugin.migrations);
+    }
+
+    // Initialize tracking for this plugin
+    registry.initPluginTracking(pluginId);
+
+    // Create context with tracked registration methods
+    const context: PluginContext = {
+      registerSidebarSection: (s) => registry.registerSidebarSectionForPlugin(s, pluginId),
+      registerSidebarItem: (item) => registry.registerSidebarItemForPlugin({ ...item, sectionId: "plugins" }, pluginId),
+      registerView: (view) => registry.registerViewForPlugin(view, pluginId),
+      registerCommand: (c) => registry.registerCommandForPlugin(c, pluginId),
+      registerStatusBarItem: (i) => registry.registerStatusBarItemForPlugin(i, pluginId),
+      openView: registry.openView.bind(registry),
+      executeCommand: registry.executeCommand.bind(registry),
+      db: {} as any,
+      theme: themeManager,
+    };
+
+    // Activate plugin
+    await plugin.activate(context);
+
+    console.log(`✓ Hot reloaded plugin: ${plugin.manifest.name} (${pluginId})`);
+    return { success: true };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error(`✗ Failed to hot reload plugin ${pluginId}:`, error);
+    return { success: false, error: errorMessage };
+  }
+}
+
+/**
+ * Load a new external plugin that was just installed.
+ * Similar to hotReloadPlugin but for first-time loading.
+ */
+export async function loadNewPlugin(pluginId: string): Promise<{ success: boolean; error?: string }> {
+  // Ensure the plugins section exists
+  const sections = registry.sidebarSections;
+  if (!sections.find(s => s.id === "plugins")) {
+    registry.registerSidebarSection({
+      id: "plugins",
+      title: "Plugins",
+      order: 10,
+    });
+  }
+
+  return hotReloadPlugin(pluginId);
 }

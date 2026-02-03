@@ -2042,6 +2042,250 @@ fn get_logs_path(logging_state: State<LoggingState>) -> Result<Option<String>, S
 }
 
 // ============================================================================
+// AI Plugin Builder Commands
+// ============================================================================
+
+/// Check if an AI API key is configured
+#[tauri::command]
+fn has_ai_api_key() -> Result<bool, String> {
+    let treeline_dir = get_treeline_dir()?;
+    let key_file = treeline_dir.join("ai_api_key");
+    Ok(key_file.exists())
+}
+
+/// Set the AI API key (stored in ~/.treeline/ai_api_key)
+#[tauri::command]
+fn set_ai_api_key(key: String) -> Result<(), String> {
+    let treeline_dir = get_treeline_dir()?;
+    let key_file = treeline_dir.join("ai_api_key");
+    fs::write(&key_file, key.trim()).map_err(|e| format!("Failed to write API key: {}", e))?;
+    // Set file permissions to be readable only by owner (Unix)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&key_file, fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("Failed to set key file permissions: {}", e))?;
+    }
+    Ok(())
+}
+
+/// Read the AI API key
+fn read_ai_api_key() -> Result<String, String> {
+    let treeline_dir = get_treeline_dir()?;
+    let key_file = treeline_dir.join("ai_api_key");
+    fs::read_to_string(&key_file).map_err(|e| format!("Failed to read API key: {}", e))
+}
+
+/// Message structure for LLM conversation
+#[derive(Debug, Serialize, Deserialize)]
+struct ChatMessage {
+    role: String,
+    content: String,
+}
+
+/// Generate plugin code using Claude API
+#[tauri::command]
+async fn generate_plugin_code(
+    system_prompt: String,
+    messages: Vec<ChatMessage>,
+    schema_info: String,
+) -> Result<String, String> {
+    let api_key = read_ai_api_key()?;
+
+    // Build the full system prompt with schema
+    let full_system = format!("{}\n\n{}", system_prompt, schema_info);
+
+    // Build request body for Claude API
+    let request_body = serde_json::json!({
+        "model": "claude-sonnet-4-20250514",
+        "max_tokens": 8192,
+        "system": full_system,
+        "messages": messages.iter().map(|m| {
+            serde_json::json!({
+                "role": m.role,
+                "content": m.content
+            })
+        }).collect::<Vec<_>>()
+    });
+
+    // Make request to Anthropic API
+    let client = reqwest::Client::new();
+    let response = client
+        .post("https://api.anthropic.com/v1/messages")
+        .header("x-api-key", api_key.trim())
+        .header("anthropic-version", "2023-06-01")
+        .header("content-type", "application/json")
+        .json(&request_body)
+        .send()
+        .await
+        .map_err(|e| format!("Request failed: {}", e))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let error_text = response.text().await.unwrap_or_default();
+        return Err(format!("API error ({}): {}", status, error_text));
+    }
+
+    let response_json: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse response: {}", e))?;
+
+    // Extract the text content from Claude's response
+    let content = response_json["content"]
+        .as_array()
+        .and_then(|arr| arr.first())
+        .and_then(|block| block["text"].as_str())
+        .ok_or("No text content in response")?;
+
+    Ok(content.to_string())
+}
+
+/// Build result
+#[derive(Debug, Serialize)]
+struct BuildResult {
+    success: bool,
+    error: Option<String>,
+}
+
+/// Build an AI-generated plugin
+/// Writes the manifest and source, then bundles with Vite (proper Svelte compilation)
+#[tauri::command]
+async fn build_ai_plugin(
+    plugin_id: String,
+    manifest_json: String,
+    source_code: String,
+) -> Result<BuildResult, String> {
+    let treeline_dir = get_treeline_dir()?;
+    let plugins_dir = treeline_dir.join("plugins");
+    let plugin_dir = plugins_dir.join(&plugin_id);
+
+    // Create plugin directory structure
+    fs::create_dir_all(&plugin_dir)
+        .map_err(|e| format!("Failed to create plugin directory: {}", e))?;
+
+    let src_dir = plugin_dir.join("src");
+    fs::create_dir_all(&src_dir)
+        .map_err(|e| format!("Failed to create src directory: {}", e))?;
+
+    // Write manifest.json
+    let manifest_path = plugin_dir.join("manifest.json");
+    fs::write(&manifest_path, manifest_json.trim())
+        .map_err(|e| format!("Failed to write manifest: {}", e))?;
+
+    // Write source code to src/index.ts
+    let source_path = src_dir.join("index.ts");
+    fs::write(&source_path, source_code.trim())
+        .map_err(|e| format!("Failed to write source: {}", e))?;
+
+    // Write package.json (for Vite build)
+    let package_json = serde_json::json!({
+        "name": plugin_id,
+        "version": "0.1.0",
+        "type": "module",
+        "scripts": {
+            "build": "vite build"
+        },
+        "dependencies": {
+            "@treeline-money/plugin-sdk": "^26.1.3101"
+        },
+        "devDependencies": {
+            "@sveltejs/vite-plugin-svelte": "^5.0.4",
+            "@tsconfig/svelte": "^5.0.4",
+            "svelte": "^5.18.2",
+            "typescript": "^5.7.3",
+            "vite": "^6.0.11"
+        }
+    });
+    fs::write(
+        plugin_dir.join("package.json"),
+        serde_json::to_string_pretty(&package_json).unwrap(),
+    )
+    .map_err(|e| format!("Failed to write package.json: {}", e))?;
+
+    // Write vite.config.ts
+    let vite_config = r#"import { defineConfig } from "vite";
+import { svelte } from "@sveltejs/vite-plugin-svelte";
+
+export default defineConfig({
+  plugins: [svelte({ emitCss: false })],
+  build: {
+    lib: { entry: "src/index.ts", formats: ["es"], fileName: () => "index.js" },
+    outDir: ".",
+    emptyOutDir: false,
+    cssCodeSplit: false,
+  },
+});
+"#;
+    fs::write(plugin_dir.join("vite.config.ts"), vite_config)
+        .map_err(|e| format!("Failed to write vite.config.ts: {}", e))?;
+
+    // Write svelte.config.js
+    let svelte_config = r#"import { vitePreprocess } from "@sveltejs/vite-plugin-svelte";
+export default { preprocess: vitePreprocess() };
+"#;
+    fs::write(plugin_dir.join("svelte.config.js"), svelte_config)
+        .map_err(|e| format!("Failed to write svelte.config.js: {}", e))?;
+
+    // Write tsconfig.json
+    let tsconfig = serde_json::json!({
+        "extends": "@tsconfig/svelte/tsconfig.json",
+        "compilerOptions": {
+            "target": "ESNext",
+            "module": "ESNext",
+            "resolveJsonModule": true,
+            "isolatedModules": true,
+            "strict": true,
+            "noImplicitAny": false
+        },
+        "include": ["src/**/*.ts", "src/**/*.svelte"]
+    });
+    fs::write(
+        plugin_dir.join("tsconfig.json"),
+        serde_json::to_string_pretty(&tsconfig).unwrap(),
+    )
+    .map_err(|e| format!("Failed to write tsconfig.json: {}", e))?;
+
+    // Run npm install (with prefer-offline for speed)
+    let install_output = tokio::process::Command::new("npm")
+        .args(["install", "--prefer-offline"])
+        .current_dir(&plugin_dir)
+        .output()
+        .await
+        .map_err(|e| format!("Failed to run npm install: {}", e))?;
+
+    if !install_output.status.success() {
+        let stderr = String::from_utf8_lossy(&install_output.stderr);
+        return Ok(BuildResult {
+            success: false,
+            error: Some(format!("npm install failed: {}", stderr)),
+        });
+    }
+
+    // Run npm run build
+    let build_output = tokio::process::Command::new("npm")
+        .args(["run", "build"])
+        .current_dir(&plugin_dir)
+        .output()
+        .await
+        .map_err(|e| format!("Failed to run build: {}", e))?;
+
+    if !build_output.status.success() {
+        let stderr = String::from_utf8_lossy(&build_output.stderr);
+        let stdout = String::from_utf8_lossy(&build_output.stdout);
+        return Ok(BuildResult {
+            success: false,
+            error: Some(format!("Build failed:\n{}\n{}", stdout, stderr)),
+        });
+    }
+
+    Ok(BuildResult {
+        success: true,
+        error: None,
+    })
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -3130,7 +3374,12 @@ pub fn run() {
             log_page,
             log_action,
             log_error,
-            get_logs_path
+            get_logs_path,
+            // AI Plugin Builder commands
+            has_ai_api_key,
+            set_ai_api_key,
+            generate_plugin_code,
+            build_ai_plugin
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
