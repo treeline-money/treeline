@@ -67,12 +67,18 @@ pub fn run(command: BackupCommands) -> Result<()> {
 
     match command {
         BackupCommands::Create { max_backups, json } => {
-            log_event(&logger, LogEvent::new("backup_started").with_command("backup create"));
+            log_event(
+                &logger,
+                LogEvent::new("backup_started").with_command("backup create"),
+            );
             // Create needs full context to access the database
             let ctx = get_context()?;
             match ctx.backup_service.create(max_backups) {
                 Ok(result) => {
-                    log_event(&logger, LogEvent::new("backup_completed").with_command("backup create"));
+                    log_event(
+                        &logger,
+                        LogEvent::new("backup_completed").with_command("backup create"),
+                    );
                     if json {
                         println!("{}", serde_json::to_string_pretty(&result)?);
                     } else {
@@ -122,7 +128,10 @@ pub fn run(command: BackupCommands) -> Result<()> {
             println!("{}", table);
         }
         BackupCommands::Restore { name, force, json } => {
-            log_event(&logger, LogEvent::new("restore_started").with_command("backup restore"));
+            log_event(
+                &logger,
+                LogEvent::new("restore_started").with_command("backup restore"),
+            );
             // Restore doesn't need database access - it replaces the database
             let backup_service = get_backup_service();
             if !force && !json {
@@ -138,7 +147,10 @@ pub fn run(command: BackupCommands) -> Result<()> {
             }
             match backup_service.restore(&name) {
                 Ok(()) => {
-                    log_event(&logger, LogEvent::new("restore_completed").with_command("backup restore"));
+                    log_event(
+                        &logger,
+                        LogEvent::new("restore_completed").with_command("backup restore"),
+                    );
                     if json {
                         println!("{}", serde_json::json!({"restored": name}));
                     } else {

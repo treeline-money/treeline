@@ -9,7 +9,9 @@ use clap::{Parser, Subcommand};
 mod commands;
 mod output;
 
-use commands::{backup, compact, demo, doctor, encrypt, logs, plugin, query, setup, status, sync, tag};
+use commands::{
+    backup, compact, demo, doctor, encrypt, logs, plugin, query, setup, status, sync, tag,
+};
 
 /// Treeline - personal finance in your terminal
 #[derive(Parser)]
@@ -161,16 +163,34 @@ fn main() -> ExitCode {
 fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Commands::Status { json } => status::run(json),
-        Commands::Sync { integration, dry_run, json } => sync::run(integration, dry_run, json),
-        Commands::Query { sql, file, format, json } => {
+        Commands::Sync {
+            integration,
+            dry_run,
+            json,
+        } => sync::run(integration, dry_run, json),
+        Commands::Query {
+            sql,
+            file,
+            format,
+            json,
+        } => {
             let fmt = if json { "json".to_string() } else { format };
             query::run(sql.as_deref(), file.as_deref(), &fmt)
         }
-        Commands::Tag { tags, ids, replace, json } => tag::run(&tags, ids, replace, json),
+        Commands::Tag {
+            tags,
+            ids,
+            replace,
+            json,
+        } => tag::run(&tags, ids, replace, json),
         Commands::Backup { command } => backup::run(command),
         Commands::Compact { skip_backup, json } => compact::run(skip_backup, json),
         Commands::Doctor { verbose, json } => doctor::run(verbose, json),
-        Commands::Encrypt { command, password, json } => encrypt::run(command, password, json),
+        Commands::Encrypt {
+            command,
+            password,
+            json,
+        } => encrypt::run(command, password, json),
         Commands::Decrypt { password, json } => encrypt::run_decrypt(password, json),
         Commands::Demo { command } => demo::run(command),
         Commands::Setup { command } => setup::run(command),

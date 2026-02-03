@@ -58,7 +58,10 @@ pub fn run(command: PluginCommands) -> Result<()> {
             let result = plugin_service.create_plugin(&name, directory.as_deref())?;
 
             if !result.success {
-                eprintln!("{}", format!("Error: {}", result.error.unwrap_or_default()).red());
+                eprintln!(
+                    "{}",
+                    format!("Error: {}", result.error.unwrap_or_default()).red()
+                );
                 std::process::exit(1);
             }
 
@@ -73,43 +76,70 @@ pub fn run(command: PluginCommands) -> Result<()> {
             println!("  5. tl plugin install {}\n", plugin_dir);
         }
 
-        PluginCommands::Install { source, version, rebuild, json } => {
+        PluginCommands::Install {
+            source,
+            version,
+            rebuild,
+            json,
+        } => {
             let result = plugin_service.install_plugin(&source, version.as_deref(), rebuild)?;
 
             if !result.success {
                 if json {
-                    println!("{}", serde_json::json!({
-                        "success": false,
-                        "error": result.error
-                    }));
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "success": false,
+                            "error": result.error
+                        })
+                    );
                 } else {
-                    eprintln!("{}", format!("Error: {}", result.error.unwrap_or_default()).red());
+                    eprintln!(
+                        "{}",
+                        format!("Error: {}", result.error.unwrap_or_default()).red()
+                    );
                 }
                 std::process::exit(1);
             }
 
             if json {
-                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-                    "success": true,
-                    "plugin_id": result.plugin_id,
-                    "plugin_name": result.plugin_name,
-                    "version": result.version,
-                    "install_dir": result.install_dir,
-                    "source": result.source,
-                    "built": result.built
-                }))?);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "success": true,
+                        "plugin_id": result.plugin_id,
+                        "plugin_name": result.plugin_name,
+                        "version": result.version,
+                        "install_dir": result.install_dir,
+                        "source": result.source,
+                        "built": result.built
+                    }))?
+                );
             } else {
-                println!("\n{}", format!("✓ Installed plugin: {}", result.plugin_name.as_deref().unwrap_or("")).green());
+                println!(
+                    "\n{}",
+                    format!(
+                        "✓ Installed plugin: {}",
+                        result.plugin_name.as_deref().unwrap_or("")
+                    )
+                    .green()
+                );
                 println!("  Plugin ID: {}", result.plugin_id.as_deref().unwrap_or(""));
                 println!("  Version: {}", result.version.as_deref().unwrap_or(""));
-                println!("  Location: {}", result.install_dir.as_deref().unwrap_or(""));
+                println!(
+                    "  Location: {}",
+                    result.install_dir.as_deref().unwrap_or("")
+                );
                 if let Some(src) = &result.source {
                     println!("  Source: {}", src);
                 }
                 if result.built == Some(true) {
                     println!("  {}", "(Built from source)".dimmed());
                 }
-                println!("\n{}\n", "Restart the Treeline UI to load the plugin".cyan());
+                println!(
+                    "\n{}\n",
+                    "Restart the Treeline UI to load the plugin".cyan()
+                );
             }
         }
 
@@ -118,24 +148,40 @@ pub fn run(command: PluginCommands) -> Result<()> {
 
             if !result.success {
                 if json {
-                    println!("{}", serde_json::json!({
-                        "success": false,
-                        "error": result.error
-                    }));
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "success": false,
+                            "error": result.error
+                        })
+                    );
                 } else {
-                    eprintln!("{}", format!("Error: {}", result.error.unwrap_or_default()).red());
+                    eprintln!(
+                        "{}",
+                        format!("Error: {}", result.error.unwrap_or_default()).red()
+                    );
                 }
                 std::process::exit(1);
             }
 
             if json {
-                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-                    "success": true,
-                    "plugin_id": result.plugin_id,
-                    "plugin_name": result.plugin_name
-                }))?);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "success": true,
+                        "plugin_id": result.plugin_id,
+                        "plugin_name": result.plugin_name
+                    }))?
+                );
             } else {
-                println!("{}\n", format!("✓ Uninstalled plugin: {}", result.plugin_name.as_deref().unwrap_or(&plugin_id)).green());
+                println!(
+                    "{}\n",
+                    format!(
+                        "✓ Uninstalled plugin: {}",
+                        result.plugin_name.as_deref().unwrap_or(&plugin_id)
+                    )
+                    .green()
+                );
             }
         }
 
@@ -143,16 +189,22 @@ pub fn run(command: PluginCommands) -> Result<()> {
             let plugins = plugin_service.list_plugins()?;
 
             if json {
-                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-                    "success": true,
-                    "plugins": plugins
-                }))?);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "success": true,
+                        "plugins": plugins
+                    }))?
+                );
                 return Ok(());
             }
 
             if plugins.is_empty() {
                 println!("\n{}", "No plugins installed".dimmed());
-                println!("{}\n", "Use 'tl plugin new <name>' to create a plugin".dimmed());
+                println!(
+                    "{}\n",
+                    "Use 'tl plugin new <name>' to create a plugin".dimmed()
+                );
                 return Ok(());
             }
 

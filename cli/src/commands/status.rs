@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use colored::Colorize;
-use comfy_table::{Table, ContentArrangement};
+use comfy_table::{ContentArrangement, Table};
 
 use super::get_context;
 
@@ -25,14 +25,18 @@ pub fn run(json: bool) -> Result<()> {
 
     table.add_row(vec!["Accounts", &status.total_accounts.to_string()]);
     table.add_row(vec!["Transactions", &status.total_transactions.to_string()]);
-    table.add_row(vec!["Balance Snapshots", &status.total_snapshots.to_string()]);
+    table.add_row(vec![
+        "Balance Snapshots",
+        &status.total_snapshots.to_string(),
+    ]);
     table.add_row(vec!["Integrations", &status.total_integrations.to_string()]);
 
     println!("{}", table);
     println!();
 
     // Print date range
-    if let (Some(earliest), Some(latest)) = (&status.date_range.earliest, &status.date_range.latest) {
+    if let (Some(earliest), Some(latest)) = (&status.date_range.earliest, &status.date_range.latest)
+    {
         println!("Date range: {} to {}", earliest, latest);
         println!();
     }

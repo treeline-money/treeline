@@ -31,4 +31,4 @@ pub use plugin::{PluginInfo, PluginManifest, PluginResult, PluginService, Update
 pub use query::QueryService;
 pub use status::{AccountSummary, DateRange, StatusService, StatusSummary};
 pub use sync::SyncService;
-pub use tag::{AutoTagResult, TagResult, TagResultEntry, TagService};
+pub use tag::{AutoTagResult, RuleFailure, TagResult, TagResultEntry, TagService};

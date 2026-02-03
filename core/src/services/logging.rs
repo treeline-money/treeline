@@ -4,14 +4,16 @@
 //! No user data (transactions, accounts, balances, descriptions) is ever logged.
 //!
 //! This service is designed to be used by both CLI and desktop applications.
+//! Uses per-operation locking to allow external tools to query logs while the app runs.
 
+use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Result};
 use duckdb::Connection;
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
 use crate::log_migrations::LOG_MIGRATIONS;
@@ -150,8 +152,10 @@ pub struct LogEntry {
 ///
 /// This service manages the logs.duckdb database and provides methods
 /// for logging events and querying the log history.
+///
+/// Uses per-operation filesystem locking to allow external tools (notebooks,
+/// scripts) to query logs while the app is running.
 pub struct LoggingService {
-    conn: Mutex<Connection>,
     db_path: PathBuf,
     entry_point: EntryPoint,
     app_version: String,
@@ -169,79 +173,121 @@ impl LoggingService {
         app_version: impl Into<String>,
     ) -> Result<Self> {
         let db_path = treeline_dir.join("logs.duckdb");
-        let conn = Self::open_database(&db_path)?;
+
+        // Ensure parent directory exists
+        if let Some(parent) = db_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
 
         let service = Self {
-            conn: Mutex::new(conn),
             db_path,
             entry_point,
             app_version: app_version.into(),
             platform: detect_platform(),
         };
 
+        // Run migrations on startup
         service.run_migrations()?;
 
         Ok(service)
     }
 
-    /// Open the logs database, creating it if it doesn't exist
-    fn open_database(db_path: &Path) -> Result<Connection> {
-        let conn = Connection::open(db_path)?;
+    /// Acquire the filesystem lock for database access.
+    fn acquire_lock(&self) -> Result<File> {
+        let lock_path = self.db_path.with_extension("duckdb.lock");
+
+        let lock_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .map_err(|e| anyhow!("Failed to open lock file {}: {}", lock_path.display(), e))?;
+
+        lock_file
+            .lock_exclusive()
+            .map_err(|e| anyhow!("Failed to acquire logs database lock: {}", e))?;
+
+        Ok(lock_file)
+    }
+
+    /// Open a database connection
+    fn open_connection(&self) -> Result<Connection> {
+        let conn = Connection::open(&self.db_path)?;
         Ok(conn)
+    }
+
+    /// Execute a read-only operation with the database connection.
+    fn with_connection<T, F>(&self, f: F) -> Result<T>
+    where
+        F: FnOnce(&Connection) -> Result<T>,
+    {
+        let _lock = self.acquire_lock()?;
+        let conn = self.open_connection()?;
+        f(&conn)
+    }
+
+    /// Execute a write operation with the database connection.
+    fn with_connection_write<T, F>(&self, f: F) -> Result<T>
+    where
+        F: FnOnce(&Connection) -> Result<T>,
+    {
+        let _lock = self.acquire_lock()?;
+        let conn = self.open_connection()?;
+        let result = f(&conn)?;
+        let _ = conn.execute("CHECKPOINT", []);
+        Ok(result)
     }
 
     /// Run any pending migrations
     fn run_migrations(&self) -> Result<()> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow!("Lock poisoned: {}", e))?;
+        self.with_connection_write(|conn| {
+            // Check if migrations table exists
+            let table_exists: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) > 0 FROM information_schema.tables WHERE table_name = 'sys_migrations'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap_or(false);
 
-        // Check if migrations table exists
-        let table_exists: bool = conn
-            .query_row(
-                "SELECT COUNT(*) > 0 FROM information_schema.tables WHERE table_name = 'sys_migrations'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap_or(false);
-
-        // Bootstrap migrations table if needed
-        if !table_exists {
-            if let Some((name, sql)) = LOG_MIGRATIONS
-                .iter()
-                .find(|(n, _)| *n == "000_migrations.sql")
-            {
-                conn.execute_batch(sql)?;
-                conn.execute(
-                    "INSERT INTO sys_migrations (migration_name) VALUES (?)",
-                    [name],
-                )?;
+            // Bootstrap migrations table if needed
+            if !table_exists {
+                if let Some((name, sql)) = LOG_MIGRATIONS
+                    .iter()
+                    .find(|(n, _)| *n == "000_migrations.sql")
+                {
+                    conn.execute_batch(sql)?;
+                    conn.execute(
+                        "INSERT INTO sys_migrations (migration_name) VALUES (?)",
+                        [name],
+                    )?;
+                }
             }
-        }
 
-        // Get applied migrations
-        let mut stmt = conn.prepare("SELECT migration_name FROM sys_migrations")?;
-        let applied: Vec<String> = stmt
-            .query_map([], |row| row.get(0))?
-            .filter_map(|r| r.ok())
-            .collect();
+            // Get applied migrations
+            let mut stmt = conn.prepare("SELECT migration_name FROM sys_migrations")?;
+            let applied: Vec<String> = stmt
+                .query_map([], |row| row.get(0))?
+                .filter_map(|r| r.ok())
+                .collect();
 
-        // Apply pending migrations
-        for (name, sql) in LOG_MIGRATIONS.iter() {
-            if *name == "000_migrations.sql" {
-                continue;
+            // Apply pending migrations
+            for (name, sql) in LOG_MIGRATIONS.iter() {
+                if *name == "000_migrations.sql" {
+                    continue;
+                }
+                if !applied.contains(&name.to_string()) {
+                    conn.execute_batch(sql)?;
+                    conn.execute(
+                        "INSERT INTO sys_migrations (migration_name) VALUES (?)",
+                        [name],
+                    )?;
+                }
             }
-            if !applied.contains(&name.to_string()) {
-                conn.execute_batch(sql)?;
-                conn.execute(
-                    "INSERT INTO sys_migrations (migration_name) VALUES (?)",
-                    [name],
-                )?;
-            }
-        }
 
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Log an event
@@ -250,34 +296,30 @@ impl LoggingService {
     /// app_version, and platform are automatically added from the service
     /// configuration.
     pub fn log(&self, event: LogEvent) -> Result<()> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow!("Lock poisoned: {}", e))?;
-
-        conn.execute(
-            r#"
-            INSERT INTO sys_logs (
-                id, timestamp, entry_point, app_version, platform,
-                event, integration, page, command, error_message, error_details
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            "#,
-            duckdb::params![
-                generate_id(),
-                now_ms(),
-                self.entry_point.as_str(),
-                &self.app_version,
-                self.platform,
-                &event.event,
-                &event.integration,
-                &event.page,
-                &event.command,
-                &event.error_message,
-                &event.error_details,
-            ],
-        )?;
-
-        Ok(())
+        self.with_connection_write(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO sys_logs (
+                    id, timestamp, entry_point, app_version, platform,
+                    event, integration, page, command, error_message, error_details
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                "#,
+                duckdb::params![
+                    generate_id(),
+                    now_ms(),
+                    self.entry_point.as_str(),
+                    &self.app_version,
+                    self.platform,
+                    &event.event,
+                    &event.integration,
+                    &event.page,
+                    &event.command,
+                    &event.error_message,
+                    &event.error_details,
+                ],
+            )?;
+            Ok(())
+        })
     }
 
     /// Log a simple event with just a name
@@ -308,119 +350,108 @@ impl LoggingService {
     ///
     /// Returns the most recent entries, up to the specified limit.
     pub fn get_recent(&self, limit: usize) -> Result<Vec<LogEntry>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow!("Lock poisoned: {}", e))?;
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT id, timestamp, entry_point, app_version, platform,
+                       event, integration, page, command, error_message, error_details
+                FROM sys_logs
+                ORDER BY timestamp DESC
+                LIMIT ?
+                "#,
+            )?;
 
-        let mut stmt = conn.prepare(
-            r#"
-            SELECT id, timestamp, entry_point, app_version, platform,
-                   event, integration, page, command, error_message, error_details
-            FROM sys_logs
-            ORDER BY timestamp DESC
-            LIMIT ?
-            "#,
-        )?;
+            let entries = stmt
+                .query_map([limit as i64], |row| {
+                    Ok(LogEntry {
+                        id: row.get(0)?,
+                        timestamp: row.get(1)?,
+                        entry_point: row.get(2)?,
+                        app_version: row.get(3)?,
+                        platform: row.get(4)?,
+                        event: row.get(5)?,
+                        integration: row.get(6)?,
+                        page: row.get(7)?,
+                        command: row.get(8)?,
+                        error_message: row.get(9)?,
+                        error_details: row.get(10)?,
+                    })
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
 
-        let entries = stmt
-            .query_map([limit as i64], |row| {
-                Ok(LogEntry {
-                    id: row.get(0)?,
-                    timestamp: row.get(1)?,
-                    entry_point: row.get(2)?,
-                    app_version: row.get(3)?,
-                    platform: row.get(4)?,
-                    event: row.get(5)?,
-                    integration: row.get(6)?,
-                    page: row.get(7)?,
-                    command: row.get(8)?,
-                    error_message: row.get(9)?,
-                    error_details: row.get(10)?,
-                })
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
-
-        Ok(entries)
+            Ok(entries)
+        })
     }
 
     /// Query log entries with errors
     pub fn get_errors(&self, limit: usize) -> Result<Vec<LogEntry>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow!("Lock poisoned: {}", e))?;
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT id, timestamp, entry_point, app_version, platform,
+                       event, integration, page, command, error_message, error_details
+                FROM sys_logs
+                WHERE error_message IS NOT NULL
+                ORDER BY timestamp DESC
+                LIMIT ?
+                "#,
+            )?;
 
-        let mut stmt = conn.prepare(
-            r#"
-            SELECT id, timestamp, entry_point, app_version, platform,
-                   event, integration, page, command, error_message, error_details
-            FROM sys_logs
-            WHERE error_message IS NOT NULL
-            ORDER BY timestamp DESC
-            LIMIT ?
-            "#,
-        )?;
+            let entries = stmt
+                .query_map([limit as i64], |row| {
+                    Ok(LogEntry {
+                        id: row.get(0)?,
+                        timestamp: row.get(1)?,
+                        entry_point: row.get(2)?,
+                        app_version: row.get(3)?,
+                        platform: row.get(4)?,
+                        event: row.get(5)?,
+                        integration: row.get(6)?,
+                        page: row.get(7)?,
+                        command: row.get(8)?,
+                        error_message: row.get(9)?,
+                        error_details: row.get(10)?,
+                    })
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
 
-        let entries = stmt
-            .query_map([limit as i64], |row| {
-                Ok(LogEntry {
-                    id: row.get(0)?,
-                    timestamp: row.get(1)?,
-                    entry_point: row.get(2)?,
-                    app_version: row.get(3)?,
-                    platform: row.get(4)?,
-                    event: row.get(5)?,
-                    integration: row.get(6)?,
-                    page: row.get(7)?,
-                    command: row.get(8)?,
-                    error_message: row.get(9)?,
-                    error_details: row.get(10)?,
-                })
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
-
-        Ok(entries)
+            Ok(entries)
+        })
     }
 
     /// Get the total number of log entries
     pub fn count(&self) -> Result<u64> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow!("Lock poisoned: {}", e))?;
-        let count: u64 = conn.query_row("SELECT COUNT(*) FROM sys_logs", [], |row| row.get(0))?;
-        Ok(count)
+        self.with_connection(|conn| {
+            let count: u64 =
+                conn.query_row("SELECT COUNT(*) FROM sys_logs", [], |row| row.get(0))?;
+            Ok(count)
+        })
     }
 
     /// Delete logs older than the specified timestamp (unix ms)
     pub fn delete_before(&self, timestamp_ms: i64) -> Result<u64> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow!("Lock poisoned: {}", e))?;
-        let deleted = conn.execute("DELETE FROM sys_logs WHERE timestamp < ?", [timestamp_ms])?;
-        Ok(deleted as u64)
+        self.with_connection_write(|conn| {
+            let deleted =
+                conn.execute("DELETE FROM sys_logs WHERE timestamp < ?", [timestamp_ms])?;
+            Ok(deleted as u64)
+        })
     }
 
     /// Export logs to a file for troubleshooting
     ///
     /// Creates a copy of the logs database that can be sent for analysis.
     pub fn export(&self, output_path: &Path) -> Result<PathBuf> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow!("Lock poisoned: {}", e))?;
+        self.with_connection(|conn| {
+            // Force checkpoint to ensure all data is written
+            conn.execute("CHECKPOINT", [])?;
 
-        // Force checkpoint to ensure all data is written
-        conn.execute("CHECKPOINT", [])?;
+            // Copy the database file
+            std::fs::copy(&self.db_path, output_path)?;
 
-        // Copy the database file
-        std::fs::copy(&self.db_path, output_path)?;
-
-        Ok(output_path.to_path_buf())
+            Ok(output_path.to_path_buf())
+        })
     }
 
     /// Get the path to the logs database
@@ -524,5 +555,50 @@ mod tests {
         service.export(&export_path).unwrap();
 
         assert!(export_path.exists());
+    }
+
+    #[test]
+    fn test_concurrent_log_access() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let dir = tempdir().unwrap();
+        let db_path = Arc::new(dir.path().to_path_buf());
+
+        // Create initial service and log some events
+        {
+            let service = LoggingService::new(&db_path, EntryPoint::Desktop, "1.0.0").unwrap();
+            service.log_event("initial_event").unwrap();
+        }
+
+        // Spawn multiple threads that read and write concurrently
+        let mut handles = vec![];
+
+        for i in 0..4 {
+            let db_path = Arc::clone(&db_path);
+            let handle = thread::spawn(move || {
+                let service = LoggingService::new(&db_path, EntryPoint::Cli, "1.0.0").unwrap();
+
+                // Write
+                service.log_event(&format!("thread_{}_event", i)).unwrap();
+
+                // Read
+                let count = service.count().unwrap();
+                assert!(count >= 1, "Should have at least 1 log entry");
+            });
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Verify all events were logged
+        let service = LoggingService::new(&db_path, EntryPoint::Cli, "1.0.0").unwrap();
+        let count = service.count().unwrap();
+        assert_eq!(
+            count, 5,
+            "Should have 5 log entries (1 initial + 4 threads)"
+        );
     }
 }

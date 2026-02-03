@@ -13,8 +13,8 @@ pub mod status;
 pub mod sync;
 pub mod tag;
 
-use std::path::PathBuf;
 use anyhow::{Context, Result};
+use std::path::PathBuf;
 use treeline_core::services::EncryptionService;
 use treeline_core::{EntryPoint, LogEvent, LoggingService, TreelineContext};
 
@@ -64,7 +64,11 @@ pub fn get_context() -> Result<TreelineContext> {
         // Password that needs derivation
         eprintln!("DEBUG: Using TL_DB_PASSWORD, deriving key...");
         let config = treeline_core::config::Config::load(&treeline_dir).unwrap_or_default();
-        let db_filename = if config.demo_mode { "demo.duckdb" } else { "treeline.duckdb" };
+        let db_filename = if config.demo_mode {
+            "demo.duckdb"
+        } else {
+            "treeline.duckdb"
+        };
         let db_path = treeline_dir.join(db_filename);
         eprintln!("DEBUG: db_path={:?}", db_path);
 
@@ -101,4 +105,3 @@ pub fn get_context() -> Result<TreelineContext> {
         })
         .context("Failed to initialize treeline context")
 }
-

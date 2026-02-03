@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use colored::Colorize;
-use comfy_table::{Table, ContentArrangement, Cell, Color};
+use comfy_table::{Cell, Color, ContentArrangement, Table};
 use serde_json::Value;
 
 use super::get_context;
@@ -12,7 +12,8 @@ fn format_detail(value: &Value) -> String {
     match value {
         Value::Object(map) => {
             // Format as "key: value, key: value"
-            let parts: Vec<String> = map.iter()
+            let parts: Vec<String> = map
+                .iter()
                 .filter(|(k, v)| !v.is_null() && *k != "transactions")
                 .map(|(k, v)| {
                     let display_val = match v {
@@ -39,7 +40,10 @@ fn format_detail(value: &Value) -> String {
                         Value::Array(arr) => {
                             // Format arrays compactly
                             if arr.len() <= 3 {
-                                format!("{:?}", arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
+                                format!(
+                                    "{:?}",
+                                    arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>()
+                                )
                             } else {
                                 format!("[{} items]", arr.len())
                             }

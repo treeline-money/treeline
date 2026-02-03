@@ -3,7 +3,7 @@
 #![allow(dead_code)]
 
 use colored::Colorize;
-use comfy_table::{presets::UTF8_FULL_CONDENSED, Table, ContentArrangement};
+use comfy_table::{presets::UTF8_FULL_CONDENSED, ContentArrangement, Table};
 
 /// Print a success message
 pub fn success(msg: &str) {

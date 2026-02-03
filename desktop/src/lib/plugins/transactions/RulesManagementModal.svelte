@@ -722,7 +722,7 @@
                   {#each testResult.sampleMatches as match}
                     <div class="test-sample">
                       <div class="sample-row-1">
-                        <span class="sample-date">{new Date(match.transaction_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
+                        <span class="sample-date">{new Date(match.transaction_date + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
                         <span class="sample-desc">{match.description}</span>
                         <span class="sample-amount" class:negative={match.amount < 0} class:positive={match.amount >= 0}>
                           {formatUserCurrency(match.amount)}

@@ -5768,7 +5768,7 @@ dependencies = [
 
 [[package]]
 name = "treeline"
-version = "26.1.3001"
+version = "26.1.3101"
 dependencies = [
  "argon2",
  "arrow",
@@ -5796,7 +5796,7 @@ dependencies = [
 
 [[package]]
 name = "treeline-core"
-version = "26.1.3001"
+version = "26.1.3101"
 dependencies = [
  "anyhow",
  "argon2",

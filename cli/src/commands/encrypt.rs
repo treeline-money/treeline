@@ -25,9 +25,7 @@ fn get_password_or_prompt(password_flag: Option<String>, prompt: &str) -> Result
     }
 
     // 3. Prompt interactively
-    let p = Password::new()
-        .with_prompt(prompt)
-        .interact()?;
+    let p = Password::new().with_prompt(prompt).interact()?;
     Ok(p)
 }
 
@@ -75,10 +73,16 @@ pub fn run(command: Option<EncryptCommands>, password: Option<String>, json: boo
     if command.is_none() {
         if config.demo_mode {
             if json {
-                println!("{}", serde_json::json!({"error": "Cannot encrypt demo database"}));
+                println!(
+                    "{}",
+                    serde_json::json!({"error": "Cannot encrypt demo database"})
+                );
             } else {
                 eprintln!("{}", "Cannot encrypt demo database".red());
-                eprintln!("{}", "Demo mode uses a separate, unencrypted database".dimmed());
+                eprintln!(
+                    "{}",
+                    "Demo mode uses a separate, unencrypted database".dimmed()
+                );
             }
             std::process::exit(1);
         }
@@ -100,7 +104,10 @@ pub fn run(command: Option<EncryptCommands>, password: Option<String>, json: boo
         }
         None => {
             let logger = get_logger();
-            log_event(&logger, LogEvent::new("encrypt_started").with_command("encrypt"));
+            log_event(
+                &logger,
+                LogEvent::new("encrypt_started").with_command("encrypt"),
+            );
 
             // Encrypt the database
             if encryption_service.is_encrypted()? {
@@ -127,7 +134,10 @@ pub fn run(command: Option<EncryptCommands>, password: Option<String>, json: boo
                 BackupService::new(treeline_dir.clone(), "treeline.duckdb".to_string());
             match encryption_service.encrypt(&pwd, &backup_service) {
                 Ok(result) => {
-                    log_event(&logger, LogEvent::new("encrypt_completed").with_command("encrypt"));
+                    log_event(
+                        &logger,
+                        LogEvent::new("encrypt_completed").with_command("encrypt"),
+                    );
                     if json {
                         println!("{}", serde_json::to_string_pretty(&result)?);
                     } else {
@@ -155,7 +165,10 @@ pub fn run(command: Option<EncryptCommands>, password: Option<String>, json: boo
 
 pub fn run_decrypt(password: Option<String>, json: bool) -> Result<()> {
     let logger = get_logger();
-    log_event(&logger, LogEvent::new("decrypt_started").with_command("decrypt"));
+    log_event(
+        &logger,
+        LogEvent::new("decrypt_started").with_command("decrypt"),
+    );
 
     let treeline_dir = super::get_treeline_dir();
     let config = Config::load(&treeline_dir)?;
@@ -187,7 +200,10 @@ pub fn run_decrypt(password: Option<String>, json: bool) -> Result<()> {
     let backup_service = BackupService::new(treeline_dir.clone(), "treeline.duckdb".to_string());
     match encryption_service.decrypt(&pwd, &backup_service) {
         Ok(result) => {
-            log_event(&logger, LogEvent::new("decrypt_completed").with_command("decrypt"));
+            log_event(
+                &logger,
+                LogEvent::new("decrypt_completed").with_command("decrypt"),
+            );
             if json {
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {

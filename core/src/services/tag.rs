@@ -29,6 +29,7 @@ impl TagService {
                 rules_evaluated: 0,
                 rules_matched: 0,
                 transactions_tagged: 0,
+                failed_rules: Vec::new(),
             });
         }
 
@@ -40,11 +41,13 @@ impl TagService {
                 rules_evaluated: 0,
                 rules_matched: 0,
                 transactions_tagged: 0,
+                failed_rules: Vec::new(),
             });
         }
 
         let mut rules_matched = 0;
         let mut transactions_tagged_set = std::collections::HashSet::new();
+        let mut failed_rules = Vec::new();
 
         // For each rule, find matching transactions and apply tags
         for rule in &rules {
@@ -59,8 +62,15 @@ impl TagService {
                 .get_transactions_matching_rule(tx_ids, &rule.sql_condition)
             {
                 Ok(ids) => ids,
-                Err(_) => {
-                    // Rule condition failed (invalid SQL?) - skip this rule and continue
+                Err(e) => {
+                    // Rule condition failed - record the failure and continue
+                    // Sanitize error message to avoid leaking user data
+                    let sanitized_error = sanitize_sql_error(&e.to_string());
+                    failed_rules.push(RuleFailure {
+                        rule_id: rule.rule_id.clone(),
+                        rule_name: rule.name.clone(),
+                        error: sanitized_error,
+                    });
                     continue;
                 }
             };
@@ -100,6 +110,7 @@ impl TagService {
             rules_evaluated: rules.len() as i64,
             rules_matched,
             transactions_tagged: transactions_tagged_set.len() as i64,
+            failed_rules,
         })
     }
 
@@ -206,4 +217,43 @@ pub struct AutoTagResult {
     pub rules_matched: i64,
     /// Number of transactions that had tags applied
     pub transactions_tagged: i64,
+    /// Rules that failed to apply (with error messages)
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub failed_rules: Vec<RuleFailure>,
+}
+
+/// Information about a failed rule application
+#[derive(Debug, Serialize, Clone)]
+pub struct RuleFailure {
+    /// Rule ID
+    pub rule_id: String,
+    /// Rule name
+    pub rule_name: String,
+    /// Error message (sanitized - no user data)
+    pub error: String,
+}
+
+/// Sanitize SQL error messages to avoid leaking user data
+///
+/// DuckDB error messages can contain the SQL query which may include
+/// user-entered patterns. We extract just the error type/category.
+fn sanitize_sql_error(error: &str) -> String {
+    // Common DuckDB error patterns
+    if error.contains("Parser Error") {
+        return "SQL syntax error in rule condition".to_string();
+    }
+    if error.contains("Binder Error") {
+        return "Invalid column or table reference in rule condition".to_string();
+    }
+    if error.contains("Invalid Input Error") {
+        return "Invalid input in rule condition".to_string();
+    }
+    if error.contains("Catalog Error") {
+        return "Unknown function or table in rule condition".to_string();
+    }
+    if error.contains("regexp") || error.contains("regex") {
+        return "Invalid regex pattern in rule condition".to_string();
+    }
+    // Generic fallback - don't include the actual error text
+    "Rule condition failed to execute".to_string()
 }

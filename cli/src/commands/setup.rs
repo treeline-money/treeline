@@ -101,7 +101,10 @@ pub fn run(command: Option<SetupCommands>) -> Result<()> {
             std::fs::create_dir_all(&treeline_dir)?;
 
             let ctx = get_context()?;
-            match ctx.sync_service.setup_lunchflow(&api_key, base_url.as_deref()) {
+            match ctx
+                .sync_service
+                .setup_lunchflow(&api_key, base_url.as_deref())
+            {
                 Ok(()) => {
                     log_event(
                         &logger,
@@ -165,9 +168,15 @@ pub fn run(command: Option<SetupCommands>) -> Result<()> {
 fn show_available_integrations() {
     println!("Available integrations:");
     println!();
-    println!("  {} - Global bank connections (20,000+ institutions)", "lunchflow".cyan());
+    println!(
+        "  {} - Global bank connections (20,000+ institutions)",
+        "lunchflow".cyan()
+    );
     println!("    tl setup lunchflow <api_key>");
-    println!("    Or set {} environment variable", "LUNCHFLOW_API_KEY".yellow());
+    println!(
+        "    Or set {} environment variable",
+        "LUNCHFLOW_API_KEY".yellow()
+    );
     println!();
     println!("    To get your API key:");
     println!("    1. Create an account at https://www.lunchflow.app/?atp=treeline");
@@ -179,5 +188,8 @@ fn show_available_integrations() {
     println!("    tl setup simplefin <token>");
     println!("    Get a setup token: https://beta-bridge.simplefin.org/");
     println!();
-    println!("Use '{}' to see configured integrations.", "tl setup status".cyan());
+    println!(
+        "Use '{}' to see configured integrations.",
+        "tl setup status".cyan()
+    );
 }

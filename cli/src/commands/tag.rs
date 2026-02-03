@@ -11,7 +11,8 @@ use super::get_context;
 pub fn run(tags: &str, ids: Vec<String>, replace: bool, json: bool) -> Result<()> {
     let ctx = get_context()?;
 
-    let tag_list: Vec<String> = tags.split(',')
+    let tag_list: Vec<String> = tags
+        .split(',')
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
@@ -27,12 +28,14 @@ pub fn run(tags: &str, ids: Vec<String>, replace: bool, json: bool) -> Result<()
         // If input contains newlines, split by newlines only
         // Otherwise, split by commas
         if trimmed.contains('\n') {
-            trimmed.lines()
+            trimmed
+                .lines()
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .collect()
         } else {
-            trimmed.split(',')
+            trimmed
+                .split(',')
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .collect()
@@ -58,13 +61,21 @@ pub fn run(tags: &str, ids: Vec<String>, replace: bool, json: bool) -> Result<()
 
     // Human-readable output matching Python format
     if result.succeeded > 0 {
-        println!("{} Successfully tagged {} transaction(s)", "✓".green(), result.succeeded);
+        println!(
+            "{} Successfully tagged {} transaction(s)",
+            "✓".green(),
+            result.succeeded
+        );
         println!("Tags applied: {}", tag_list.join(", "));
     }
 
     if result.failed > 0 {
         println!();
-        println!("{} Failed to tag {} transaction(s)", "✗".red(), result.failed);
+        println!(
+            "{} Failed to tag {} transaction(s)",
+            "✗".red(),
+            result.failed
+        );
         for entry in &result.results {
             if let Some(error) = &entry.error {
                 println!("  {}: {}", entry.transaction_id, error);

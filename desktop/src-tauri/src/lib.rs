@@ -980,6 +980,25 @@ async fn run_sync(
                                     LogEvent::new("sync_completed").with_integration(integration),
                                 );
                             }
+                            // Log any auto-tag rule failures
+                            if let Some(failures) =
+                                r.get("auto_tag_failures").and_then(|f| f.as_array())
+                            {
+                                for failure in failures {
+                                    let rule_name = failure
+                                        .get("rule_name")
+                                        .and_then(|n| n.as_str())
+                                        .unwrap_or("unknown");
+                                    let error_msg = failure
+                                        .get("error")
+                                        .and_then(|e| e.as_str())
+                                        .unwrap_or("unknown error");
+                                    let _ = logger.log(
+                                        LogEvent::new("auto_tag_rule_failed")
+                                            .with_error(&format!("{}: {}", rule_name, error_msg)),
+                                    );
+                                }
+                            }
                         }
                     }
                 }

@@ -2,7 +2,6 @@
 
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
 use fs2::FileExt;
 
@@ -40,15 +39,13 @@ fn validate_sql_syntax(sql: &str) -> Result<()> {
 
 /// DuckDB repository implementation
 ///
-/// Uses a filesystem lock to prevent concurrent access from multiple processes
-/// (app, CLI, etc.). The lock is held for the lifetime of the repository.
+/// Uses per-operation filesystem locking for safe multi-process access.
+/// Each operation acquires an exclusive lock, opens a connection, performs work,
+/// checkpoints (for writes), closes the connection, and releases the lock.
+/// This allows the CLI to work while the desktop app is idle.
 pub struct DuckDbRepository {
-    conn: Mutex<Connection>,
     db_path: PathBuf,
     encryption_key: Option<String>,
-    /// Filesystem lock file - held for the lifetime of the repository.
-    /// The lock is released when this file is dropped.
-    _lock_file: File,
 }
 
 impl DuckDbRepository {
@@ -57,37 +54,33 @@ impl DuckDbRepository {
     /// For encrypted databases, uses DuckDB's ATTACH with ENCRYPTION_KEY.
     /// The key should be the hex-encoded derived key from Argon2.
     ///
-    /// Uses a filesystem lock to prevent concurrent access from multiple processes
-    /// or threads. The lock is held for the lifetime of the repository.
+    /// Uses per-operation filesystem locking to allow multiple processes
+    /// (app, CLI) to safely share the database, with access serialized.
     pub fn new(db_path: &Path, encryption_key: Option<&str>) -> Result<Self> {
-        // Acquire filesystem lock first
-        let lock_file = Self::acquire_file_lock(db_path)?;
-
-        // Open DuckDB connection
-        let conn = Self::try_open_connection(db_path, encryption_key)?;
-
-        Ok(Self {
-            conn: Mutex::new(conn),
-            db_path: db_path.to_path_buf(),
-            encryption_key: encryption_key.map(|k| k.to_string()),
-            _lock_file: lock_file,
-        })
-    }
-
-    /// Acquire a filesystem lock for the database.
-    ///
-    /// This prevents concurrent access from multiple processes (app, CLI, etc.).
-    /// Uses a blocking lock - if another process holds the lock, this will wait
-    /// until it's released. The OS kernel manages the queue of waiters.
-    fn acquire_file_lock(db_path: &Path) -> Result<File> {
-        let lock_path = db_path.with_extension("duckdb.lock");
-
         // Ensure parent directory exists
-        if let Some(parent) = lock_path.parent() {
+        if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
 
-        // Open or create the lock file
+        let repo = Self {
+            db_path: db_path.to_path_buf(),
+            encryption_key: encryption_key.map(|k| k.to_string()),
+        };
+
+        // Verify we can open the database (acquires and releases lock)
+        repo.with_connection(|_| Ok(()))?;
+
+        Ok(repo)
+    }
+
+    /// Acquire the filesystem lock for database access.
+    ///
+    /// This prevents concurrent access from multiple processes (app, CLI, etc.).
+    /// Uses a blocking lock - if another process holds the lock, this will wait
+    /// until it's released.
+    fn acquire_lock(&self) -> Result<File> {
+        let lock_path = self.db_path.with_extension("duckdb.lock");
+
         let lock_file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -96,13 +89,56 @@ impl DuckDbRepository {
             .open(&lock_path)
             .map_err(|e| anyhow!("Failed to open lock file {}: {}", lock_path.display(), e))?;
 
-        // Acquire exclusive lock (blocks until available)
-        // The OS kernel queues waiters and wakes them in order when lock is released
         lock_file
             .lock_exclusive()
             .map_err(|e| anyhow!("Failed to acquire database lock: {}", e))?;
 
         Ok(lock_file)
+    }
+
+    /// Execute a read-only operation with the database connection.
+    ///
+    /// Acquires the filesystem lock, opens a connection, runs the closure,
+    /// closes the connection, and releases the lock.
+    fn with_connection<T, F>(&self, f: F) -> Result<T>
+    where
+        F: FnOnce(&Connection) -> Result<T>,
+    {
+        // Acquire filesystem lock (released when _lock drops)
+        let _lock = self.acquire_lock()?;
+
+        // Open connection (closed when conn drops)
+        let conn = Self::try_open_connection(&self.db_path, self.encryption_key.as_deref())?;
+
+        // Execute the operation
+        f(&conn)
+        // conn drops here (connection closed)
+        // _lock drops here (lock released)
+    }
+
+    /// Execute a write operation with the database connection.
+    ///
+    /// Same as with_connection but also checkpoints after the operation
+    /// to flush WAL to the main database file.
+    fn with_connection_write<T, F>(&self, f: F) -> Result<T>
+    where
+        F: FnOnce(&Connection) -> Result<T>,
+    {
+        // Acquire filesystem lock (released when _lock drops)
+        let _lock = self.acquire_lock()?;
+
+        // Open connection (closed when conn drops)
+        let conn = Self::try_open_connection(&self.db_path, self.encryption_key.as_deref())?;
+
+        // Execute the operation
+        let result = f(&conn)?;
+
+        // Checkpoint to flush WAL before releasing lock
+        let _ = conn.execute("CHECKPOINT", []);
+
+        Ok(result)
+        // conn drops here (connection closed)
+        // _lock drops here (lock released)
     }
 
     /// Attempt to open a database connection (called by new() with retry logic)
@@ -139,9 +175,10 @@ impl DuckDbRepository {
     ///
     /// Returns the migration result showing what was applied.
     pub fn run_migrations(&self) -> Result<crate::services::MigrationResult> {
-        let conn = self.conn.lock().unwrap();
-        let migration_service = MigrationService::new(&conn);
-        migration_service.run_pending()
+        self.with_connection_write(|conn| {
+            let migration_service = MigrationService::new(conn);
+            migration_service.run_pending()
+        })
     }
 
     /// Ensure database schema exists (runs pending migrations)
@@ -156,9 +193,10 @@ impl DuckDbRepository {
     /// (like backups) to ensure data consistency. Without this, data in the WAL
     /// file may not be included in the backup.
     pub fn checkpoint(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute_batch("CHECKPOINT")?;
-        Ok(())
+        self.with_connection_write(|conn| {
+            conn.execute_batch("CHECKPOINT")?;
+            Ok(())
+        })
     }
 
     /// Get the path to the database file
@@ -169,54 +207,56 @@ impl DuckDbRepository {
     // === Account operations ===
 
     pub fn get_accounts(&self) -> Result<Vec<Account>> {
-        let conn = self.conn.lock().unwrap();
-        // Join with balance_snapshots to get the latest balance for each account
-        let mut stmt = conn.prepare(
-            "SELECT a.account_id, a.name, a.nickname, a.account_type, a.currency,
-                    a.external_ids, a.institution_name, a.institution_url, a.institution_domain,
-                    a.created_at, a.updated_at,
-                    (SELECT balance FROM sys_balance_snapshots bs
-                     WHERE bs.account_id = a.account_id
-                     ORDER BY bs.snapshot_time DESC LIMIT 1) as latest_balance,
-                    a.classification, a.is_manual,
-                    a.sf_id, a.sf_name, a.sf_currency, a.sf_balance, a.sf_available_balance,
-                    a.sf_balance_date, a.sf_org_name, a.sf_org_url, a.sf_org_domain, a.sf_extra,
-                    a.lf_id, a.lf_name, a.lf_institution_name, a.lf_institution_logo,
-                    a.lf_provider, a.lf_currency, a.lf_status
-             FROM sys_accounts a",
-        )?;
+        self.with_connection(|conn| {
+            // Join with balance_snapshots to get the latest balance for each account
+            let mut stmt = conn.prepare(
+                "SELECT a.account_id, a.name, a.nickname, a.account_type, a.currency,
+                        a.external_ids, a.institution_name, a.institution_url, a.institution_domain,
+                        a.created_at, a.updated_at,
+                        (SELECT balance FROM sys_balance_snapshots bs
+                         WHERE bs.account_id = a.account_id
+                         ORDER BY bs.snapshot_time DESC LIMIT 1) as latest_balance,
+                        a.classification, a.is_manual,
+                        a.sf_id, a.sf_name, a.sf_currency, a.sf_balance, a.sf_available_balance,
+                        a.sf_balance_date, a.sf_org_name, a.sf_org_url, a.sf_org_domain, a.sf_extra,
+                        a.lf_id, a.lf_name, a.lf_institution_name, a.lf_institution_logo,
+                        a.lf_provider, a.lf_currency, a.lf_status
+                 FROM sys_accounts a",
+            )?;
 
-        let accounts = stmt
-            .query_map([], |row| self.row_to_account(row))?
-            .filter_map(|r| r.ok())
-            .collect();
+            let accounts = stmt
+                .query_map([], |row| Self::row_to_account(row))?
+                .filter_map(|r| r.ok())
+                .collect();
 
-        Ok(accounts)
+            Ok(accounts)
+        })
     }
 
     pub fn get_account_by_id(&self, id: &str) -> Result<Option<Account>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT a.account_id, a.name, a.nickname, a.account_type, a.currency,
-                    a.external_ids, a.institution_name, a.institution_url, a.institution_domain,
-                    a.created_at, a.updated_at,
-                    (SELECT balance FROM sys_balance_snapshots bs
-                     WHERE bs.account_id = a.account_id
-                     ORDER BY bs.snapshot_time DESC LIMIT 1) as latest_balance,
-                    a.classification, a.is_manual,
-                    a.sf_id, a.sf_name, a.sf_currency, a.sf_balance, a.sf_available_balance,
-                    a.sf_balance_date, a.sf_org_name, a.sf_org_url, a.sf_org_domain, a.sf_extra,
-                    a.lf_id, a.lf_name, a.lf_institution_name, a.lf_institution_logo,
-                    a.lf_provider, a.lf_currency, a.lf_status
-             FROM sys_accounts a WHERE a.account_id = ?",
-        )?;
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT a.account_id, a.name, a.nickname, a.account_type, a.currency,
+                        a.external_ids, a.institution_name, a.institution_url, a.institution_domain,
+                        a.created_at, a.updated_at,
+                        (SELECT balance FROM sys_balance_snapshots bs
+                         WHERE bs.account_id = a.account_id
+                         ORDER BY bs.snapshot_time DESC LIMIT 1) as latest_balance,
+                        a.classification, a.is_manual,
+                        a.sf_id, a.sf_name, a.sf_currency, a.sf_balance, a.sf_available_balance,
+                        a.sf_balance_date, a.sf_org_name, a.sf_org_url, a.sf_org_domain, a.sf_extra,
+                        a.lf_id, a.lf_name, a.lf_institution_name, a.lf_institution_logo,
+                        a.lf_provider, a.lf_currency, a.lf_status
+                 FROM sys_accounts a WHERE a.account_id = ?",
+            )?;
 
-        let account = stmt.query_row([id], |row| self.row_to_account(row)).ok();
+            let account = stmt.query_row([id], |row| Self::row_to_account(row)).ok();
 
-        Ok(account)
+            Ok(account)
+        })
     }
 
-    fn row_to_account(&self, row: &duckdb::Row) -> std::result::Result<Account, duckdb::Error> {
+    fn row_to_account(row: &duckdb::Row) -> std::result::Result<Account, duckdb::Error> {
         // Column indices from SELECT:
         // 0: account_id, 1: name, 2: nickname, 3: account_type, 4: currency,
         // 5: external_ids, 6: institution_name, 7: institution_url, 8: institution_domain,
@@ -283,87 +323,88 @@ impl DuckDbRepository {
     }
 
     pub fn upsert_account(&self, account: &Account) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        // Write empty JSON for external_ids - kept for backwards compat with DB schema
-        let external_ids = "{}";
-        let sf_extra = account.sf_extra.as_ref().map(|v| v.to_string());
+        self.with_connection_write(|conn| {
+            // Write empty JSON for external_ids - kept for backwards compat with DB schema
+            let external_ids = "{}";
+            let sf_extra = account.sf_extra.as_ref().map(|v| v.to_string());
 
-        // Use COALESCE to preserve user-edited values like Python CLI does
-        // Note: balance is stored in balance_snapshots, not in accounts table (matching Python schema)
-        // Classification is preserved on sync - we only set it if the user hasn't already set one
-        conn.execute(
-            "INSERT INTO sys_accounts (account_id, name, nickname, account_type, classification, currency,
-                                       external_ids, institution_name, institution_url, institution_domain,
-                                       created_at, updated_at, is_manual,
-                                       sf_id, sf_name, sf_currency, sf_balance, sf_available_balance,
-                                       sf_balance_date, sf_org_name, sf_org_url, sf_org_domain, sf_extra,
-                                       lf_id, lf_name, lf_institution_name, lf_institution_logo,
-                                       lf_provider, lf_currency, lf_status)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-             ON CONFLICT (account_id) DO UPDATE SET
-                name = EXCLUDED.name,
-                nickname = COALESCE(sys_accounts.nickname, EXCLUDED.nickname),
-                account_type = COALESCE(sys_accounts.account_type, EXCLUDED.account_type),
-                classification = COALESCE(sys_accounts.classification, EXCLUDED.classification),
-                currency = EXCLUDED.currency,
-                external_ids = EXCLUDED.external_ids,
-                institution_name = COALESCE(EXCLUDED.institution_name, sys_accounts.institution_name),
-                institution_url = COALESCE(EXCLUDED.institution_url, sys_accounts.institution_url),
-                institution_domain = COALESCE(EXCLUDED.institution_domain, sys_accounts.institution_domain),
-                updated_at = EXCLUDED.updated_at,
-                is_manual = COALESCE(sys_accounts.is_manual, EXCLUDED.is_manual),
-                sf_id = COALESCE(EXCLUDED.sf_id, sys_accounts.sf_id),
-                sf_name = COALESCE(EXCLUDED.sf_name, sys_accounts.sf_name),
-                sf_currency = COALESCE(EXCLUDED.sf_currency, sys_accounts.sf_currency),
-                sf_balance = COALESCE(EXCLUDED.sf_balance, sys_accounts.sf_balance),
-                sf_available_balance = COALESCE(EXCLUDED.sf_available_balance, sys_accounts.sf_available_balance),
-                sf_balance_date = COALESCE(EXCLUDED.sf_balance_date, sys_accounts.sf_balance_date),
-                sf_org_name = COALESCE(EXCLUDED.sf_org_name, sys_accounts.sf_org_name),
-                sf_org_url = COALESCE(EXCLUDED.sf_org_url, sys_accounts.sf_org_url),
-                sf_org_domain = COALESCE(EXCLUDED.sf_org_domain, sys_accounts.sf_org_domain),
-                sf_extra = COALESCE(EXCLUDED.sf_extra, sys_accounts.sf_extra),
-                lf_id = COALESCE(EXCLUDED.lf_id, sys_accounts.lf_id),
-                lf_name = COALESCE(EXCLUDED.lf_name, sys_accounts.lf_name),
-                lf_institution_name = COALESCE(EXCLUDED.lf_institution_name, sys_accounts.lf_institution_name),
-                lf_institution_logo = COALESCE(EXCLUDED.lf_institution_logo, sys_accounts.lf_institution_logo),
-                lf_provider = COALESCE(EXCLUDED.lf_provider, sys_accounts.lf_provider),
-                lf_currency = COALESCE(EXCLUDED.lf_currency, sys_accounts.lf_currency),
-                lf_status = COALESCE(EXCLUDED.lf_status, sys_accounts.lf_status)",
-            params![
-                account.id.to_string(),
-                account.name,
-                account.nickname,
-                account.account_type.as_ref().map(|t| t.to_string()),
-                account.classification.as_ref().map(|c| c.to_string()),
-                account.currency,
-                external_ids,
-                account.institution_name,
-                account.institution_url,
-                account.institution_domain,
-                account.created_at.to_rfc3339(),
-                account.updated_at.to_rfc3339(),
-                account.is_manual,
-                account.sf_id,
-                account.sf_name,
-                account.sf_currency,
-                account.sf_balance,
-                account.sf_available_balance,
-                account.sf_balance_date,
-                account.sf_org_name,
-                account.sf_org_url,
-                account.sf_org_domain,
-                sf_extra,
-                account.lf_id,
-                account.lf_name,
-                account.lf_institution_name,
-                account.lf_institution_logo,
-                account.lf_provider,
-                account.lf_currency,
-                account.lf_status,
-            ],
-        )?;
+            // Use COALESCE to preserve user-edited values like Python CLI does
+            // Note: balance is stored in balance_snapshots, not in accounts table (matching Python schema)
+            // Classification is preserved on sync - we only set it if the user hasn't already set one
+            conn.execute(
+                "INSERT INTO sys_accounts (account_id, name, nickname, account_type, classification, currency,
+                                           external_ids, institution_name, institution_url, institution_domain,
+                                           created_at, updated_at, is_manual,
+                                           sf_id, sf_name, sf_currency, sf_balance, sf_available_balance,
+                                           sf_balance_date, sf_org_name, sf_org_url, sf_org_domain, sf_extra,
+                                           lf_id, lf_name, lf_institution_name, lf_institution_logo,
+                                           lf_provider, lf_currency, lf_status)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT (account_id) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    nickname = COALESCE(sys_accounts.nickname, EXCLUDED.nickname),
+                    account_type = COALESCE(sys_accounts.account_type, EXCLUDED.account_type),
+                    classification = COALESCE(sys_accounts.classification, EXCLUDED.classification),
+                    currency = EXCLUDED.currency,
+                    external_ids = EXCLUDED.external_ids,
+                    institution_name = COALESCE(EXCLUDED.institution_name, sys_accounts.institution_name),
+                    institution_url = COALESCE(EXCLUDED.institution_url, sys_accounts.institution_url),
+                    institution_domain = COALESCE(EXCLUDED.institution_domain, sys_accounts.institution_domain),
+                    updated_at = EXCLUDED.updated_at,
+                    is_manual = COALESCE(sys_accounts.is_manual, EXCLUDED.is_manual),
+                    sf_id = COALESCE(EXCLUDED.sf_id, sys_accounts.sf_id),
+                    sf_name = COALESCE(EXCLUDED.sf_name, sys_accounts.sf_name),
+                    sf_currency = COALESCE(EXCLUDED.sf_currency, sys_accounts.sf_currency),
+                    sf_balance = COALESCE(EXCLUDED.sf_balance, sys_accounts.sf_balance),
+                    sf_available_balance = COALESCE(EXCLUDED.sf_available_balance, sys_accounts.sf_available_balance),
+                    sf_balance_date = COALESCE(EXCLUDED.sf_balance_date, sys_accounts.sf_balance_date),
+                    sf_org_name = COALESCE(EXCLUDED.sf_org_name, sys_accounts.sf_org_name),
+                    sf_org_url = COALESCE(EXCLUDED.sf_org_url, sys_accounts.sf_org_url),
+                    sf_org_domain = COALESCE(EXCLUDED.sf_org_domain, sys_accounts.sf_org_domain),
+                    sf_extra = COALESCE(EXCLUDED.sf_extra, sys_accounts.sf_extra),
+                    lf_id = COALESCE(EXCLUDED.lf_id, sys_accounts.lf_id),
+                    lf_name = COALESCE(EXCLUDED.lf_name, sys_accounts.lf_name),
+                    lf_institution_name = COALESCE(EXCLUDED.lf_institution_name, sys_accounts.lf_institution_name),
+                    lf_institution_logo = COALESCE(EXCLUDED.lf_institution_logo, sys_accounts.lf_institution_logo),
+                    lf_provider = COALESCE(EXCLUDED.lf_provider, sys_accounts.lf_provider),
+                    lf_currency = COALESCE(EXCLUDED.lf_currency, sys_accounts.lf_currency),
+                    lf_status = COALESCE(EXCLUDED.lf_status, sys_accounts.lf_status)",
+                params![
+                    account.id.to_string(),
+                    account.name,
+                    account.nickname,
+                    account.account_type.as_ref().map(|t| t.to_string()),
+                    account.classification.as_ref().map(|c| c.to_string()),
+                    account.currency,
+                    external_ids,
+                    account.institution_name,
+                    account.institution_url,
+                    account.institution_domain,
+                    account.created_at.to_rfc3339(),
+                    account.updated_at.to_rfc3339(),
+                    account.is_manual,
+                    account.sf_id,
+                    account.sf_name,
+                    account.sf_currency,
+                    account.sf_balance,
+                    account.sf_available_balance,
+                    account.sf_balance_date,
+                    account.sf_org_name,
+                    account.sf_org_url,
+                    account.sf_org_domain,
+                    sf_extra,
+                    account.lf_id,
+                    account.lf_name,
+                    account.lf_institution_name,
+                    account.lf_institution_logo,
+                    account.lf_provider,
+                    account.lf_currency,
+                    account.lf_status,
+                ],
+            )?;
 
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Delete an account and all associated data (transactions, balance snapshots)
@@ -383,131 +424,134 @@ impl DuckDbRepository {
     /// 2. Delete order respecting FK constraints (children before parent)
     /// 3. Each statement auto-committing on success
     pub fn delete_account(&self, account_id: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        self.with_connection_write(|conn| {
+            // Delete in order to respect foreign key constraints:
+            // transactions and snapshots reference accounts, so delete them first
 
-        // Delete in order to respect foreign key constraints:
-        // transactions and snapshots reference accounts, so delete them first
+            // 1. Delete all transactions (including soft-deleted ones)
+            conn.execute(
+                "DELETE FROM sys_transactions WHERE account_id = ?",
+                params![account_id],
+            )?;
 
-        // 1. Delete all transactions (including soft-deleted ones)
-        conn.execute(
-            "DELETE FROM sys_transactions WHERE account_id = ?",
-            params![account_id],
-        )?;
+            // 2. Delete all balance snapshots
+            conn.execute(
+                "DELETE FROM sys_balance_snapshots WHERE account_id = ?",
+                params![account_id],
+            )?;
 
-        // 2. Delete all balance snapshots
-        conn.execute(
-            "DELETE FROM sys_balance_snapshots WHERE account_id = ?",
-            params![account_id],
-        )?;
+            // 3. Delete the account
+            conn.execute(
+                "DELETE FROM sys_accounts WHERE account_id = ?",
+                params![account_id],
+            )?;
 
-        // 3. Delete the account
-        conn.execute(
-            "DELETE FROM sys_accounts WHERE account_id = ?",
-            params![account_id],
-        )?;
-
-        Ok(())
+            Ok(())
+        })
     }
 
     // === Transaction operations ===
 
     pub fn get_transactions(&self) -> Result<Vec<Transaction>> {
-        let conn = self.conn.lock().unwrap();
-        // Note: CAST(tags AS VARCHAR) is required because duckdb-rs cannot read VARCHAR[]
-        // directly as String. Without the CAST, row.get() silently fails and returns "[]".
-        // See parse_duckdb_array() for the parsing logic.
-        let mut stmt = conn.prepare(
-            "SELECT transaction_id, account_id, amount, description, transaction_date::VARCHAR,
-                    posted_date::VARCHAR, CAST(tags AS VARCHAR) as tags, external_ids, deleted_at, parent_transaction_id,
-                    created_at, updated_at, csv_fingerprint, csv_batch_id, is_manual, tags_auto_applied,
-                    sf_id, sf_posted, sf_amount, sf_description, sf_transacted_at, sf_pending, sf_extra,
-                    lf_id, lf_account_id, lf_amount, lf_currency, lf_date::VARCHAR, lf_merchant, lf_description, lf_is_pending
-             FROM sys_transactions
-             WHERE deleted_at IS NULL"
-        )?;
+        self.with_connection(|conn| {
+            // Note: CAST(tags AS VARCHAR) is required because duckdb-rs cannot read VARCHAR[]
+            // directly as String. Without the CAST, row.get() silently fails and returns "[]".
+            // See parse_duckdb_array() for the parsing logic.
+            let mut stmt = conn.prepare(
+                "SELECT transaction_id, account_id, amount, description, transaction_date::VARCHAR,
+                        posted_date::VARCHAR, CAST(tags AS VARCHAR) as tags, external_ids, deleted_at, parent_transaction_id,
+                        created_at, updated_at, csv_fingerprint, csv_batch_id, is_manual, tags_auto_applied,
+                        sf_id, sf_posted, sf_amount, sf_description, sf_transacted_at, sf_pending, sf_extra,
+                        lf_id, lf_account_id, lf_amount, lf_currency, lf_date::VARCHAR, lf_merchant, lf_description, lf_is_pending
+                 FROM sys_transactions
+                 WHERE deleted_at IS NULL"
+            )?;
 
-        let transactions = stmt
-            .query_map([], |row| self.row_to_transaction(row))?
-            .filter_map(|r| r.ok())
-            .collect();
+            let transactions = stmt
+                .query_map([], |row| Self::row_to_transaction(row))?
+                .filter_map(|r| r.ok())
+                .collect();
 
-        Ok(transactions)
+            Ok(transactions)
+        })
     }
 
     /// Get transactions for a specific account, ordered by transaction_date DESC
     pub fn get_transactions_by_account(&self, account_id: &str) -> Result<Vec<Transaction>> {
-        let conn = self.conn.lock().unwrap();
-        // CAST(tags AS VARCHAR) required - see get_transactions() for explanation
-        let mut stmt = conn.prepare(
-            "SELECT transaction_id, account_id, amount, description, transaction_date::VARCHAR,
-                    posted_date::VARCHAR, CAST(tags AS VARCHAR) as tags, external_ids, deleted_at, parent_transaction_id,
-                    created_at, updated_at, csv_fingerprint, csv_batch_id, is_manual, tags_auto_applied,
-                    sf_id, sf_posted, sf_amount, sf_description, sf_transacted_at, sf_pending, sf_extra,
-                    lf_id, lf_account_id, lf_amount, lf_currency, lf_date::VARCHAR, lf_merchant, lf_description, lf_is_pending
-             FROM sys_transactions
-             WHERE account_id = ? AND deleted_at IS NULL
-             ORDER BY transaction_date DESC"
-        )?;
+        self.with_connection(|conn| {
+            // CAST(tags AS VARCHAR) required - see get_transactions() for explanation
+            let mut stmt = conn.prepare(
+                "SELECT transaction_id, account_id, amount, description, transaction_date::VARCHAR,
+                        posted_date::VARCHAR, CAST(tags AS VARCHAR) as tags, external_ids, deleted_at, parent_transaction_id,
+                        created_at, updated_at, csv_fingerprint, csv_batch_id, is_manual, tags_auto_applied,
+                        sf_id, sf_posted, sf_amount, sf_description, sf_transacted_at, sf_pending, sf_extra,
+                        lf_id, lf_account_id, lf_amount, lf_currency, lf_date::VARCHAR, lf_merchant, lf_description, lf_is_pending
+                 FROM sys_transactions
+                 WHERE account_id = ? AND deleted_at IS NULL
+                 ORDER BY transaction_date DESC"
+            )?;
 
-        let transactions = stmt
-            .query_map([account_id], |row| self.row_to_transaction(row))?
-            .filter_map(|r| r.ok())
-            .collect();
+            let transactions = stmt
+                .query_map([account_id], |row| Self::row_to_transaction(row))?
+                .filter_map(|r| r.ok())
+                .collect();
 
-        Ok(transactions)
+            Ok(transactions)
+        })
     }
 
     pub fn get_transaction_count(&self) -> Result<i64> {
-        let conn = self.conn.lock().unwrap();
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM sys_transactions WHERE deleted_at IS NULL",
-            [],
-            |row| row.get(0),
-        )?;
-        Ok(count)
+        self.with_connection(|conn| {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM sys_transactions WHERE deleted_at IS NULL",
+                [],
+                |row| row.get(0),
+            )?;
+            Ok(count)
+        })
     }
 
     /// Get the maximum transaction date from the database
     pub fn get_max_transaction_date(&self) -> Result<Option<NaiveDate>> {
-        let conn = self.conn.lock().unwrap();
-        let result: Option<String> = conn.query_row(
-            "SELECT MAX(transaction_date)::VARCHAR FROM sys_transactions WHERE deleted_at IS NULL",
-            [],
-            |row| row.get(0),
-        )?;
-        Ok(result.map(|s| parse_date(&s)))
-    }
-
-    pub fn get_balance_snapshot_count(&self) -> Result<i64> {
-        let conn = self.conn.lock().unwrap();
-        let count: i64 =
-            conn.query_row("SELECT COUNT(*) FROM sys_balance_snapshots", [], |row| {
-                row.get(0)
-            })?;
-        Ok(count)
-    }
-
-    pub fn get_transaction_date_range(&self) -> Result<crate::services::DateRange> {
-        let conn = self.conn.lock().unwrap();
-        let result: (Option<String>, Option<String>) = conn.query_row(
-            "SELECT
-                MIN(transaction_date)::VARCHAR,
-                MAX(transaction_date)::VARCHAR
-             FROM sys_transactions
-             WHERE deleted_at IS NULL",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
-        Ok(crate::services::DateRange {
-            earliest: result.0,
-            latest: result.1,
+        self.with_connection(|conn| {
+            let result: Option<String> = conn.query_row(
+                "SELECT MAX(transaction_date)::VARCHAR FROM sys_transactions WHERE deleted_at IS NULL",
+                [],
+                |row| row.get(0),
+            )?;
+            Ok(result.map(|s| parse_date(&s)))
         })
     }
 
-    fn row_to_transaction(
-        &self,
-        row: &duckdb::Row,
-    ) -> std::result::Result<Transaction, duckdb::Error> {
+    pub fn get_balance_snapshot_count(&self) -> Result<i64> {
+        self.with_connection(|conn| {
+            let count: i64 =
+                conn.query_row("SELECT COUNT(*) FROM sys_balance_snapshots", [], |row| {
+                    row.get(0)
+                })?;
+            Ok(count)
+        })
+    }
+
+    pub fn get_transaction_date_range(&self) -> Result<crate::services::DateRange> {
+        self.with_connection(|conn| {
+            let result: (Option<String>, Option<String>) = conn.query_row(
+                "SELECT
+                    MIN(transaction_date)::VARCHAR,
+                    MAX(transaction_date)::VARCHAR
+                 FROM sys_transactions
+                 WHERE deleted_at IS NULL",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            Ok(crate::services::DateRange {
+                earliest: result.0,
+                latest: result.1,
+            })
+        })
+    }
+
+    fn row_to_transaction(row: &duckdb::Row) -> std::result::Result<Transaction, duckdb::Error> {
         // Column indices from SELECT:
         // 0: transaction_id, 1: account_id, 2: amount, 3: description, 4: transaction_date,
         // 5: posted_date, 6: tags, 7: external_ids, 8: deleted_at, 9: parent_transaction_id,
@@ -597,209 +641,216 @@ impl DuckDbRepository {
     }
 
     pub fn upsert_transaction(&self, tx: &Transaction) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        // Write empty JSON for external_ids - kept for backwards compat with DB schema
-        let external_ids = "{}";
-        let sf_extra = tx.sf_extra.as_ref().map(|v| v.to_string());
+        self.with_connection_write(|conn| {
+            // Write empty JSON for external_ids - kept for backwards compat with DB schema
+            let external_ids = "{}";
+            let sf_extra = tx.sf_extra.as_ref().map(|v| v.to_string());
 
-        // Build tags array literal for DuckDB: ['tag1', 'tag2']
-        let tags_literal = format_tags_array(&tx.tags);
+            // Build tags array literal for DuckDB: ['tag1', 'tag2']
+            let tags_literal = format_tags_array(&tx.tags);
 
-        // Use raw SQL with array literal since DuckDB Rust binding doesn't support array params well
-        let sql = format!(
-            "INSERT INTO sys_transactions (transaction_id, account_id, amount, description,
-                                           transaction_date, posted_date, tags, external_ids,
-                                           parent_transaction_id, created_at, updated_at,
-                                           csv_fingerprint, csv_batch_id, is_manual, tags_auto_applied,
-                                           sf_id, sf_posted, sf_amount, sf_description, sf_transacted_at, sf_pending, sf_extra,
-                                           lf_id, lf_account_id, lf_amount, lf_currency, lf_date, lf_merchant, lf_description, lf_is_pending)
-             VALUES (?, ?, ?, ?, ?, ?, {}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-             ON CONFLICT (transaction_id) DO UPDATE SET
-                account_id = EXCLUDED.account_id,
-                amount = EXCLUDED.amount,
-                description = EXCLUDED.description,
-                transaction_date = EXCLUDED.transaction_date,
-                posted_date = EXCLUDED.posted_date,
-                tags = EXCLUDED.tags,
-                external_ids = EXCLUDED.external_ids,
-                parent_transaction_id = EXCLUDED.parent_transaction_id,
-                updated_at = EXCLUDED.updated_at,
-                csv_fingerprint = COALESCE(EXCLUDED.csv_fingerprint, sys_transactions.csv_fingerprint),
-                csv_batch_id = COALESCE(EXCLUDED.csv_batch_id, sys_transactions.csv_batch_id),
-                is_manual = COALESCE(sys_transactions.is_manual, EXCLUDED.is_manual),
-                tags_auto_applied = COALESCE(sys_transactions.tags_auto_applied, EXCLUDED.tags_auto_applied),
-                sf_id = COALESCE(EXCLUDED.sf_id, sys_transactions.sf_id),
-                sf_posted = COALESCE(EXCLUDED.sf_posted, sys_transactions.sf_posted),
-                sf_amount = COALESCE(EXCLUDED.sf_amount, sys_transactions.sf_amount),
-                sf_description = COALESCE(EXCLUDED.sf_description, sys_transactions.sf_description),
-                sf_transacted_at = COALESCE(EXCLUDED.sf_transacted_at, sys_transactions.sf_transacted_at),
-                sf_pending = COALESCE(EXCLUDED.sf_pending, sys_transactions.sf_pending),
-                sf_extra = COALESCE(EXCLUDED.sf_extra, sys_transactions.sf_extra),
-                lf_id = COALESCE(EXCLUDED.lf_id, sys_transactions.lf_id),
-                lf_account_id = COALESCE(EXCLUDED.lf_account_id, sys_transactions.lf_account_id),
-                lf_amount = COALESCE(EXCLUDED.lf_amount, sys_transactions.lf_amount),
-                lf_currency = COALESCE(EXCLUDED.lf_currency, sys_transactions.lf_currency),
-                lf_date = COALESCE(EXCLUDED.lf_date, sys_transactions.lf_date),
-                lf_merchant = COALESCE(EXCLUDED.lf_merchant, sys_transactions.lf_merchant),
-                lf_description = COALESCE(EXCLUDED.lf_description, sys_transactions.lf_description),
-                lf_is_pending = COALESCE(EXCLUDED.lf_is_pending, sys_transactions.lf_is_pending)",
-            tags_literal
-        );
+            // Use raw SQL with array literal since DuckDB Rust binding doesn't support array params well
+            let sql = format!(
+                "INSERT INTO sys_transactions (transaction_id, account_id, amount, description,
+                                               transaction_date, posted_date, tags, external_ids,
+                                               parent_transaction_id, created_at, updated_at,
+                                               csv_fingerprint, csv_batch_id, is_manual, tags_auto_applied,
+                                               sf_id, sf_posted, sf_amount, sf_description, sf_transacted_at, sf_pending, sf_extra,
+                                               lf_id, lf_account_id, lf_amount, lf_currency, lf_date, lf_merchant, lf_description, lf_is_pending)
+                 VALUES (?, ?, ?, ?, ?, ?, {}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT (transaction_id) DO UPDATE SET
+                    account_id = EXCLUDED.account_id,
+                    amount = EXCLUDED.amount,
+                    description = EXCLUDED.description,
+                    transaction_date = EXCLUDED.transaction_date,
+                    posted_date = EXCLUDED.posted_date,
+                    tags = EXCLUDED.tags,
+                    external_ids = EXCLUDED.external_ids,
+                    parent_transaction_id = EXCLUDED.parent_transaction_id,
+                    updated_at = EXCLUDED.updated_at,
+                    csv_fingerprint = COALESCE(EXCLUDED.csv_fingerprint, sys_transactions.csv_fingerprint),
+                    csv_batch_id = COALESCE(EXCLUDED.csv_batch_id, sys_transactions.csv_batch_id),
+                    is_manual = COALESCE(sys_transactions.is_manual, EXCLUDED.is_manual),
+                    tags_auto_applied = COALESCE(sys_transactions.tags_auto_applied, EXCLUDED.tags_auto_applied),
+                    sf_id = COALESCE(EXCLUDED.sf_id, sys_transactions.sf_id),
+                    sf_posted = COALESCE(EXCLUDED.sf_posted, sys_transactions.sf_posted),
+                    sf_amount = COALESCE(EXCLUDED.sf_amount, sys_transactions.sf_amount),
+                    sf_description = COALESCE(EXCLUDED.sf_description, sys_transactions.sf_description),
+                    sf_transacted_at = COALESCE(EXCLUDED.sf_transacted_at, sys_transactions.sf_transacted_at),
+                    sf_pending = COALESCE(EXCLUDED.sf_pending, sys_transactions.sf_pending),
+                    sf_extra = COALESCE(EXCLUDED.sf_extra, sys_transactions.sf_extra),
+                    lf_id = COALESCE(EXCLUDED.lf_id, sys_transactions.lf_id),
+                    lf_account_id = COALESCE(EXCLUDED.lf_account_id, sys_transactions.lf_account_id),
+                    lf_amount = COALESCE(EXCLUDED.lf_amount, sys_transactions.lf_amount),
+                    lf_currency = COALESCE(EXCLUDED.lf_currency, sys_transactions.lf_currency),
+                    lf_date = COALESCE(EXCLUDED.lf_date, sys_transactions.lf_date),
+                    lf_merchant = COALESCE(EXCLUDED.lf_merchant, sys_transactions.lf_merchant),
+                    lf_description = COALESCE(EXCLUDED.lf_description, sys_transactions.lf_description),
+                    lf_is_pending = COALESCE(EXCLUDED.lf_is_pending, sys_transactions.lf_is_pending)",
+                tags_literal
+            );
 
-        conn.execute(
-            &sql,
-            params![
-                tx.id.to_string(),
-                tx.account_id.to_string(),
-                tx.amount.to_string().parse::<f64>().unwrap_or(0.0),
-                tx.description,
-                tx.transaction_date.to_string(),
-                tx.posted_date.to_string(),
-                external_ids,
-                tx.parent_transaction_id.map(|id| id.to_string()),
-                tx.created_at.to_rfc3339(),
-                tx.updated_at.to_rfc3339(),
-                tx.csv_fingerprint,
-                tx.csv_batch_id,
-                tx.is_manual,
-                tx.tags_auto_applied,
-                tx.sf_id,
-                tx.sf_posted,
-                tx.sf_amount,
-                tx.sf_description,
-                tx.sf_transacted_at,
-                tx.sf_pending,
-                sf_extra,
-                tx.lf_id,
-                tx.lf_account_id,
-                tx.lf_amount
-                    .map(|d| d.to_string().parse::<f64>().unwrap_or(0.0)),
-                tx.lf_currency,
-                tx.lf_date.map(|d| d.to_string()),
-                tx.lf_merchant,
-                tx.lf_description,
-                tx.lf_is_pending,
-            ],
-        )?;
+            conn.execute(
+                &sql,
+                params![
+                    tx.id.to_string(),
+                    tx.account_id.to_string(),
+                    tx.amount.to_string().parse::<f64>().unwrap_or(0.0),
+                    tx.description,
+                    tx.transaction_date.to_string(),
+                    tx.posted_date.to_string(),
+                    external_ids,
+                    tx.parent_transaction_id.map(|id| id.to_string()),
+                    tx.created_at.to_rfc3339(),
+                    tx.updated_at.to_rfc3339(),
+                    tx.csv_fingerprint,
+                    tx.csv_batch_id,
+                    tx.is_manual,
+                    tx.tags_auto_applied,
+                    tx.sf_id,
+                    tx.sf_posted,
+                    tx.sf_amount,
+                    tx.sf_description,
+                    tx.sf_transacted_at,
+                    tx.sf_pending,
+                    sf_extra,
+                    tx.lf_id,
+                    tx.lf_account_id,
+                    tx.lf_amount
+                        .map(|d| d.to_string().parse::<f64>().unwrap_or(0.0)),
+                    tx.lf_currency,
+                    tx.lf_date.map(|d| d.to_string()),
+                    tx.lf_merchant,
+                    tx.lf_description,
+                    tx.lf_is_pending,
+                ],
+            )?;
 
-        Ok(())
+            Ok(())
+        })
     }
 
     pub fn update_transaction_tags(&self, tx_id: &str, tags: &[String]) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        let tags_literal = format_tags_array(tags);
-        let sql = format!(
-            "UPDATE sys_transactions SET tags = {}, updated_at = CURRENT_TIMESTAMP WHERE transaction_id = ?",
-            tags_literal
-        );
-        conn.execute(&sql, params![tx_id])?;
-        Ok(())
+        self.with_connection_write(|conn| {
+            let tags_literal = format_tags_array(tags);
+            let sql = format!(
+                "UPDATE sys_transactions SET tags = {}, updated_at = CURRENT_TIMESTAMP WHERE transaction_id = ?",
+                tags_literal
+            );
+            conn.execute(&sql, params![tx_id])?;
+            Ok(())
+        })
     }
 
     /// Update transaction tags and mark them as auto-applied (by rules)
     pub fn update_transaction_tags_auto(&self, tx_id: &str, tags: &[String]) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        let tags_literal = format_tags_array(tags);
-        let sql = format!(
-            "UPDATE sys_transactions SET tags = {}, tags_auto_applied = TRUE, updated_at = CURRENT_TIMESTAMP WHERE transaction_id = ?",
-            tags_literal
-        );
-        conn.execute(&sql, params![tx_id])?;
-        Ok(())
+        self.with_connection_write(|conn| {
+            let tags_literal = format_tags_array(tags);
+            let sql = format!(
+                "UPDATE sys_transactions SET tags = {}, tags_auto_applied = TRUE, updated_at = CURRENT_TIMESTAMP WHERE transaction_id = ?",
+                tags_literal
+            );
+            conn.execute(&sql, params![tx_id])?;
+            Ok(())
+        })
     }
 
     /// Insert a transaction only if it doesn't already exist (skip existing to preserve user edits)
     /// Returns true if inserted, false if skipped
     pub fn insert_transaction_if_not_exists(&self, tx: &Transaction) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
-        // Write empty JSON for external_ids - kept for backwards compat with DB schema
-        let external_ids = "{}";
-        let sf_extra = tx.sf_extra.as_ref().map(|v| v.to_string());
-        let tags_literal = format_tags_array(&tx.tags);
+        self.with_connection_write(|conn| {
+            // Write empty JSON for external_ids - kept for backwards compat with DB schema
+            let external_ids = "{}";
+            let sf_extra = tx.sf_extra.as_ref().map(|v| v.to_string());
+            let tags_literal = format_tags_array(&tx.tags);
 
-        // Use INSERT ... ON CONFLICT DO NOTHING to skip existing transactions
-        let sql = format!(
-            "INSERT INTO sys_transactions (transaction_id, account_id, amount, description,
-                                           transaction_date, posted_date, tags, external_ids,
-                                           parent_transaction_id, created_at, updated_at,
-                                           csv_fingerprint, csv_batch_id, is_manual, tags_auto_applied,
-                                           sf_id, sf_posted, sf_amount, sf_description, sf_transacted_at, sf_pending, sf_extra,
-                                           lf_id, lf_account_id, lf_amount, lf_currency, lf_date, lf_merchant, lf_description, lf_is_pending)
-             VALUES (?, ?, ?, ?, ?, ?, {}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-             ON CONFLICT (transaction_id) DO NOTHING",
-            tags_literal
-        );
+            // Use INSERT ... ON CONFLICT DO NOTHING to skip existing transactions
+            let sql = format!(
+                "INSERT INTO sys_transactions (transaction_id, account_id, amount, description,
+                                               transaction_date, posted_date, tags, external_ids,
+                                               parent_transaction_id, created_at, updated_at,
+                                               csv_fingerprint, csv_batch_id, is_manual, tags_auto_applied,
+                                               sf_id, sf_posted, sf_amount, sf_description, sf_transacted_at, sf_pending, sf_extra,
+                                               lf_id, lf_account_id, lf_amount, lf_currency, lf_date, lf_merchant, lf_description, lf_is_pending)
+                 VALUES (?, ?, ?, ?, ?, ?, {}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT (transaction_id) DO NOTHING",
+                tags_literal
+            );
 
-        let rows_changed = conn.execute(
-            &sql,
-            params![
-                tx.id.to_string(),
-                tx.account_id.to_string(),
-                tx.amount.to_string().parse::<f64>().unwrap_or(0.0),
-                tx.description,
-                tx.transaction_date.to_string(),
-                tx.posted_date.to_string(),
-                external_ids,
-                tx.parent_transaction_id.map(|id| id.to_string()),
-                tx.created_at.to_rfc3339(),
-                tx.updated_at.to_rfc3339(),
-                tx.csv_fingerprint,
-                tx.csv_batch_id,
-                tx.is_manual,
-                tx.tags_auto_applied,
-                tx.sf_id,
-                tx.sf_posted,
-                tx.sf_amount,
-                tx.sf_description,
-                tx.sf_transacted_at,
-                tx.sf_pending,
-                sf_extra,
-                tx.lf_id,
-                tx.lf_account_id,
-                tx.lf_amount
-                    .map(|d| d.to_string().parse::<f64>().unwrap_or(0.0)),
-                tx.lf_currency,
-                tx.lf_date.map(|d| d.to_string()),
-                tx.lf_merchant,
-                tx.lf_description,
-                tx.lf_is_pending,
-            ],
-        )?;
+            let rows_changed = conn.execute(
+                &sql,
+                params![
+                    tx.id.to_string(),
+                    tx.account_id.to_string(),
+                    tx.amount.to_string().parse::<f64>().unwrap_or(0.0),
+                    tx.description,
+                    tx.transaction_date.to_string(),
+                    tx.posted_date.to_string(),
+                    external_ids,
+                    tx.parent_transaction_id.map(|id| id.to_string()),
+                    tx.created_at.to_rfc3339(),
+                    tx.updated_at.to_rfc3339(),
+                    tx.csv_fingerprint,
+                    tx.csv_batch_id,
+                    tx.is_manual,
+                    tx.tags_auto_applied,
+                    tx.sf_id,
+                    tx.sf_posted,
+                    tx.sf_amount,
+                    tx.sf_description,
+                    tx.sf_transacted_at,
+                    tx.sf_pending,
+                    sf_extra,
+                    tx.lf_id,
+                    tx.lf_account_id,
+                    tx.lf_amount
+                        .map(|d| d.to_string().parse::<f64>().unwrap_or(0.0)),
+                    tx.lf_currency,
+                    tx.lf_date.map(|d| d.to_string()),
+                    tx.lf_merchant,
+                    tx.lf_description,
+                    tx.lf_is_pending,
+                ],
+            )?;
 
-        Ok(rows_changed > 0)
+            Ok(rows_changed > 0)
+        })
     }
 
     /// Check if a transaction exists by ID
     pub fn transaction_exists(&self, tx_id: &str) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM sys_transactions WHERE transaction_id = ?",
-            params![tx_id],
-            |row| row.get(0),
-        )?;
-        Ok(count > 0)
+        self.with_connection(|conn| {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM sys_transactions WHERE transaction_id = ?",
+                params![tx_id],
+                |row| row.get(0),
+            )?;
+            Ok(count > 0)
+        })
     }
 
     /// Check if a transaction exists by SimpleFIN ID (indexed, fast)
     pub fn transaction_exists_by_sf_id(&self, sf_id: &str) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM sys_transactions WHERE sf_id = ?",
-            params![sf_id],
-            |row| row.get(0),
-        )?;
-        Ok(count > 0)
+        self.with_connection(|conn| {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM sys_transactions WHERE sf_id = ?",
+                params![sf_id],
+                |row| row.get(0),
+            )?;
+            Ok(count > 0)
+        })
     }
 
     /// Check if a transaction exists by Lunchflow ID (indexed, fast)
     pub fn transaction_exists_by_lf_id(&self, lf_id: &str) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM sys_transactions WHERE lf_id = ?",
-            params![lf_id],
-            |row| row.get(0),
-        )?;
-        Ok(count > 0)
+        self.with_connection(|conn| {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM sys_transactions WHERE lf_id = ?",
+                params![lf_id],
+                |row| row.get(0),
+            )?;
+            Ok(count > 0)
+        })
     }
 
     /// Check if a CSV fingerprint exists in batches other than the current one
@@ -809,78 +860,82 @@ impl DuckDbRepository {
         fingerprint: &str,
         current_batch_id: &str,
     ) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM sys_transactions WHERE csv_fingerprint = ? AND (csv_batch_id IS NULL OR csv_batch_id != ?)",
-            params![fingerprint, current_batch_id],
-            |row| row.get(0),
-        )?;
-        Ok(count > 0)
+        self.with_connection(|conn| {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM sys_transactions WHERE csv_fingerprint = ? AND (csv_batch_id IS NULL OR csv_batch_id != ?)",
+                params![fingerprint, current_batch_id],
+                |row| row.get(0),
+            )?;
+            Ok(count > 0)
+        })
     }
 
     pub fn get_transaction_by_id(&self, id: &str) -> Result<Option<Transaction>> {
-        let conn = self.conn.lock().unwrap();
-        // CAST(tags AS VARCHAR) required - see get_transactions() for explanation
-        let mut stmt = conn.prepare(
-            "SELECT transaction_id, account_id, amount, description, transaction_date::VARCHAR,
-                    posted_date::VARCHAR, CAST(tags AS VARCHAR) as tags, external_ids, deleted_at, parent_transaction_id,
-                    created_at, updated_at, csv_fingerprint, csv_batch_id, is_manual, tags_auto_applied,
-                    sf_id, sf_posted, sf_amount, sf_description, sf_transacted_at, sf_pending, sf_extra,
-                    lf_id, lf_account_id, lf_amount, lf_currency, lf_date::VARCHAR, lf_merchant, lf_description, lf_is_pending
-             FROM sys_transactions WHERE transaction_id = ?"
-        )?;
+        self.with_connection(|conn| {
+            // CAST(tags AS VARCHAR) required - see get_transactions() for explanation
+            let mut stmt = conn.prepare(
+                "SELECT transaction_id, account_id, amount, description, transaction_date::VARCHAR,
+                        posted_date::VARCHAR, CAST(tags AS VARCHAR) as tags, external_ids, deleted_at, parent_transaction_id,
+                        created_at, updated_at, csv_fingerprint, csv_batch_id, is_manual, tags_auto_applied,
+                        sf_id, sf_posted, sf_amount, sf_description, sf_transacted_at, sf_pending, sf_extra,
+                        lf_id, lf_account_id, lf_amount, lf_currency, lf_date::VARCHAR, lf_merchant, lf_description, lf_is_pending
+                 FROM sys_transactions WHERE transaction_id = ?"
+            )?;
 
-        let tx = stmt
-            .query_row([id], |row| self.row_to_transaction(row))
-            .ok();
+            let tx = stmt
+                .query_row([id], |row| Self::row_to_transaction(row))
+                .ok();
 
-        Ok(tx)
+            Ok(tx)
+        })
     }
 
     // === Balance snapshot operations ===
 
     pub fn add_balance_snapshot(&self, snapshot: &BalanceSnapshot) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "INSERT INTO sys_balance_snapshots (snapshot_id, account_id, balance, snapshot_time, source, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
-            params![
-                snapshot.id.to_string(),
-                snapshot.account_id.to_string(),
-                snapshot.balance.to_string().parse::<f64>().unwrap_or(0.0),
-                snapshot.snapshot_time.to_string(),
-                snapshot.source.as_ref().map(|s| s.to_string()),
-                snapshot.created_at.to_rfc3339(),
-                snapshot.updated_at.to_rfc3339(),
-            ],
-        )?;
-        Ok(())
+        self.with_connection_write(|conn| {
+            conn.execute(
+                "INSERT INTO sys_balance_snapshots (snapshot_id, account_id, balance, snapshot_time, source, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+                params![
+                    snapshot.id.to_string(),
+                    snapshot.account_id.to_string(),
+                    snapshot.balance.to_string().parse::<f64>().unwrap_or(0.0),
+                    snapshot.snapshot_time.to_string(),
+                    snapshot.source.as_ref().map(|s| s.to_string()),
+                    snapshot.created_at.to_rfc3339(),
+                    snapshot.updated_at.to_rfc3339(),
+                ],
+            )?;
+            Ok(())
+        })
     }
 
     pub fn get_balance_snapshots(&self, account_id: Option<&str>) -> Result<Vec<BalanceSnapshot>> {
-        let conn = self.conn.lock().unwrap();
-        // Cast TIMESTAMP and balance columns to VARCHAR so they can be read as strings with full precision
-        let sql = if account_id.is_some() {
-            "SELECT snapshot_id, account_id, balance::VARCHAR, snapshot_time::VARCHAR, source, created_at::VARCHAR, updated_at::VARCHAR
-             FROM sys_balance_snapshots WHERE account_id = ? ORDER BY snapshot_time DESC"
-        } else {
-            "SELECT snapshot_id, account_id, balance::VARCHAR, snapshot_time::VARCHAR, source, created_at::VARCHAR, updated_at::VARCHAR
-             FROM sys_balance_snapshots ORDER BY snapshot_time DESC"
-        };
+        self.with_connection(|conn| {
+            // Cast TIMESTAMP and balance columns to VARCHAR so they can be read as strings with full precision
+            let sql = if account_id.is_some() {
+                "SELECT snapshot_id, account_id, balance::VARCHAR, snapshot_time::VARCHAR, source, created_at::VARCHAR, updated_at::VARCHAR
+                 FROM sys_balance_snapshots WHERE account_id = ? ORDER BY snapshot_time DESC"
+            } else {
+                "SELECT snapshot_id, account_id, balance::VARCHAR, snapshot_time::VARCHAR, source, created_at::VARCHAR, updated_at::VARCHAR
+                 FROM sys_balance_snapshots ORDER BY snapshot_time DESC"
+            };
 
-        let mut stmt = conn.prepare(sql)?;
+            let mut stmt = conn.prepare(sql)?;
 
-        let snapshots = if let Some(aid) = account_id {
-            stmt.query_map([aid], |row| Ok(self.row_to_balance_snapshot(row)))?
-                .filter_map(|r| r.ok())
-                .collect()
-        } else {
-            stmt.query_map([], |row| Ok(self.row_to_balance_snapshot(row)))?
-                .filter_map(|r| r.ok())
-                .collect()
-        };
+            let snapshots = if let Some(aid) = account_id {
+                stmt.query_map([aid], |row| Ok(Self::row_to_balance_snapshot(row)))?
+                    .filter_map(|r| r.ok())
+                    .collect()
+            } else {
+                stmt.query_map([], |row| Ok(Self::row_to_balance_snapshot(row)))?
+                    .filter_map(|r| r.ok())
+                    .collect()
+            };
 
-        Ok(snapshots)
+            Ok(snapshots)
+        })
     }
 
     pub fn update_balance_snapshot(
@@ -889,17 +944,18 @@ impl DuckDbRepository {
         new_balance: Decimal,
         new_source: &str,
     ) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "UPDATE sys_balance_snapshots SET balance = ?, source = ?, updated_at = ? WHERE snapshot_id = ?",
-            params![
-                new_balance.to_string().parse::<f64>().unwrap_or(0.0),
-                new_source,
-                Utc::now().to_rfc3339(),
-                snapshot_id,
-            ],
-        )?;
-        Ok(())
+        self.with_connection_write(|conn| {
+            conn.execute(
+                "UPDATE sys_balance_snapshots SET balance = ?, source = ?, updated_at = ? WHERE snapshot_id = ?",
+                params![
+                    new_balance.to_string().parse::<f64>().unwrap_or(0.0),
+                    new_source,
+                    Utc::now().to_rfc3339(),
+                    snapshot_id,
+                ],
+            )?;
+            Ok(())
+        })
     }
 
     /// Delete all balance snapshots for an account within a date range
@@ -909,19 +965,20 @@ impl DuckDbRepository {
         start_date: NaiveDate,
         end_date: NaiveDate,
     ) -> Result<usize> {
-        let conn = self.conn.lock().unwrap();
-        // Delete snapshots where the date part of snapshot_time falls within the range
-        let deleted = conn.execute(
-            "DELETE FROM sys_balance_snapshots
-             WHERE account_id = ?
-             AND CAST(snapshot_time AS DATE) >= ?
-             AND CAST(snapshot_time AS DATE) <= ?",
-            params![account_id, start_date.to_string(), end_date.to_string(),],
-        )?;
-        Ok(deleted)
+        self.with_connection_write(|conn| {
+            // Delete snapshots where the date part of snapshot_time falls within the range
+            let deleted = conn.execute(
+                "DELETE FROM sys_balance_snapshots
+                 WHERE account_id = ?
+                 AND CAST(snapshot_time AS DATE) >= ?
+                 AND CAST(snapshot_time AS DATE) <= ?",
+                params![account_id, start_date.to_string(), end_date.to_string(),],
+            )?;
+            Ok(deleted)
+        })
     }
 
-    fn row_to_balance_snapshot(&self, row: &duckdb::Row) -> BalanceSnapshot {
+    fn row_to_balance_snapshot(row: &duckdb::Row) -> BalanceSnapshot {
         let id_str: String = row.get(0).unwrap_or_default();
         let account_id_str: String = row.get(1).unwrap_or_default();
         let balance_str: String = row.get(2).unwrap_or_default();
@@ -985,60 +1042,61 @@ impl DuckDbRepository {
             }
         }
 
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(sql)?;
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(sql)?;
 
-        // Execute query and iterate
-        let mut result_rows = stmt.query([])?;
+            // Execute query and iterate
+            let mut result_rows = stmt.query([])?;
 
-        // Collect all rows first
-        let mut rows: Vec<Vec<serde_json::Value>> = Vec::new();
-        let mut column_count = 0;
+            // Collect all rows first
+            let mut rows: Vec<Vec<serde_json::Value>> = Vec::new();
+            let mut column_count = 0;
 
-        while let Some(row) = result_rows.next()? {
-            // Get column count from the first row
-            if rows.is_empty() {
-                column_count = row.as_ref().column_count();
+            while let Some(row) = result_rows.next()? {
+                // Get column count from the first row
+                if rows.is_empty() {
+                    column_count = row.as_ref().column_count();
+                }
+
+                let mut row_values: Vec<serde_json::Value> = Vec::new();
+                for i in 0..column_count {
+                    let value = Self::get_column_value(row, i);
+                    row_values.push(value);
+                }
+                rows.push(row_values);
             }
 
-            let mut row_values: Vec<serde_json::Value> = Vec::new();
-            for i in 0..column_count {
-                let value = self.get_column_value(row, i);
-                row_values.push(value);
-            }
-            rows.push(row_values);
-        }
+            // Drop result_rows to release borrow on stmt
+            drop(result_rows);
 
-        // Drop result_rows to release borrow on stmt
-        drop(result_rows);
+            // Now get column names
+            let columns: Vec<String> = if column_count > 0 {
+                (0..column_count)
+                    .map(|i| {
+                        stmt.column_name(i)
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|_| format!("col{}", i))
+                    })
+                    .collect()
+            } else {
+                // No rows, try to get column count from statement
+                let count = stmt.column_count();
+                (0..count)
+                    .map(|i| {
+                        stmt.column_name(i)
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|_| format!("col{}", i))
+                    })
+                    .collect()
+            };
 
-        // Now get column names
-        let columns: Vec<String> = if column_count > 0 {
-            (0..column_count)
-                .map(|i| {
-                    stmt.column_name(i)
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|_| format!("col{}", i))
-                })
-                .collect()
-        } else {
-            // No rows, try to get column count from statement
-            let count = stmt.column_count();
-            (0..count)
-                .map(|i| {
-                    stmt.column_name(i)
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|_| format!("col{}", i))
-                })
-                .collect()
-        };
+            let row_count = rows.len();
 
-        let row_count = rows.len();
-
-        Ok(QueryResult {
-            columns,
-            rows,
-            row_count,
+            Ok(QueryResult {
+                columns,
+                rows,
+                row_count,
+            })
         })
     }
 
@@ -1063,65 +1121,67 @@ impl DuckDbRepository {
             || first_word == "DESCRIBE"
             || first_word == "SHOW";
 
-        let conn = self.conn.lock().unwrap();
-
         if is_select {
-            // Read query - return columns and rows
-            let mut stmt = conn.prepare(sql)?;
-            let mut result_rows = stmt.query([])?;
+            self.with_connection(|conn| {
+                // Read query - return columns and rows
+                let mut stmt = conn.prepare(sql)?;
+                let mut result_rows = stmt.query([])?;
 
-            let mut rows: Vec<Vec<serde_json::Value>> = Vec::new();
-            let mut column_count = 0;
+                let mut rows: Vec<Vec<serde_json::Value>> = Vec::new();
+                let mut column_count = 0;
 
-            while let Some(row) = result_rows.next()? {
-                if rows.is_empty() {
-                    column_count = row.as_ref().column_count();
+                while let Some(row) = result_rows.next()? {
+                    if rows.is_empty() {
+                        column_count = row.as_ref().column_count();
+                    }
+
+                    let mut row_values: Vec<serde_json::Value> = Vec::new();
+                    for i in 0..column_count {
+                        let value = Self::get_column_value(row, i);
+                        row_values.push(value);
+                    }
+                    rows.push(row_values);
                 }
 
-                let mut row_values: Vec<serde_json::Value> = Vec::new();
-                for i in 0..column_count {
-                    let value = self.get_column_value(row, i);
-                    row_values.push(value);
-                }
-                rows.push(row_values);
-            }
+                drop(result_rows);
 
-            drop(result_rows);
+                let columns: Vec<String> = if column_count > 0 {
+                    (0..column_count)
+                        .map(|i| {
+                            stmt.column_name(i)
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|_| format!("col{}", i))
+                        })
+                        .collect()
+                } else {
+                    let count = stmt.column_count();
+                    (0..count)
+                        .map(|i| {
+                            stmt.column_name(i)
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|_| format!("col{}", i))
+                        })
+                        .collect()
+                };
 
-            let columns: Vec<String> = if column_count > 0 {
-                (0..column_count)
-                    .map(|i| {
-                        stmt.column_name(i)
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|_| format!("col{}", i))
-                    })
-                    .collect()
-            } else {
-                let count = stmt.column_count();
-                (0..count)
-                    .map(|i| {
-                        stmt.column_name(i)
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|_| format!("col{}", i))
-                    })
-                    .collect()
-            };
+                let row_count = rows.len();
 
-            let row_count = rows.len();
-
-            Ok(QueryResult {
-                columns,
-                rows,
-                row_count,
+                Ok(QueryResult {
+                    columns,
+                    rows,
+                    row_count,
+                })
             })
         } else {
-            // Write query - return affected rows
-            let affected = conn.execute(sql, [])?;
+            self.with_connection_write(|conn| {
+                // Write query - return affected rows
+                let affected = conn.execute(sql, [])?;
 
-            Ok(QueryResult {
-                columns: vec!["affected_rows".to_string()],
-                rows: vec![vec![serde_json::json!(affected)]],
-                row_count: 1,
+                Ok(QueryResult {
+                    columns: vec!["affected_rows".to_string()],
+                    rows: vec![vec![serde_json::json!(affected)]],
+                    row_count: 1,
+                })
             })
         }
     }
@@ -1149,8 +1209,6 @@ impl DuckDbRepository {
             || first_word == "DESCRIBE"
             || first_word == "SHOW";
 
-        let conn = self.conn.lock().unwrap();
-
         // Convert JSON params to DuckDB params
         let duckdb_params: Vec<Box<dyn duckdb::ToSql>> = params
             .iter()
@@ -1160,63 +1218,67 @@ impl DuckDbRepository {
             duckdb_params.iter().map(|b| b.as_ref()).collect();
 
         if is_select {
-            // Read query - return columns and rows
-            let mut stmt = conn.prepare(sql)?;
-            let mut result_rows = stmt.query(param_refs.as_slice())?;
+            self.with_connection(|conn| {
+                // Read query - return columns and rows
+                let mut stmt = conn.prepare(sql)?;
+                let mut result_rows = stmt.query(param_refs.as_slice())?;
 
-            let mut rows: Vec<Vec<serde_json::Value>> = Vec::new();
-            let mut column_count = 0;
+                let mut rows: Vec<Vec<serde_json::Value>> = Vec::new();
+                let mut column_count = 0;
 
-            while let Some(row) = result_rows.next()? {
-                if rows.is_empty() {
-                    column_count = row.as_ref().column_count();
+                while let Some(row) = result_rows.next()? {
+                    if rows.is_empty() {
+                        column_count = row.as_ref().column_count();
+                    }
+
+                    let mut row_values: Vec<serde_json::Value> = Vec::new();
+                    for i in 0..column_count {
+                        let value = Self::get_column_value(row, i);
+                        row_values.push(value);
+                    }
+                    rows.push(row_values);
                 }
 
-                let mut row_values: Vec<serde_json::Value> = Vec::new();
-                for i in 0..column_count {
-                    let value = self.get_column_value(row, i);
-                    row_values.push(value);
-                }
-                rows.push(row_values);
-            }
+                drop(result_rows);
 
-            drop(result_rows);
+                let columns: Vec<String> = if column_count > 0 {
+                    (0..column_count)
+                        .map(|i| {
+                            stmt.column_name(i)
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|_| format!("col{}", i))
+                        })
+                        .collect()
+                } else {
+                    let count = stmt.column_count();
+                    (0..count)
+                        .map(|i| {
+                            stmt.column_name(i)
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|_| format!("col{}", i))
+                        })
+                        .collect()
+                };
 
-            let columns: Vec<String> = if column_count > 0 {
-                (0..column_count)
-                    .map(|i| {
-                        stmt.column_name(i)
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|_| format!("col{}", i))
-                    })
-                    .collect()
-            } else {
-                let count = stmt.column_count();
-                (0..count)
-                    .map(|i| {
-                        stmt.column_name(i)
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|_| format!("col{}", i))
-                    })
-                    .collect()
-            };
+                let row_count = rows.len();
 
-            let row_count = rows.len();
-
-            Ok(QueryResult {
-                columns,
-                rows,
-                row_count,
+                Ok(QueryResult {
+                    columns,
+                    rows,
+                    row_count,
+                })
             })
         } else {
-            // Write query - return affected rows
-            let mut stmt = conn.prepare(sql)?;
-            let affected = stmt.execute(param_refs.as_slice())?;
+            self.with_connection_write(|conn| {
+                // Write query - return affected rows
+                let mut stmt = conn.prepare(sql)?;
+                let affected = stmt.execute(param_refs.as_slice())?;
 
-            Ok(QueryResult {
-                columns: vec!["affected_rows".to_string()],
-                rows: vec![vec![serde_json::json!(affected)]],
-                row_count: 1,
+                Ok(QueryResult {
+                    columns: vec!["affected_rows".to_string()],
+                    rows: vec![vec![serde_json::json!(affected)]],
+                    row_count: 1,
+                })
             })
         }
     }
@@ -1254,7 +1316,7 @@ impl DuckDbRepository {
         }
     }
 
-    fn get_column_value(&self, row: &duckdb::Row, idx: usize) -> serde_json::Value {
+    fn get_column_value(row: &duckdb::Row, idx: usize) -> serde_json::Value {
         use duckdb::types::ValueRef;
 
         // Use get_ref to get the raw ValueRef, which handles all types including arrays
@@ -1316,18 +1378,18 @@ impl DuckDbRepository {
             }
             Ok(ValueRef::List(list_type, list_idx)) => {
                 // Handle VARCHAR[] arrays
-                self.list_to_json(&list_type, list_idx)
+                Self::list_to_json(&list_type, list_idx)
             }
             Ok(ValueRef::Enum(_, idx)) => serde_json::json!(idx),
             Ok(ValueRef::Struct(arr, idx)) => {
                 // Convert struct to object
-                self.struct_to_json(arr, idx)
+                Self::struct_to_json(arr, idx)
             }
             _ => serde_json::Value::Null,
         }
     }
 
-    fn list_to_json(&self, list_type: &duckdb::types::ListType, idx: usize) -> serde_json::Value {
+    fn list_to_json(list_type: &duckdb::types::ListType, idx: usize) -> serde_json::Value {
         use duckdb::arrow::array::{Array, StringArray};
 
         // Get the list array and extract values at the given index
@@ -1377,11 +1439,7 @@ impl DuckDbRepository {
         }
     }
 
-    fn struct_to_json(
-        &self,
-        arr: &duckdb::arrow::array::StructArray,
-        idx: usize,
-    ) -> serde_json::Value {
+    fn struct_to_json(arr: &duckdb::arrow::array::StructArray, idx: usize) -> serde_json::Value {
         use duckdb::arrow::array::Array;
 
         if arr.is_null(idx) {
@@ -1407,48 +1465,51 @@ impl DuckDbRepository {
     // === Integration operations ===
 
     pub fn get_integrations(&self) -> Result<Vec<Integration>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt =
-            conn.prepare("SELECT integration_name, integration_settings FROM sys_integrations")?;
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT integration_name, integration_settings FROM sys_integrations")?;
 
-        let integrations = stmt
-            .query_map([], |row| {
-                let name: String = row.get(0)?;
-                let settings_json: String = row.get(1)?;
-                let settings: serde_json::Value =
-                    serde_json::from_str(&settings_json).unwrap_or(serde_json::json!({}));
-                Ok(Integration { name, settings })
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
+            let integrations = stmt
+                .query_map([], |row| {
+                    let name: String = row.get(0)?;
+                    let settings_json: String = row.get(1)?;
+                    let settings: serde_json::Value =
+                        serde_json::from_str(&settings_json).unwrap_or(serde_json::json!({}));
+                    Ok(Integration { name, settings })
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
 
-        Ok(integrations)
+            Ok(integrations)
+        })
     }
 
     pub fn upsert_integration(&self, name: &str, settings: &serde_json::Value) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
         let settings_json = serde_json::to_string(settings)?;
         let now = chrono::Utc::now().to_rfc3339();
 
-        conn.execute(
-            "INSERT INTO sys_integrations (integration_name, integration_settings, created_at, updated_at)
-             VALUES (?, ?, ?, ?)
-             ON CONFLICT (integration_name) DO UPDATE SET
-                integration_settings = EXCLUDED.integration_settings,
-                updated_at = EXCLUDED.updated_at",
-            params![name, settings_json, now, now],
-        )?;
+        self.with_connection_write(|conn| {
+            conn.execute(
+                "INSERT INTO sys_integrations (integration_name, integration_settings, created_at, updated_at)
+                 VALUES (?, ?, ?, ?)
+                 ON CONFLICT (integration_name) DO UPDATE SET
+                    integration_settings = EXCLUDED.integration_settings,
+                    updated_at = EXCLUDED.updated_at",
+                params![name, settings_json, now, now],
+            )?;
 
-        Ok(())
+            Ok(())
+        })
     }
 
     pub fn delete_integration(&self, name: &str) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
-        let rows = conn.execute(
-            "DELETE FROM sys_integrations WHERE integration_name = ?",
-            params![name],
-        )?;
-        Ok(rows > 0)
+        self.with_connection_write(|conn| {
+            let rows = conn.execute(
+                "DELETE FROM sys_integrations WHERE integration_name = ?",
+                params![name],
+            )?;
+            Ok(rows > 0)
+        })
     }
 
     // === Maintenance operations ===
@@ -1456,8 +1517,8 @@ impl DuckDbRepository {
     pub fn compact(&self) -> Result<()> {
         use std::fs;
 
-        // Note: We already hold the filesystem lock for the repository lifetime,
-        // so no additional locking is needed here.
+        // Acquire lock for the entire compaction operation
+        let _lock = self.acquire_lock()?;
 
         // Proper DuckDB compaction: COPY FROM DATABASE to a new file
         // Note: VACUUM does not reclaim space in DuckDB - only COPY FROM DATABASE does
@@ -1520,10 +1581,6 @@ impl DuckDbRepository {
         // Close the compact connection
         drop(compact_conn);
 
-        // Close the main database connection temporarily
-        // (we hold the internal mutex to prevent other threads from using the connection)
-        let mut conn_guard = self.conn.lock().unwrap();
-
         // Replace the old database with the compacted one
         // Backup the original first, then move temp in place
         let backup_db = self.db_path.with_extension("duckdb.old");
@@ -1531,31 +1588,10 @@ impl DuckDbRepository {
         fs::rename(&self.db_path, &backup_db)?;
         fs::rename(&temp_db, &self.db_path)?;
 
-        // Reopen the connection to the new compacted database
-        let new_conn = if let Some(key) = &self.encryption_key {
-            let config = duckdb::Config::default().enable_autoload_extension(false)?;
-            let conn = Connection::open_in_memory_with_flags(config)?;
-            conn.execute(
-                &format!(
-                    "ATTACH '{}' AS main_db (ENCRYPTION_KEY '{}')",
-                    self.db_path.display(),
-                    key
-                ),
-                [],
-            )?;
-            conn.execute("USE main_db", [])?;
-            conn
-        } else {
-            let config = duckdb::Config::default().enable_autoload_extension(false)?;
-            Connection::open_with_flags(&self.db_path, config)?
-        };
-
-        // Replace the connection in the mutex
-        *conn_guard = new_conn;
-
         // Clean up the backup file
         let _ = fs::remove_file(&backup_db);
 
+        // Lock is released when _lock drops
         Ok(())
     }
 
@@ -1568,131 +1604,138 @@ impl DuckDbRepository {
     // === Doctor checks ===
 
     pub fn check_orphaned_transactions(&self) -> Result<Vec<String>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT t.transaction_id FROM sys_transactions t
-             LEFT JOIN sys_accounts a ON t.account_id = a.account_id
-             WHERE a.account_id IS NULL AND t.deleted_at IS NULL",
-        )?;
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT t.transaction_id FROM sys_transactions t
+                 LEFT JOIN sys_accounts a ON t.account_id = a.account_id
+                 WHERE a.account_id IS NULL AND t.deleted_at IS NULL",
+            )?;
 
-        let orphans: Vec<String> = stmt
-            .query_map([], |row| row.get(0))?
-            .filter_map(|r| r.ok())
-            .collect();
+            let orphans: Vec<String> = stmt
+                .query_map([], |row| row.get(0))?
+                .filter_map(|r| r.ok())
+                .collect();
 
-        Ok(orphans)
+            Ok(orphans)
+        })
     }
 
     pub fn check_orphaned_snapshots(&self) -> Result<Vec<String>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT s.snapshot_id FROM sys_balance_snapshots s
-             LEFT JOIN sys_accounts a ON s.account_id = a.account_id
-             WHERE a.account_id IS NULL",
-        )?;
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT s.snapshot_id FROM sys_balance_snapshots s
+                 LEFT JOIN sys_accounts a ON s.account_id = a.account_id
+                 WHERE a.account_id IS NULL",
+            )?;
 
-        let orphans: Vec<String> = stmt
-            .query_map([], |row| row.get(0))?
-            .filter_map(|r| r.ok())
-            .collect();
+            let orphans: Vec<String> = stmt
+                .query_map([], |row| row.get(0))?
+                .filter_map(|r| r.ok())
+                .collect();
 
-        Ok(orphans)
+            Ok(orphans)
+        })
     }
 
     pub fn check_future_transactions(&self) -> Result<i64> {
-        let conn = self.conn.lock().unwrap();
-        // Use Rust-computed date to avoid ICU extension dependency
-        let tomorrow = (chrono::Utc::now() + chrono::Duration::days(1))
-            .format("%Y-%m-%d")
-            .to_string();
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM sys_transactions
-             WHERE transaction_date > ? AND deleted_at IS NULL",
-            params![tomorrow],
-            |row| row.get(0),
-        )?;
-        Ok(count)
+        self.with_connection(|conn| {
+            // Use Rust-computed date to avoid ICU extension dependency
+            let tomorrow = (chrono::Utc::now() + chrono::Duration::days(1))
+                .format("%Y-%m-%d")
+                .to_string();
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM sys_transactions
+                 WHERE transaction_date > ? AND deleted_at IS NULL",
+                params![tomorrow],
+                |row| row.get(0),
+            )?;
+            Ok(count)
+        })
     }
 
     pub fn count_untagged_transactions(&self) -> Result<i64> {
-        let conn = self.conn.lock().unwrap();
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM sys_transactions
-             WHERE (tags IS NULL OR len(tags) = 0)
-             AND deleted_at IS NULL",
-            [],
-            |row| row.get(0),
-        )?;
-        Ok(count)
+        self.with_connection(|conn| {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM sys_transactions
+                 WHERE (tags IS NULL OR len(tags) = 0)
+                 AND deleted_at IS NULL",
+                [],
+                |row| row.get(0),
+            )?;
+            Ok(count)
+        })
     }
 
     pub fn count_uncategorized_expenses(&self) -> Result<i64> {
-        let conn = self.conn.lock().unwrap();
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM sys_transactions
-             WHERE amount < 0
-             AND (tags IS NULL OR len(tags) = 0)
-             AND deleted_at IS NULL",
-            [],
-            |row| row.get(0),
-        )?;
-        Ok(count)
+        self.with_connection(|conn| {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM sys_transactions
+                 WHERE amount < 0
+                 AND (tags IS NULL OR len(tags) = 0)
+                 AND deleted_at IS NULL",
+                [],
+                |row| row.get(0),
+            )?;
+            Ok(count)
+        })
     }
 
     /// Check for transactions with unreasonable dates (before 1970 or more than 1 year in future)
     pub fn check_date_sanity(&self) -> Result<Vec<String>> {
-        let conn = self.conn.lock().unwrap();
-        // Use Rust-computed date to avoid ICU extension dependency
-        let one_year_future = (chrono::Utc::now() + chrono::Duration::days(365))
-            .format("%Y-%m-%d")
-            .to_string();
-        let mut stmt = conn.prepare(
-            "SELECT transaction_id, transaction_date::VARCHAR, description, amount
-             FROM sys_transactions
-             WHERE deleted_at IS NULL
-               AND (transaction_date > ?
-                    OR transaction_date < '1970-01-01')
-             LIMIT 100",
-        )?;
+        self.with_connection(|conn| {
+            // Use Rust-computed date to avoid ICU extension dependency
+            let one_year_future = (chrono::Utc::now() + chrono::Duration::days(365))
+                .format("%Y-%m-%d")
+                .to_string();
+            let mut stmt = conn.prepare(
+                "SELECT transaction_id, transaction_date::VARCHAR, description, amount
+                 FROM sys_transactions
+                 WHERE deleted_at IS NULL
+                   AND (transaction_date > ?
+                        OR transaction_date < '1970-01-01')
+                 LIMIT 100",
+            )?;
 
-        let results: Vec<String> = stmt
-            .query_map(params![one_year_future], |row| {
-                let tx_id: String = row.get(0)?;
-                let date: String = row.get(1)?;
-                let desc: Option<String> = row.get(2)?;
-                let amount: f64 = row.get(3)?;
-                Ok(format!(
-                    "{}|{}|{}|{}",
-                    tx_id,
-                    date,
-                    desc.unwrap_or_default(),
-                    amount
-                ))
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
+            let results: Vec<String> = stmt
+                .query_map(params![one_year_future], |row| {
+                    let tx_id: String = row.get(0)?;
+                    let date: String = row.get(1)?;
+                    let desc: Option<String> = row.get(2)?;
+                    let amount: f64 = row.get(3)?;
+                    Ok(format!(
+                        "{}|{}|{}|{}",
+                        tx_id,
+                        date,
+                        desc.unwrap_or_default(),
+                        amount
+                    ))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
 
-        Ok(results)
+            Ok(results)
+        })
     }
 
     /// Check if a table exists
     pub fn table_exists(&self, table_name: &str) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
-        // Split schema.table if present
-        let (schema, table) = if table_name.contains('.') {
-            let parts: Vec<&str> = table_name.split('.').collect();
-            (parts[0], parts[1])
-        } else {
-            ("main", table_name)
-        };
+        self.with_connection(|conn| {
+            // Split schema.table if present
+            let (schema, table) = if table_name.contains('.') {
+                let parts: Vec<&str> = table_name.split('.').collect();
+                (parts[0], parts[1])
+            } else {
+                ("main", table_name)
+            };
 
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM information_schema.tables
-             WHERE table_schema = ? AND table_name = ?",
-            [schema, table],
-            |row| row.get(0),
-        )?;
-        Ok(count > 0)
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM information_schema.tables
+                 WHERE table_schema = ? AND table_name = ?",
+                [schema, table],
+                |row| row.get(0),
+            )?;
+            Ok(count > 0)
+        })
     }
 
     // ========================================================================
@@ -1701,34 +1744,35 @@ impl DuckDbRepository {
 
     /// Get all enabled auto-tag rules, ordered by sort_order
     pub fn get_enabled_auto_tag_rules(&self) -> Result<Vec<AutoTagRule>> {
-        let conn = self.conn.lock().unwrap();
-        // CAST(tags AS VARCHAR) is critical here - without it, duckdb-rs silently fails
-        // to read VARCHAR[] as String, returning "[]" and causing rules to have no tags.
-        // This was the root cause of auto-tag rules not applying. See parse_duckdb_array().
-        let mut stmt = conn.prepare(
-            "SELECT rule_id, name, sql_condition, CAST(tags AS VARCHAR) as tags_str, enabled, sort_order
-             FROM sys_transactions_rules
-             WHERE enabled = true
-             ORDER BY sort_order, created_at"
-        )?;
+        self.with_connection(|conn| {
+            // CAST(tags AS VARCHAR) is critical here - without it, duckdb-rs silently fails
+            // to read VARCHAR[] as String, returning "[]" and causing rules to have no tags.
+            // This was the root cause of auto-tag rules not applying. See parse_duckdb_array().
+            let mut stmt = conn.prepare(
+                "SELECT rule_id, name, sql_condition, CAST(tags AS VARCHAR) as tags_str, enabled, sort_order
+                 FROM sys_transactions_rules
+                 WHERE enabled = true
+                 ORDER BY sort_order, created_at"
+            )?;
 
-        let rules = stmt.query_map([], |row| {
-            let tags_str: String = row.get(3).unwrap_or_else(|_| "[]".to_string());
-            Ok(AutoTagRule {
-                rule_id: row.get(0)?,
-                name: row.get(1)?,
-                sql_condition: row.get(2)?,
-                tags: parse_duckdb_array(&tags_str),
-                enabled: row.get(4)?,
-                sort_order: row.get(5)?,
-            })
-        })?;
+            let rules = stmt.query_map([], |row| {
+                let tags_str: String = row.get(3).unwrap_or_else(|_| "[]".to_string());
+                Ok(AutoTagRule {
+                    rule_id: row.get(0)?,
+                    name: row.get(1)?,
+                    sql_condition: row.get(2)?,
+                    tags: parse_duckdb_array(&tags_str),
+                    enabled: row.get(4)?,
+                    sort_order: row.get(5)?,
+                })
+            })?;
 
-        let mut result = Vec::new();
-        for rule in rules {
-            result.push(rule?);
-        }
-        Ok(result)
+            let mut result = Vec::new();
+            for rule in rules {
+                result.push(rule?);
+            }
+            Ok(result)
+        })
     }
 
     /// Get transaction IDs that match a SQL condition from a given set of IDs
@@ -1744,36 +1788,36 @@ impl DuckDbRepository {
             return Ok(Vec::new());
         }
 
-        let conn = self.conn.lock().unwrap();
+        self.with_connection(|conn| {
+            // Build IN clause with UUIDs
+            let id_list: Vec<String> = tx_ids.iter().map(|id| format!("'{}'", id)).collect();
+            let in_clause = id_list.join(", ");
 
-        // Build IN clause with UUIDs
-        let id_list: Vec<String> = tx_ids.iter().map(|id| format!("'{}'", id)).collect();
-        let in_clause = id_list.join(", ");
+            // Build query with user's SQL condition
+            // Use the transactions view to ensure computed columns are available
+            let sql = format!(
+                "SELECT transaction_id FROM transactions
+                 WHERE transaction_id IN ({})
+                 AND ({})",
+                in_clause, sql_condition
+            );
 
-        // Build query with user's SQL condition
-        // Use the transactions view to ensure computed columns are available
-        let sql = format!(
-            "SELECT transaction_id FROM transactions
-             WHERE transaction_id IN ({})
-             AND ({})",
-            in_clause, sql_condition
-        );
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map([], |row| {
+                let id_str: String = row.get(0)?;
+                Ok(id_str)
+            })?;
 
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map([], |row| {
-            let id_str: String = row.get(0)?;
-            Ok(id_str)
-        })?;
-
-        let mut result = Vec::new();
-        for row in rows {
-            if let Ok(id_str) = row {
-                if let Ok(uuid) = Uuid::parse_str(&id_str) {
-                    result.push(uuid);
+            let mut result = Vec::new();
+            for row in rows {
+                if let Ok(id_str) = row {
+                    if let Ok(uuid) = Uuid::parse_str(&id_str) {
+                        result.push(uuid);
+                    }
                 }
             }
-        }
-        Ok(result)
+            Ok(result)
+        })
     }
 }
 
@@ -1871,17 +1915,9 @@ fn parse_duckdb_array(s: &str) -> Vec<String> {
 }
 
 /// Ensure WAL is checkpointed before the connection is dropped.
-/// This prevents WAL corruption on restart.
-impl Drop for DuckDbRepository {
-    fn drop(&mut self) {
-        // Force a checkpoint to flush WAL to the main database file
-        // This ensures clean shutdown and prevents WAL corruption on restart
-        if let Ok(conn) = self.conn.lock() {
-            let _ = conn.execute("CHECKPOINT", []);
-        }
-        // _lock_file is dropped after this, releasing the filesystem lock
-    }
-}
+/// This flushes all data to the main database file for consistency.
+// Note: With per-operation locking, each write operation checkpoints before releasing
+// the lock, so no explicit Drop checkpoint is needed. The WAL is always flushed.
 
 #[cfg(test)]
 mod tests {

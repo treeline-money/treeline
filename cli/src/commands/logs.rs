@@ -57,7 +57,11 @@ fn format_timestamp(timestamp_ms: i64) -> String {
 
 pub fn run(command: LogsCommands) -> Result<()> {
     match command {
-        LogsCommands::List { limit, errors, json } => {
+        LogsCommands::List {
+            limit,
+            errors,
+            json,
+        } => {
             let service = get_logging_service()?;
             let entries = if errors {
                 service.get_errors(limit)?
@@ -138,10 +142,7 @@ pub fn run(command: LogsCommands) -> Result<()> {
             if !force && !json {
                 use dialoguer::Confirm;
                 if !Confirm::new()
-                    .with_prompt(format!(
-                        "Delete logs older than {} days?",
-                        older_than_days
-                    ))
+                    .with_prompt(format!("Delete logs older than {} days?", older_than_days))
                     .default(false)
                     .interact()?
                 {
@@ -163,9 +164,7 @@ pub fn run(command: LogsCommands) -> Result<()> {
             let total = service.count()?;
             let errors = service.get_errors(1000)?.len();
             let db_path = service.db_path().to_path_buf();
-            let size_bytes = std::fs::metadata(&db_path)
-                .map(|m| m.len())
-                .unwrap_or(0);
+            let size_bytes = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
 
             if json {
                 println!(

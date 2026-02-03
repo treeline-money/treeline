@@ -202,8 +202,8 @@ impl SyncService {
         }
 
         // Skip transaction fetching entirely if balances_only mode
-        let (discovered, new_count, skipped_count) = if balances_only {
-            (0, 0, 0)
+        let (discovered, new_count, skipped_count, auto_tag_failures) = if balances_only {
+            (0, 0, 0, Vec::new())
         } else {
             // Fetch transactions (excluding per-account balances-only settings)
             // Check accountSettings for balancesOnly flag on each account
@@ -233,7 +233,7 @@ impl SyncService {
             provider_warnings.extend(txs_result.warnings);
 
             // Process transactions with deduplication
-            let (new_count, skipped_count) = self.process_transactions(
+            let (new_count, skipped_count, auto_tag_failures) = self.process_transactions(
                 name,
                 txs_result.transactions,
                 &external_to_internal,
@@ -241,7 +241,7 @@ impl SyncService {
             )?;
 
             let discovered = new_count + skipped_count;
-            (discovered, new_count, skipped_count)
+            (discovered, new_count, skipped_count, auto_tag_failures)
         };
 
         Ok(IntegrationSyncResult {
@@ -258,6 +258,7 @@ impl SyncService {
             end_date: end_date.format("%Y-%m-%d").to_string(),
             provider_warnings,
             error: None,
+            auto_tag_failures,
         })
     }
 
@@ -274,7 +275,7 @@ impl SyncService {
         transactions: Vec<(String, crate::domain::Transaction)>,
         external_to_internal: &HashMap<String, Uuid>,
         dry_run: bool,
-    ) -> Result<(i64, i64)> {
+    ) -> Result<(i64, i64, Vec<crate::services::tag::RuleFailure>)> {
         let mut new_count = 0i64;
         let mut skipped_count = 0i64;
         let mut new_tx_ids: Vec<Uuid> = Vec::new();
@@ -320,12 +321,17 @@ impl SyncService {
         }
 
         // Apply auto-tag rules to newly synced transactions
-        if !dry_run && !new_tx_ids.is_empty() {
+        let auto_tag_failures = if !dry_run && !new_tx_ids.is_empty() {
             // Best-effort tagging - don't fail sync if rules fail
-            let _ = self.tag_service.apply_auto_tag_rules(&new_tx_ids);
-        }
+            match self.tag_service.apply_auto_tag_rules(&new_tx_ids) {
+                Ok(result) => result.failed_rules,
+                Err(_) => Vec::new(), // If the whole thing fails, we just skip
+            }
+        } else {
+            Vec::new()
+        };
 
-        Ok((new_count, skipped_count))
+        Ok((new_count, skipped_count, auto_tag_failures))
     }
 
     /// List configured integrations
@@ -414,6 +420,9 @@ pub struct IntegrationSyncResult {
     pub provider_warnings: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Auto-tag rules that failed (if any)
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub auto_tag_failures: Vec<crate::services::tag::RuleFailure>,
 }
 
 #[derive(Debug, Serialize)]

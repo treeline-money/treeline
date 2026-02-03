@@ -4,7 +4,7 @@ use std::io::{self, Read};
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use comfy_table::{Table, ContentArrangement};
+use comfy_table::{ContentArrangement, Table};
 
 use super::get_context;
 
@@ -18,11 +18,14 @@ pub fn run(sql: Option<&str>, file: Option<&Path>, format: &str) -> Result<()> {
     } else if atty::isnt(atty::Stream::Stdin) {
         // Read from stdin if not a TTY
         let mut buffer = String::new();
-        io::stdin().read_to_string(&mut buffer)
+        io::stdin()
+            .read_to_string(&mut buffer)
             .context("Failed to read SQL from stdin")?;
         buffer
     } else {
-        anyhow::bail!("No SQL query provided. Use positional argument, --file, or pipe from stdin.");
+        anyhow::bail!(
+            "No SQL query provided. Use positional argument, --file, or pipe from stdin."
+        );
     };
 
     let ctx = get_context()?;

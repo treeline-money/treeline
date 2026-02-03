@@ -576,6 +576,9 @@ fn test_startup_race_condition() {
     };
 
     // Thread 2: Simulates sync starting immediately after
+    // Note: In real usage, sync should also ensure schema exists.
+    // With per-operation locking, concurrent ensure_schema calls are safe -
+    // the lock ensures only one thread runs migrations at a time.
     let sync_handle = {
         let barrier = Arc::clone(&barrier);
         let db_path = Arc::clone(&db_path);
@@ -590,6 +593,14 @@ fn test_startup_race_condition() {
             println!("Sync thread: Starting...");
             match DuckDbRepository::new(&db_path, None) {
                 Ok(repo) => {
+                    // In real usage, clients should also ensure schema.
+                    // This tests that concurrent ensure_schema calls are safe.
+                    if let Err(e) = repo.ensure_schema() {
+                        eprintln!("Sync thread: Schema error: {}", e);
+                        sync_error.fetch_add(1, Ordering::SeqCst);
+                        return;
+                    }
+
                     // Try to do sync-like operations
                     match repo.get_accounts() {
                         Ok(accounts) => {
@@ -1029,5 +1040,245 @@ fn test_rapid_open_write_close_cycle() {
         accounts.len(),
         expected_total,
         "Should have correct account count"
+    );
+}
+
+/// Test: Simulate CLI, Desktop App, and external script access concurrently
+///
+/// This test simulates the real-world scenario where:
+/// - Desktop app has a long-lived connection doing periodic queries
+/// - CLI runs short-lived commands (sync, query, etc.)
+/// - External scripts (notebooks, Python) access the database directly
+///
+/// All three access patterns should work concurrently without corruption.
+#[test]
+fn test_cli_app_script_concurrent_access() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("test_multi_client.duckdb");
+
+    // Initialize database
+    {
+        let repo = DuckDbRepository::new(&db_path, None).unwrap();
+        repo.ensure_schema().unwrap();
+        // Pre-populate some data
+        for i in 0..5 {
+            let account = create_test_account(&format!("initial_{}", i));
+            repo.upsert_account(&account).unwrap();
+        }
+    }
+
+    let barrier = Arc::new(Barrier::new(3));
+    let db_path = Arc::new(db_path);
+
+    let app_errors = Arc::new(AtomicUsize::new(0));
+    let cli_errors = Arc::new(AtomicUsize::new(0));
+    let script_errors = Arc::new(AtomicUsize::new(0));
+
+    let app_ops = Arc::new(AtomicUsize::new(0));
+    let cli_ops = Arc::new(AtomicUsize::new(0));
+    let script_ops = Arc::new(AtomicUsize::new(0));
+
+    // Simulate Desktop App: periodic reads and occasional writes
+    let app_handle = {
+        let barrier = Arc::clone(&barrier);
+        let db_path = Arc::clone(&db_path);
+        let errors = Arc::clone(&app_errors);
+        let ops = Arc::clone(&app_ops);
+
+        thread::spawn(move || {
+            barrier.wait();
+            println!("Desktop App: Starting...");
+
+            // App keeps connection and does periodic operations
+            for i in 0..20 {
+                match DuckDbRepository::new(&db_path, None) {
+                    Ok(repo) => {
+                        // Read accounts (common operation)
+                        if let Err(e) = repo.get_accounts() {
+                            eprintln!("App: Read error at {}: {}", i, e);
+                            errors.fetch_add(1, Ordering::SeqCst);
+                        } else {
+                            ops.fetch_add(1, Ordering::SeqCst);
+                        }
+
+                        // Occasionally write
+                        if i % 5 == 0 {
+                            let account = create_test_account(&format!("app_write_{}", i));
+                            if let Err(e) = repo.upsert_account(&account) {
+                                eprintln!("App: Write error at {}: {}", i, e);
+                                errors.fetch_add(1, Ordering::SeqCst);
+                            } else {
+                                ops.fetch_add(1, Ordering::SeqCst);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("App: Connection error at {}: {}", i, e);
+                        errors.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+
+                // Simulate app idle time between operations
+                thread::sleep(Duration::from_millis(10));
+            }
+            println!("Desktop App: Completed");
+        })
+    };
+
+    // Simulate CLI: short bursts of commands
+    let cli_handle = {
+        let barrier = Arc::clone(&barrier);
+        let db_path = Arc::clone(&db_path);
+        let errors = Arc::clone(&cli_errors);
+        let ops = Arc::clone(&cli_ops);
+
+        thread::spawn(move || {
+            barrier.wait();
+            println!("CLI: Starting...");
+
+            // CLI runs several short commands
+            for cmd in 0..10 {
+                // Each command is a new connection (like `tl sync`, `tl query`, etc.)
+                match DuckDbRepository::new(&db_path, None) {
+                    Ok(repo) => {
+                        // Ensure schema (CLI should do this)
+                        if let Err(e) = repo.ensure_schema() {
+                            eprintln!("CLI: Schema error at cmd {}: {}", cmd, e);
+                            errors.fetch_add(1, Ordering::SeqCst);
+                            continue;
+                        }
+
+                        // Do a write (like sync adding transactions)
+                        let account = create_test_account(&format!("cli_cmd_{}", cmd));
+                        if let Err(e) = repo.upsert_account(&account) {
+                            eprintln!("CLI: Write error at cmd {}: {}", cmd, e);
+                            errors.fetch_add(1, Ordering::SeqCst);
+                        } else {
+                            ops.fetch_add(1, Ordering::SeqCst);
+                        }
+
+                        // Read back
+                        if let Err(e) = repo.get_accounts() {
+                            eprintln!("CLI: Read error at cmd {}: {}", cmd, e);
+                            errors.fetch_add(1, Ordering::SeqCst);
+                        } else {
+                            ops.fetch_add(1, Ordering::SeqCst);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("CLI: Connection error at cmd {}: {}", cmd, e);
+                        errors.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+
+                // Small delay between commands
+                thread::sleep(Duration::from_millis(20));
+            }
+            println!("CLI: Completed");
+        })
+    };
+
+    // Simulate external script (notebook/Python): raw queries
+    let script_handle = {
+        let barrier = Arc::clone(&barrier);
+        let db_path = Arc::clone(&db_path);
+        let errors = Arc::clone(&script_errors);
+        let ops = Arc::clone(&script_ops);
+
+        thread::spawn(move || {
+            barrier.wait();
+            println!("Script: Starting...");
+
+            // Script runs a series of queries
+            for query_num in 0..15 {
+                match DuckDbRepository::new(&db_path, None) {
+                    Ok(repo) => {
+                        // Ensure schema (scripts should do this too)
+                        if let Err(e) = repo.ensure_schema() {
+                            eprintln!("Script: Schema error at query {}: {}", query_num, e);
+                            errors.fetch_add(1, Ordering::SeqCst);
+                            continue;
+                        }
+
+                        // Run a read query
+                        let result = repo.execute_query("SELECT COUNT(*) as cnt FROM sys_accounts");
+                        match result {
+                            Ok(_) => {
+                                ops.fetch_add(1, Ordering::SeqCst);
+                            }
+                            Err(e) => {
+                                eprintln!("Script: Query error at {}: {}", query_num, e);
+                                errors.fetch_add(1, Ordering::SeqCst);
+                            }
+                        }
+
+                        // Occasionally do analytics-style query
+                        if query_num % 3 == 0 {
+                            let result = repo.execute_query(
+                                "SELECT account_id, nickname, account_type FROM sys_accounts LIMIT 10",
+                            );
+                            match result {
+                                Ok(_) => {
+                                    ops.fetch_add(1, Ordering::SeqCst);
+                                }
+                                Err(e) => {
+                                    eprintln!("Script: Analytics error at {}: {}", query_num, e);
+                                    errors.fetch_add(1, Ordering::SeqCst);
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Script: Connection error at query {}: {}", query_num, e);
+                        errors.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+
+                // Variable delay (scripts may run at different speeds)
+                thread::sleep(Duration::from_millis(15));
+            }
+            println!("Script: Completed");
+        })
+    };
+
+    // Wait for all to complete
+    app_handle.join().unwrap();
+    cli_handle.join().unwrap();
+    script_handle.join().unwrap();
+
+    let app_error_count = app_errors.load(Ordering::SeqCst);
+    let cli_error_count = cli_errors.load(Ordering::SeqCst);
+    let script_error_count = script_errors.load(Ordering::SeqCst);
+
+    let app_op_count = app_ops.load(Ordering::SeqCst);
+    let cli_op_count = cli_ops.load(Ordering::SeqCst);
+    let script_op_count = script_ops.load(Ordering::SeqCst);
+
+    println!("\n=== CLI + App + Script Results ===");
+    println!(
+        "Desktop App: {} ops, {} errors",
+        app_op_count, app_error_count
+    );
+    println!("CLI: {} ops, {} errors", cli_op_count, cli_error_count);
+    println!(
+        "Script: {} ops, {} errors",
+        script_op_count, script_error_count
+    );
+
+    // Verify database integrity
+    let repo = DuckDbRepository::new(&db_path, None).unwrap();
+    let final_accounts = repo.get_accounts().unwrap();
+    println!("Final account count: {}", final_accounts.len());
+
+    // Assertions
+    assert_eq!(app_error_count, 0, "Desktop App should have no errors");
+    assert_eq!(cli_error_count, 0, "CLI should have no errors");
+    assert_eq!(script_error_count, 0, "Script should have no errors");
+
+    // Verify we have the expected accounts (5 initial + 4 app + 10 CLI = 19)
+    assert!(
+        final_accounts.len() >= 19,
+        "Should have at least 19 accounts, got {}",
+        final_accounts.len()
     );
 }
