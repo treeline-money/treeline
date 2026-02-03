@@ -11,14 +11,15 @@ All Treeline data lives in `~/.treeline/`:
 
 ```
 ~/.treeline/
-├── treeline.duckdb      # Main database (your financial data)
-├── treeline.duckdb.wal  # Write-ahead log (temporary)
-├── settings.json        # App and plugin settings
-├── imports/             # Watch folder for CSV imports
-├── backups/             # Database backups
-├── logs.duckdb          # Troubleshooting logs
-├── plugins/             # Installed plugins
-└── encryption.json      # Encryption metadata (when enabled)
+├── treeline.duckdb       # Main database (your financial data)
+├── treeline.duckdb.lock  # Lock file for safe concurrent access
+├── settings.json         # App and plugin settings
+├── imports/              # Watch folder for CSV imports
+├── backups/              # Database backups
+├── logs.duckdb           # Troubleshooting logs
+├── logs.duckdb.lock      # Lock file for logs database
+├── plugins/              # Installed plugins
+└── encryption.json       # Encryption metadata (when enabled)
 ```
 
 ## Main Database
@@ -27,7 +28,9 @@ All Treeline data lives in `~/.treeline/`:
 
 Your transactions, accounts, and balance snapshots all live in this single DuckDB file. This makes backups simple: copy the file and you have everything.
 
-The `.wal` (write-ahead log) file is temporary and handled automatically by DuckDB. It's merged into the main file during normal operation.
+**Lock file:** The `.duckdb.lock` file coordinates access between the desktop app, CLI, and external tools. It uses filesystem advisory locks to prevent corruption from concurrent writes. You can safely delete lock files when Treeline is not running.
+
+**WAL files:** You may occasionally see a `.wal` (write-ahead log) file. These are automatically merged into the main database after each write operation and should be short-lived.
 
 **Demo mode:** When demo mode is enabled (`tl demo on`), Treeline uses a separate database at `~/.treeline/demo.duckdb`. Your real data remains untouched.
 
@@ -158,15 +161,20 @@ Shows account count, transaction count, and date range of your data.
 
 ## External Access
 
-:::caution[Close Treeline First]
-Do not access the database directly while Treeline (desktop app or CLI) is running. While the CLI and desktop app have conflict mechanisms between themselves, direct database access from external tools can cause data corruption or unexpected behavior. Always quit the app completely before connecting with external tools.
-:::
-
-If you need to query your data directly, first close Treeline, then connect with any DuckDB-compatible tool:
+You can query your Treeline data from notebooks, Python scripts, or any DuckDB-compatible tool.
 
 ```python
 import duckdb
 conn = duckdb.connect('~/.treeline/treeline.duckdb', read_only=True)
+df = conn.execute("SELECT * FROM transactions LIMIT 10").df()
 ```
+
+:::caution[Avoid Concurrent Access]
+Close the desktop app and ensure no CLI commands are running before accessing the database from external tools. This prevents potential conflicts.
+:::
+
+:::tip[CLI Works While App Runs]
+The CLI (`tl`) can run commands while the desktop app is open. Operations are automatically coordinated, so you can safely run `tl query` or `tl status` without closing the app.
+:::
 
 See [Database Schema](/reference/database-schema) for table documentation.
