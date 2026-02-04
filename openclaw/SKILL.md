@@ -75,14 +75,6 @@ Demo data is separate from real data.
 
 ---
 
-## Requirements (for existing users)
-
-1. **Treeline app installed** — [Download here](https://treeline.money/download)
-2. **Treeline CLI installed** — Install via `curl -fsSL https://raw.githubusercontent.com/treeline-money/treeline/main/scripts/install.sh | sh` (Mac/Linux) or `irm https://raw.githubusercontent.com/treeline-money/treeline/main/scripts/install.ps1 | iex` (Windows). The CLI (`tl`) must be in your PATH.
-3. **App must be closed** when querying — CLI and app can't access DuckDB simultaneously
-
----
-
 ## Limitations
 
 **Encrypted databases not supported.** If the user has enabled database encryption in Treeline, CLI commands will fail. They'll need to either:
