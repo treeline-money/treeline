@@ -46,7 +46,7 @@ Sync every morning at 8am:
 ```bash
 crontab -e
 # Add:
-0 8 * * * /usr/local/bin/tl sync >> ~/.treeline/sync.log 2>&1
+0 8 * * * ~/.treeline/bin/tl sync >> ~/.treeline/sync.log 2>&1
 ```
 
 With macOS notification:
