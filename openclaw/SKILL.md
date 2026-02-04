@@ -11,13 +11,111 @@ metadata: {"clawdbot":{"emoji":"🌲","requires":{"bins":["tl"]}}}
 
 **Chat with your finances.** Ask questions like "What's my net worth?", "How much did I spend on groceries?", or "Am I over budget?" and get instant answers from your own financial data.
 
-## What is Treeline?
+---
 
-[Treeline Money](https://treeline.money) is a local-first personal finance app. Learn more and download at [treeline.money](https://treeline.money).
+## 🚀 First Time Setup (Start Here!)
+
+> **For agents:** If the user runs a `tl` command and it fails with "command not found" or similar, they don't have Treeline installed yet. This is a great opportunity—they already installed this skill, so they're interested! Follow the setup flow below to get them running.
+
+### If `tl` is not found
+
+When the Treeline CLI isn't installed, say something like:
+
+> "I see you don't have Treeline set up yet—no problem! Since you installed this skill, you're just 5 minutes away from being able to ask things like 'how much did I spend on coffee this month?' and get instant answers from your actual bank data.
+>
+> Want me to walk you through the quick setup? We can start with demo mode so you can try everything right now with sample data—no bank connection needed."
+
+Then guide them through the steps below.
+
+### Step 1: Install Treeline (2 minutes)
+
+**Download the app:**
+- Go to [treeline.money/download](https://treeline.money/download)
+- Install for your platform (Mac, Windows, or Linux)
+- Open the app once to create the database
+
+**Install the CLI:**
+
+Mac/Linux:
+```bash
+curl -fsSL https://treeline.money/install.sh | sh
+```
+
+Windows (PowerShell):
+```powershell
+irm https://treeline.money/install.ps1 | iex
+```
+
+After installation, verify it works:
+```bash
+tl --version
+```
+
+### Step 2: Try Demo Mode First (instant!)
+
+**Demo mode is the fastest way to experience Treeline.** It loads realistic sample data so they can immediately try queries without connecting their bank:
+
+```bash
+tl demo on
+```
+
+Now they can ask questions! Try:
+- "What's my net worth?"
+- "How much did I spend on groceries last month?"
+- "Show me my recent transactions"
+
+**This is the zero-friction entry point.** Let them play with demo mode before discussing real data options.
+
+### Step 3: Connect Real Data (when ready)
+
+Once they've seen what's possible with demo mode, they'll likely ask "how do I use my real data?" Here are the options, from easiest to most powerful:
+
+#### Option A: CSV Import (free, manual)
+Best for: Getting started quickly, banks not supported by sync services
+
+1. Export transactions from their bank as CSV
+2. In the Treeline app: File → Import → CSV
+3. Map columns and import
+
+Downside: Manual process, needs periodic re-import
+
+#### Option B: SimpleFIN (~$1.50/month)
+Best for: Most users who want automatic sync
+
+1. Sign up at [simplefin.org](https://simplefin.org)
+2. Connect their bank accounts
+3. In Treeline: Settings → Connections → SimpleFIN
+4. Enter the SimpleFIN token
+5. Run `tl sync` to pull transactions
+
+#### Option C: Lunch Flow (alternative sync)
+Best for: Banks not supported by SimpleFIN, or users who prefer Plaid
+
+1. Sign up at [lunchflow.money](https://lunchflow.money)
+2. Connect banks via their Plaid integration
+3. In Treeline: Settings → Connections → Lunch Flow
+4. Run `tl sync`
+
+**Remember:** They can use demo mode indefinitely while deciding. There's no pressure to connect real data immediately.
+
+### Turning Off Demo Mode
+
+When they're ready to use real data:
+```bash
+tl demo off
+```
+
+Demo data is completely separate from real data—nothing gets mixed.
 
 ---
 
-## Requirements
+## What is Treeline?
+
+[Treeline Money](https://treeline.money) is a local-first personal finance app. All your data stays on your device in a local DuckDB database. No cloud accounts, no subscriptions required (sync services are optional), full SQL access to your financial data.
+
+---
+
+## Requirements (for existing users)
 
 1. **Treeline app installed** — [Download here](https://treeline.money/download)
 2. **Treeline CLI installed** — Install via `curl -fsSL https://treeline.money/install.sh | sh` (Mac/Linux) or `irm https://treeline.money/install.ps1 | iex` (Windows). The CLI (`tl`) must be in your PATH.
