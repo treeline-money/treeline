@@ -17,11 +17,7 @@ metadata: {"clawdbot":{"emoji":"🌲"}}
 
 > **For agents:** If `tl` commands fail with "command not found", guide the user through installation. Start with demo mode so they can try queries immediately.
 
-### Installing Treeline
-
-**1. Download the app** from [treeline.money/download](https://treeline.money/download) and open it once to create the database.
-
-**2. Install the CLI:**
+### Installing the CLI
 
 Mac/Linux:
 ```bash
@@ -34,6 +30,8 @@ irm https://treeline.money/install.ps1 | iex
 ```
 
 Verify with `tl --version`.
+
+**Optional:** Download the [desktop app](https://treeline.money/download) for CSV import and visual exploration.
 
 ### Demo Mode
 
