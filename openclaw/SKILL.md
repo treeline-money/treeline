@@ -4,7 +4,7 @@ description: Chat with your finances from Treeline Money. Query balances, spendi
 version: 0.0.4
 user-invocable: true
 homepage: https://treeline.money
-metadata: {"clawdbot":{"emoji":"🌲","requires":{"bins":["tl"]}}}
+metadata: {"clawdbot":{"emoji":"🌲"}}
 ---
 
 # Treeline Money
