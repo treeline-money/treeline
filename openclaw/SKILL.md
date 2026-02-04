@@ -13,6 +13,22 @@ metadata: {"clawdbot":{"emoji":"🌲"}}
 
 ---
 
+## Quick Start
+
+```bash
+# 1. Install the CLI
+curl -fsSL https://treeline.money/install.sh | sh
+source ~/.zshrc  # or restart terminal
+
+# 2. Enable demo mode (sample data)
+tl demo on
+
+# 3. Try it out
+tl status
+```
+
+---
+
 ## First Time Setup
 
 > **For agents:** If `tl` commands fail with "command not found", guide the user through installation. Start with demo mode so they can try queries immediately.
@@ -47,6 +63,13 @@ tl demo off
 ```
 
 Demo data is separate from real data.
+
+### CLI Behavior Notes
+
+- `tl demo on` prints a success message — if it seems to hang, wait a few seconds (first run initializes the database)
+- Use `tl demo status` to verify demo mode is enabled
+- Some commands may take a few seconds on first run due to database initialization
+- If you see errors about missing tables, try `tl demo on` again
 
 ### Connecting Real Data
 
