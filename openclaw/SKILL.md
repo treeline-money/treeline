@@ -52,22 +52,22 @@ Demo data is separate from real data.
 
 ### Connecting Real Data
 
-**CSV Import** (free)
-1. Export transactions as CSV from bank website
-2. In Treeline: drag file onto window or click Import
-3. Map columns and import
-
 **SimpleFIN** ($1.50/month, US & Canada)
 1. Sign up at [beta-bridge.simplefin.org](https://beta-bridge.simplefin.org/)
 2. Connect bank accounts and create a setup token
-3. In Treeline: Settings → Integrations → Add SimpleFIN
+3. Run `tl setup simplefin <setup-token>`
 4. Run `tl sync`
 
 **Lunch Flow** (~$3/month, global: US, Canada, Brazil, EU, UK, Asia)
 1. Sign up at [lunchflow.app](https://www.lunchflow.app/?atp=treeline)
 2. Connect bank accounts and create an API destination
-3. In Treeline: Settings → Integrations → Add Lunch Flow
+3. Run `tl setup lunchflow <api-key>`
 4. Run `tl sync`
+
+**CSV Import** (free, requires desktop app)
+1. Export transactions as CSV from bank website
+2. In Treeline app: drag file onto window or click Import
+3. Map columns and import
 
 ---
 
