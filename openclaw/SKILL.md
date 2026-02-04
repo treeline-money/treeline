@@ -21,12 +21,12 @@ metadata: {"clawdbot":{"emoji":"🌲"}}
 
 Mac/Linux:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/treeline-money/treeline/main/scripts/install.sh | sh
+curl -fsSL https://treeline.money/install.sh | sh
 ```
 
 Windows (PowerShell):
 ```powershell
-irm https://raw.githubusercontent.com/treeline-money/treeline/main/scripts/install.ps1 | iex
+irm https://treeline.money/install.ps1 | iex
 ```
 
 Verify with `tl --version`.
