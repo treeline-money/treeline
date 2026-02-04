@@ -10,7 +10,7 @@ mod commands;
 mod output;
 
 use commands::{
-    backup, compact, demo, doctor, encrypt, logs, plugin, query, setup, status, sync, tag,
+    backup, compact, demo, doctor, encrypt, logs, plugin, query, setup, status, sync, tag, update,
 };
 
 /// Treeline - personal finance in your terminal
@@ -144,6 +144,12 @@ enum Commands {
         #[command(subcommand)]
         command: logs::LogsCommands,
     },
+
+    /// Check for and install CLI updates
+    Update {
+        #[command(subcommand)]
+        command: Option<update::UpdateCommands>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -196,5 +202,6 @@ fn run(cli: Cli) -> Result<()> {
         Commands::Setup { command } => setup::run(command),
         Commands::Plugin { command } => plugin::run(command),
         Commands::Logs { command } => logs::run(command),
+        Commands::Update { command } => update::run(command),
     }
 }

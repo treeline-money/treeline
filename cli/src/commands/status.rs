@@ -5,6 +5,7 @@ use colored::Colorize;
 use comfy_table::{ContentArrangement, Table};
 
 use super::get_context;
+use super::update;
 
 pub fn run(json: bool) -> Result<()> {
     let ctx = get_context()?;
@@ -48,6 +49,9 @@ pub fn run(json: bool) -> Result<()> {
             println!("  • {}", name);
         }
     }
+
+    // Check for updates (non-blocking, silent on errors)
+    update::maybe_notify_update();
 
     Ok(())
 }
