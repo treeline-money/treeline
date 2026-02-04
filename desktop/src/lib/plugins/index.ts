@@ -389,6 +389,9 @@ export async function hotReloadPlugin(pluginId: string): Promise<{ success: bool
     // Activate plugin
     await plugin.activate(context);
 
+    // Mark plugin as loaded so isPluginLoaded returns true
+    registry.markPluginLoaded(pluginId, plugin);
+
     console.log(`✓ Hot reloaded plugin: ${plugin.manifest.name} (${pluginId})`);
     return { success: true };
   } catch (error) {

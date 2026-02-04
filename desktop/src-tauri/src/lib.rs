@@ -2149,9 +2149,10 @@ struct BuildResult {
 }
 
 /// Build an AI-generated plugin
-/// Writes the manifest and source, then bundles with Vite (proper Svelte compilation)
+/// Writes the manifest and source, then bundles using the template's build tooling
 #[tauri::command]
 async fn build_ai_plugin(
+    app: AppHandle,
     plugin_id: String,
     manifest_json: String,
     source_code: String,
@@ -2159,6 +2160,23 @@ async fn build_ai_plugin(
     let treeline_dir = get_treeline_dir()?;
     let plugins_dir = treeline_dir.join("plugins");
     let plugin_dir = plugins_dir.join(&plugin_id);
+
+    // Get the app's resource directory where template is bundled
+    // In dev mode, use the template from the repo
+    let template_dir = app
+        .path()
+        .resource_dir()
+        .ok()
+        .map(|p| p.join("template"))
+        .filter(|p| p.exists())
+        .or_else(|| {
+            // Dev mode fallback: look for template relative to the app
+            let dev_template = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .and_then(|p| p.parent())
+                .map(|p| p.join("template"));
+            dev_template.filter(|p| p.exists())
+        });
 
     // Create plugin directory structure
     fs::create_dir_all(&plugin_dir)
@@ -2169,16 +2187,32 @@ async fn build_ai_plugin(
         .map_err(|e| format!("Failed to create src directory: {}", e))?;
 
     // Write manifest.json
-    let manifest_path = plugin_dir.join("manifest.json");
-    fs::write(&manifest_path, manifest_json.trim())
+    fs::write(plugin_dir.join("manifest.json"), manifest_json.trim())
         .map_err(|e| format!("Failed to write manifest: {}", e))?;
 
     // Write source code to src/index.ts
-    let source_path = src_dir.join("index.ts");
-    fs::write(&source_path, source_code.trim())
+    fs::write(src_dir.join("index.ts"), source_code.trim())
         .map_err(|e| format!("Failed to write source: {}", e))?;
 
-    // Write package.json (for Vite build)
+    // If we have the template directory, symlink its node_modules for faster builds
+    if let Some(ref tmpl) = template_dir {
+        let tmpl_node_modules = tmpl.join("node_modules");
+        let plugin_node_modules = plugin_dir.join("node_modules");
+
+        if tmpl_node_modules.exists() && !plugin_node_modules.exists() {
+            // Symlink node_modules from template
+            #[cfg(unix)]
+            {
+                std::os::unix::fs::symlink(&tmpl_node_modules, &plugin_node_modules).ok();
+            }
+            #[cfg(windows)]
+            {
+                std::os::windows::fs::symlink_dir(&tmpl_node_modules, &plugin_node_modules).ok();
+            }
+        }
+    }
+
+    // Write package.json
     let package_json = serde_json::json!({
         "name": plugin_id,
         "version": "0.1.0",
@@ -2190,11 +2224,11 @@ async fn build_ai_plugin(
             "@treeline-money/plugin-sdk": "^26.1.3101"
         },
         "devDependencies": {
-            "@sveltejs/vite-plugin-svelte": "^5.0.4",
+            "@sveltejs/vite-plugin-svelte": "^5.0.3",
             "@tsconfig/svelte": "^5.0.4",
-            "svelte": "^5.18.2",
-            "typescript": "^5.7.3",
-            "vite": "^6.0.11"
+            "svelte": "^5.16.0",
+            "typescript": "^5.7.2",
+            "vite": "^6.0.7"
         }
     });
     fs::write(
@@ -2246,20 +2280,25 @@ export default { preprocess: vitePreprocess() };
     )
     .map_err(|e| format!("Failed to write tsconfig.json: {}", e))?;
 
-    // Run npm install (with prefer-offline for speed)
-    let install_output = tokio::process::Command::new("npm")
-        .args(["install", "--prefer-offline"])
-        .current_dir(&plugin_dir)
-        .output()
-        .await
-        .map_err(|e| format!("Failed to run npm install: {}", e))?;
+    // Check if node_modules exists (from symlink or previous install)
+    let has_node_modules = plugin_dir.join("node_modules").exists();
 
-    if !install_output.status.success() {
-        let stderr = String::from_utf8_lossy(&install_output.stderr);
-        return Ok(BuildResult {
-            success: false,
-            error: Some(format!("npm install failed: {}", stderr)),
-        });
+    // Run npm install only if needed
+    if !has_node_modules {
+        let install_output = tokio::process::Command::new("npm")
+            .args(["install", "--prefer-offline"])
+            .current_dir(&plugin_dir)
+            .output()
+            .await
+            .map_err(|e| format!("Failed to run npm install: {}", e))?;
+
+        if !install_output.status.success() {
+            let stderr = String::from_utf8_lossy(&install_output.stderr);
+            return Ok(BuildResult {
+                success: false,
+                error: Some(format!("npm install failed: {}", stderr)),
+            });
+        }
     }
 
     // Run npm run build

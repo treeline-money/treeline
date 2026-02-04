@@ -2,6 +2,7 @@ import type { Plugin, PluginContext, PluginMigration } from "../../sdk/types";
 import AIBuilderView from "./AIBuilderView.svelte";
 
 // Database migrations for storing chat history and generated plugins
+// Note: No foreign keys - DuckDB's FK support can be problematic, and app logic handles relationships
 const migrations: PluginMigration[] = [
   {
     version: 1,
@@ -27,8 +28,7 @@ const migrations: PluginMigration[] = [
         conversation_id INTEGER NOT NULL,
         role VARCHAR NOT NULL,
         content TEXT NOT NULL,
-        created_at TIMESTAMP,
-        FOREIGN KEY (conversation_id) REFERENCES plugin_ai_builder.conversations(conversation_id)
+        created_at TIMESTAMP
       );
       CREATE INDEX IF NOT EXISTS idx_messages_conversation
         ON plugin_ai_builder.messages(conversation_id, created_at)
@@ -47,8 +47,7 @@ const migrations: PluginMigration[] = [
         manifest_json TEXT NOT NULL,
         conversation_id INTEGER,
         created_at TIMESTAMP,
-        updated_at TIMESTAMP,
-        FOREIGN KEY (conversation_id) REFERENCES plugin_ai_builder.conversations(conversation_id)
+        updated_at TIMESTAMP
       )
     `,
   },
@@ -58,6 +57,34 @@ const migrations: PluginMigration[] = [
     up: `
       CREATE SEQUENCE IF NOT EXISTS plugin_ai_builder.seq_conversation_id START 1;
       CREATE SEQUENCE IF NOT EXISTS plugin_ai_builder.seq_message_id START 1
+    `,
+  },
+  {
+    version: 5,
+    name: "drop_foreign_keys",
+    up: `
+      DROP TABLE IF EXISTS plugin_ai_builder.messages;
+      DROP TABLE IF EXISTS plugin_ai_builder.generated_plugins;
+      CREATE TABLE plugin_ai_builder.messages (
+        message_id INTEGER PRIMARY KEY,
+        conversation_id INTEGER NOT NULL,
+        role VARCHAR NOT NULL,
+        content TEXT NOT NULL,
+        created_at TIMESTAMP
+      );
+      CREATE INDEX idx_messages_conversation
+        ON plugin_ai_builder.messages(conversation_id, created_at);
+      CREATE TABLE plugin_ai_builder.generated_plugins (
+        plugin_id VARCHAR PRIMARY KEY,
+        name VARCHAR NOT NULL,
+        description TEXT,
+        version VARCHAR DEFAULT '0.1.0',
+        source_code TEXT NOT NULL,
+        manifest_json TEXT NOT NULL,
+        conversation_id INTEGER,
+        created_at TIMESTAMP,
+        updated_at TIMESTAMP
+      )
     `,
   },
 ];

@@ -494,7 +494,14 @@ class PluginRegistry {
    * Check if a plugin is loaded
    */
   isPluginLoaded(pluginId: string): boolean {
-    return this.plugins.has(pluginId);
+    return this.plugins.has(pluginId) || this._pluginRegistrations.has(pluginId);
+  }
+
+  /**
+   * Mark a plugin as loaded (for hot reload flow)
+   */
+  markPluginLoaded(pluginId: string, plugin: Plugin): void {
+    this.plugins.set(pluginId, plugin);
   }
 
   /**
