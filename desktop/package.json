@@ -1,7 +1,7 @@
 {
   "name": "treeline-ui",
   "private": true,
-  "version": "26.1.3101",
+  "version": "26.2.0301",
   "type": "module",
   "scripts": {
     "dev": "vite",

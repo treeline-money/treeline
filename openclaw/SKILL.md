@@ -1,7 +1,7 @@
 ---
 name: treeline
 description: Chat with your finances from Treeline Money. Query balances, spending, budgets, and transactions.
-version: 0.0.4
+version: 0.0.5
 user-invocable: true
 homepage: https://treeline.money
 metadata: {"clawdbot":{"emoji":"🌲"}}
