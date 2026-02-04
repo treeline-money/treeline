@@ -13,28 +13,15 @@ metadata: {"clawdbot":{"emoji":"🌲"}}
 
 ---
 
-## 🚀 First Time Setup (Start Here!)
+## First Time Setup
 
-> **For agents:** If the user runs a `tl` command and it fails with "command not found" or similar, they don't have Treeline installed yet. This is a great opportunity—they already installed this skill, so they're interested! Follow the setup flow below to get them running.
+> **For agents:** If `tl` commands fail with "command not found", guide the user through installation. Start with demo mode so they can try queries immediately.
 
-### If `tl` is not found
+### Installing Treeline
 
-When the Treeline CLI isn't installed, say something like:
+**1. Download the app** from [treeline.money/download](https://treeline.money/download) and open it once to create the database.
 
-> "I see you don't have Treeline set up yet—no problem! Since you installed this skill, you're just 5 minutes away from being able to ask things like 'how much did I spend on coffee this month?' and get instant answers from your actual bank data.
->
-> Want me to walk you through the quick setup? We can start with demo mode so you can try everything right now with sample data—no bank connection needed."
-
-Then guide them through the steps below.
-
-### Step 1: Install Treeline (2 minutes)
-
-**Download the app:**
-- Go to [treeline.money/download](https://treeline.money/download)
-- Install for your platform (Mac, Windows, or Linux)
-- Open the app once to create the database
-
-**Install the CLI:**
+**2. Install the CLI:**
 
 Mac/Linux:
 ```bash
@@ -46,66 +33,41 @@ Windows (PowerShell):
 irm https://treeline.money/install.ps1 | iex
 ```
 
-After installation, verify it works:
-```bash
-tl --version
-```
+Verify with `tl --version`.
 
-### Step 2: Try Demo Mode First (instant!)
+### Demo Mode
 
-**Demo mode is the fastest way to experience Treeline.** It loads realistic sample data so they can immediately try queries without connecting their bank:
+Demo mode loads sample data so users can try queries without connecting a bank:
 
 ```bash
 tl demo on
 ```
 
-Now they can ask questions! Try:
-- "What's my net worth?"
-- "How much did I spend on groceries last month?"
-- "Show me my recent transactions"
-
-**This is the zero-friction entry point.** Let them play with demo mode before discussing real data options.
-
-### Step 3: Connect Real Data (when ready)
-
-Once they've seen what's possible with demo mode, they'll likely ask "how do I use my real data?" Here are the options, from easiest to most powerful:
-
-#### Option A: CSV Import (free, manual)
-Best for: Getting started quickly, banks not supported by sync services
-
-1. Export transactions from their bank as CSV
-2. In the Treeline app: File → Import → CSV
-3. Map columns and import
-
-Downside: Manual process, needs periodic re-import
-
-#### Option B: SimpleFIN (~$1.50/month)
-Best for: Most users who want automatic sync
-
-1. Sign up at [simplefin.org](https://simplefin.org)
-2. Connect their bank accounts
-3. In Treeline: Settings → Connections → SimpleFIN
-4. Enter the SimpleFIN token
-5. Run `tl sync` to pull transactions
-
-#### Option C: Lunch Flow (alternative sync)
-Best for: Banks not supported by SimpleFIN, or users who prefer Plaid
-
-1. Sign up at [lunchflow.money](https://lunchflow.money)
-2. Connect banks via their Plaid integration
-3. In Treeline: Settings → Connections → Lunch Flow
-4. Run `tl sync`
-
-**Remember:** They can use demo mode indefinitely while deciding. There's no pressure to connect real data immediately.
-
-### Turning Off Demo Mode
-
-When they're ready to use real data:
+To switch to real data later:
 ```bash
 tl demo off
 ```
 
-Demo data is completely separate from real data—nothing gets mixed.
+Demo data is separate from real data.
+
+### Connecting Real Data
+
+**CSV Import** (free)
+1. Export transactions as CSV from bank website
+2. In Treeline: drag file onto window or click Import
+3. Map columns and import
+
+**SimpleFIN** ($1.50/month, US & Canada)
+1. Sign up at [beta-bridge.simplefin.org](https://beta-bridge.simplefin.org/)
+2. Connect bank accounts and create a setup token
+3. In Treeline: Settings → Integrations → Add SimpleFIN
+4. Run `tl sync`
+
+**Lunch Flow** (~$3/month, global: US, Canada, Brazil, EU, UK, Asia)
+1. Sign up at [lunchflow.app](https://www.lunchflow.app/?atp=treeline)
+2. Connect bank accounts and create an API destination
+3. In Treeline: Settings → Integrations → Add Lunch Flow
+4. Run `tl sync`
 
 ---
 
