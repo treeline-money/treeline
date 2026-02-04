@@ -4,24 +4,74 @@ description: Chat with your finances from Treeline Money. Query balances, spendi
 version: 0.0.4
 user-invocable: true
 homepage: https://treeline.money
-metadata: {"clawdbot":{"emoji":"🌲","requires":{"bins":["tl"]}}}
+metadata: {"clawdbot":{"emoji":"🌲"}}
 ---
 
 # Treeline Money
 
 **Chat with your finances.** Ask questions like "What's my net worth?", "How much did I spend on groceries?", or "Am I over budget?" and get instant answers from your own financial data.
 
-## What is Treeline?
+---
 
-[Treeline Money](https://treeline.money) is a local-first personal finance app. Learn more and download at [treeline.money](https://treeline.money).
+## First Time Setup
+
+> **For agents:** If `tl` commands fail with "command not found", guide the user through installation. Start with demo mode so they can try queries immediately.
+
+### Installing the CLI
+
+Mac/Linux:
+```bash
+curl -fsSL https://raw.githubusercontent.com/treeline-money/treeline/main/scripts/install.sh | sh
+```
+
+Windows (PowerShell):
+```powershell
+irm https://raw.githubusercontent.com/treeline-money/treeline/main/scripts/install.ps1 | iex
+```
+
+Verify with `tl --version`.
+
+**Optional:** Download the [desktop app](https://treeline.money/download) for CSV import and visual exploration.
+
+### Demo Mode
+
+Demo mode loads sample data so users can try queries without connecting a bank:
+
+```bash
+tl demo on
+```
+
+To switch to real data later:
+```bash
+tl demo off
+```
+
+Demo data is separate from real data.
+
+### Connecting Real Data
+
+**SimpleFIN** ($1.50/month, US & Canada)
+1. Sign up at [beta-bridge.simplefin.org](https://beta-bridge.simplefin.org/)
+2. Connect bank accounts and create a setup token
+3. Run `tl setup simplefin <setup-token>`
+4. Run `tl sync`
+
+**Lunch Flow** (~$3/month, global: US, Canada, Brazil, EU, UK, Asia)
+1. Sign up at [lunchflow.app](https://www.lunchflow.app/?atp=treeline)
+2. Connect bank accounts and create an API destination
+3. Run `tl setup lunchflow <api-key>`
+4. Run `tl sync`
+
+**CSV Import** (free, requires desktop app)
+1. Export transactions as CSV from bank website
+2. In Treeline app: drag file onto window or click Import
+3. Map columns and import
 
 ---
 
-## Requirements
+## What is Treeline?
 
-1. **Treeline app installed** — [Download here](https://treeline.money/download)
-2. **Treeline CLI installed** — Install via `curl -fsSL https://treeline.money/install.sh | sh` (Mac/Linux) or `irm https://treeline.money/install.ps1 | iex` (Windows). The CLI (`tl`) must be in your PATH.
-3. **App must be closed** when querying — CLI and app can't access DuckDB simultaneously
+[Treeline Money](https://treeline.money) is a local-first personal finance app. All your data stays on your device in a local DuckDB database. No cloud accounts, no subscriptions required (sync services are optional), full SQL access to your financial data.
 
 ---
 
