@@ -28,11 +28,9 @@ jobs:
         id: version
         run: |
           # CalVer format: YY.M.DDRR where DDRR = day*100 + run_number
-          # Use Pacific time for consistency with releases
-          export TZ="America/Los_Angeles"
-          YEAR=$(date +%y)
-          MONTH=$(date +%-m)
-          DAY=$(date +%-d)
+          YEAR=$(date -u +%y)
+          MONTH=$(date -u +%-m)
+          DAY=$(date -u +%-d)
 
           # GitHub run_number is unique per workflow, increments each run
           # Use modulo 99 to keep release number in 01-99 range
