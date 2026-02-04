@@ -26,20 +26,37 @@ jobs:
     steps:
       - name: Generate CalVer
         id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          # CalVer format: YY.M.DDRR where DDRR = day*100 + run_number
+          # CalVer format: YY.M.DDRR where DDRR = day*100 + release_number
           YEAR=$(date -u +%y)
           MONTH=$(date -u +%-m)
           DAY=$(date -u +%-d)
+          DAY_BASE=$((DAY * 100))
 
-          # GitHub run_number is unique per workflow, increments each run
-          # Use modulo 99 to keep release number in 01-99 range
-          RUN=$(( (${{ github.run_number }} % 99) + 1 ))
+          # Find highest release number for today by checking existing tags
+          LATEST_TODAY=$(gh api repos/${{ github.repository }}/tags --paginate --jq '.[].name' 2>/dev/null | \
+            grep "^${YEAR}\.${MONTH}\." | \
+            while read tag; do
+              DDRR=$(echo "$tag" | sed "s/^${YEAR}\.${MONTH}\.//")
+              if [ "$DDRR" -ge "$DAY_BASE" ] && [ "$DDRR" -lt "$((DAY_BASE + 100))" ]; then
+                echo "$DDRR"
+              fi
+            done | sort -rn | head -1)
+
+          if [ -n "$LATEST_TODAY" ]; then
+            # Increment from highest today
+            RUN=$((LATEST_TODAY - DAY_BASE + 1))
+          else
+            # First release of the day
+            RUN=1
+          fi
 
           DDRR=$((DAY * 100 + RUN))
           VERSION="${YEAR}.${MONTH}.${DDRR}"
 
-          echo "Generated version: $VERSION"
+          echo "Generated version: $VERSION (release $RUN for today)"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
   # Run tests (always runs)
