@@ -368,8 +368,7 @@ jobs:
             --slug treeline-money \
             --name "Treeline Money" \
             --version "$VERSION" \
-            --changelog "Release $VERSION" \
-            --registry https://www.clawhub.ai || echo "ClawHub publish failed (non-fatal)"
+            --changelog "Release $VERSION" || echo "ClawHub publish failed (non-fatal)"
 
       - name: Post to Discord #staging-releases
         env:
