@@ -28,5 +28,6 @@ treeline-data/
 # Tauri sidecars (not used - app embeds treeline-core directly)
 desktop/src-tauri/binaries/
 
-# Claude
-.claude/
+# Claude (keep commands/ for skills under source control)
+.claude/*
+!.claude/commands/

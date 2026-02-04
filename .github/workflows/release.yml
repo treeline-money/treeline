@@ -4,17 +4,13 @@ name: Release
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: 'CalVer version (e.g., 26.1.3001)'
-        required: true
-        type: string
-      release_notes:
-        description: 'Release notes (markdown)'
+      run_id:
+        description: 'CI workflow run ID to release (leave empty for latest successful)'
         required: false
         type: string
         default: ''
-      run_id:
-        description: 'CI workflow run ID to download artifacts from (leave empty for latest)'
+      release_notes:
+        description: 'Release notes (markdown)'
         required: false
         type: string
         default: ''
@@ -34,17 +30,6 @@ jobs:
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Validate CalVer format
-        run: |
-          VERSION="${{ inputs.version }}"
-          # CalVer format: YY.M.DDRR (e.g., 26.1.3001)
-          if ! echo "$VERSION" | grep -Eq '^[0-9]{2}\.[0-9]{1,2}\.[0-9]{3,4}$'; then
-            echo "Invalid CalVer format: $VERSION"
-            echo "Expected format: YY.M.DDRR (e.g., 26.1.3001)"
-            exit 1
-          fi
-          echo "Valid CalVer version: $VERSION"
 
       - name: Get CI run ID
         id: get-run
@@ -76,92 +61,60 @@ jobs:
           echo "Downloaded artifacts:"
           ls -R artifacts
 
+      - name: Get version from artifacts
+        id: version
+        run: |
+          VERSION=$(cat artifacts/version/version.txt)
+          echo "Version from CI: $VERSION"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+          # Validate CalVer format
+          if ! echo "$VERSION" | grep -Eq '^[0-9]{2}\.[0-9]{1,2}\.[0-9]{3,4}$'; then
+            echo "Invalid CalVer format: $VERSION"
+            exit 1
+          fi
+
+      - name: Check if release already exists
+        id: check-release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          if gh release view "$VERSION" &>/dev/null; then
+            echo "Release $VERSION already exists"
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "Release $VERSION does not exist yet"
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create git tag
+        if: steps.check-release.outputs.exists == 'false'
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+
+          # Get the commit SHA from the CI run
+          RUN_ID="${{ steps.get-run.outputs.run_id }}"
+          COMMIT_SHA=$(gh run view "$RUN_ID" --json headSha --jq '.headSha')
+
+          echo "Creating tag $VERSION at commit $COMMIT_SHA"
+          git tag "$VERSION" "$COMMIT_SHA"
+          git push origin "$VERSION"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
           registry-url: 'https://registry.npmjs.org'
 
-      - name: Update version files
-        run: |
-          VERSION="${{ inputs.version }}"
-
-          # Update desktop/package.json
-          jq ".version = \"$VERSION\"" desktop/package.json > tmp.json && mv tmp.json desktop/package.json
-
-          # Update desktop/src-tauri/tauri.conf.json
-          jq ".version = \"$VERSION\"" desktop/src-tauri/tauri.conf.json > tmp.json && mv tmp.json desktop/src-tauri/tauri.conf.json
-
-          # Update desktop/src-tauri/Cargo.toml
-          sed -i "s/^version = .*/version = \"$VERSION\"/" desktop/src-tauri/Cargo.toml
-
-          # Update sdk/package.json
-          jq ".version = \"$VERSION\"" sdk/package.json > tmp.json && mv tmp.json sdk/package.json
-
-          # Update core/Cargo.toml (via workspace)
-          # Update workspace version in root Cargo.toml
-          sed -i "s/^version = .*/version = \"$VERSION\"/" Cargo.toml
-
-          echo "Updated all version files to $VERSION"
-
-      - name: Bump OpenClaw skill version if changed
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # Get previous release tag
-          PREV_TAG=$(gh release list --limit 1 --json tagName --jq '.[0].tagName // empty')
-
-          if [ -z "$PREV_TAG" ]; then
-            echo "No previous release found, skipping skill version check"
-            exit 0
-          fi
-
-          # Check if openclaw/ changed since last release
-          SKILL_CHANGED=$(git diff --name-only "${PREV_TAG}..HEAD" -- openclaw/ | wc -l | tr -d ' ')
-
-          if [ "$SKILL_CHANGED" -gt 0 ]; then
-            echo "OpenClaw skill has changes since $PREV_TAG:"
-            git diff --name-only "${PREV_TAG}..HEAD" -- openclaw/
-
-            # Get current version from SKILL.md
-            CURRENT_VERSION=$(grep -E "^version:" openclaw/SKILL.md | sed 's/version: *//')
-            echo "Current skill version: $CURRENT_VERSION"
-
-            # Parse semver and increment patch
-            MAJOR=$(echo "$CURRENT_VERSION" | cut -d. -f1)
-            MINOR=$(echo "$CURRENT_VERSION" | cut -d. -f2)
-            PATCH=$(echo "$CURRENT_VERSION" | cut -d. -f3)
-            NEW_PATCH=$((PATCH + 1))
-            NEW_VERSION="${MAJOR}.${MINOR}.${NEW_PATCH}"
-
-            echo "Bumping skill version: $CURRENT_VERSION → $NEW_VERSION"
-            sed -i "s/^version: .*/version: $NEW_VERSION/" openclaw/SKILL.md
-          else
-            echo "OpenClaw skill unchanged since $PREV_TAG, no version bump needed"
-          fi
-
-      - name: Commit version changes
-        run: |
-          VERSION="${{ inputs.version }}"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "Release $VERSION" || echo "No changes to commit"
-
-          # Create tag if it doesn't exist
-          if git rev-parse "$VERSION" >/dev/null 2>&1; then
-            echo "Tag $VERSION already exists, skipping tag creation"
-          else
-            git tag "$VERSION"
-          fi
-
-          git push origin main --tags || echo "Push completed (may have no new changes)"
-
       - name: Create GitHub release (treeline repo)
+        if: steps.check-release.outputs.exists == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION="${{ inputs.version }}"
+          VERSION="${{ steps.version.outputs.version }}"
           RELEASE_NOTES="${{ inputs.release_notes }}"
 
           if [ -z "$RELEASE_NOTES" ]; then
@@ -171,8 +124,7 @@ jobs:
           # Create release
           gh release create "$VERSION" \
             --title "Treeline $VERSION" \
-            --notes "$RELEASE_NOTES" \
-            || echo "Release may already exist"
+            --notes "$RELEASE_NOTES"
 
           # Upload desktop artifacts (macOS has nested dmg/ and macos/ subdirs)
           for f in artifacts/desktop-macos-arm64/dmg/*.dmg; do
@@ -212,10 +164,11 @@ jobs:
           fi
 
       - name: Create GitHub release (treeline-releases - dual publish)
+        if: steps.check-release.outputs.exists == 'false'
         env:
           GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
         run: |
-          VERSION="${{ inputs.version }}"
+          VERSION="${{ steps.version.outputs.version }}"
           RELEASE_NOTES="${{ inputs.release_notes }}"
           RELEASES_REPO="treeline-money/treeline-releases"
 
@@ -268,7 +221,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
         run: |
-          VERSION="${{ inputs.version }}"
+          VERSION="${{ steps.version.outputs.version }}"
           RELEASE_NOTES="${{ inputs.release_notes }}"
           RELEASES_REPO="treeline-money/treeline-releases"
           PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -360,12 +313,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION="${{ inputs.version }}"
+          VERSION="${{ steps.version.outputs.version }}"
           gh release upload "$VERSION" latest-staging.json --clobber
 
-      - name: Build and publish SDK to npm
+      - name: Publish SDK to npm
+        continue-on-error: true
         run: |
-          VERSION="${{ inputs.version }}"
+          VERSION="${{ steps.version.outputs.version }}"
 
           # Check if version already exists on npm
           if npm view "@treeline-money/plugin-sdk@$VERSION" version 2>/dev/null; then
@@ -373,13 +327,45 @@ jobs:
             exit 0
           fi
 
-          # Build SDK from source with correct version (already updated in version files step)
-          cd sdk
-          npm install
-          npm run build
+          # Publish the pre-built SDK tarball
+          cd artifacts/sdk-npm-package
+          npm publish *.tgz --access public --provenance
 
-          echo "Publishing @treeline-money/plugin-sdk@$VERSION"
-          npm publish --access public --provenance
+      - name: Update OpenClaw skill version
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+
+          # Update skill version to match release version
+          sed -i "s/^version: .*/version: $VERSION/" openclaw/SKILL.md
+
+          echo "Updated OpenClaw skill to version $VERSION"
+          grep "^version:" openclaw/SKILL.md
+
+      - name: Publish OpenClaw skill to ClawHub
+        continue-on-error: true
+        env:
+          CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+
+          if [ -z "$CLAWHUB_TOKEN" ]; then
+            echo "CLAWHUB_TOKEN not set, skipping ClawHub publish"
+            exit 0
+          fi
+
+          # Install clawhub CLI
+          npm install -g clawhub || true
+
+          # Login with token
+          clawhub auth login --token "$CLAWHUB_TOKEN" --no-browser || true
+
+          # Publish skill
+          clawhub publish openclaw \
+            --slug treeline-money \
+            --name "Treeline Money" \
+            --version "$VERSION" \
+            --changelog "Release $VERSION" \
+            --registry https://www.clawhub.ai || echo "ClawHub publish failed (non-fatal)"
 
       - name: Post to Discord #staging-releases
         env:
@@ -390,7 +376,7 @@ jobs:
             exit 0
           fi
 
-          VERSION="${{ inputs.version }}"
+          VERSION="${{ steps.version.outputs.version }}"
           RELEASE_NOTES="${{ inputs.release_notes }}"
 
           if [ -z "$RELEASE_NOTES" ]; then

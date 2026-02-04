@@ -15,6 +15,34 @@ permissions:
   contents: read
 
 jobs:
+  # Generate CalVer version for this build
+  version:
+    name: Generate Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      is_main: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
+    steps:
+      - name: Generate CalVer
+        id: version
+        run: |
+          # CalVer format: YY.M.DDRR where DDRR = day*100 + run_number
+          # Use UTC for consistency
+          YEAR=$(date -u +%y)
+          MONTH=$(date -u +%-m)
+          DAY=$(date -u +%-d)
+
+          # GitHub run_number is unique per workflow, increments each run
+          # Use modulo 99 to keep release number in 01-99 range
+          RUN=$(( (${{ github.run_number }} % 99) + 1 ))
+
+          DDRR=$((DAY * 100 + RUN))
+          VERSION="${YEAR}.${MONTH}.${DDRR}"
+
+          echo "Generated version: $VERSION"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
   # Run tests (always runs)
   test:
     name: Tests
@@ -69,7 +97,7 @@ jobs:
   build-desktop:
     name: Build Desktop (${{ matrix.os }})
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: test
+    needs: [version, test]
     strategy:
       fail-fast: false
       matrix:
@@ -114,6 +142,37 @@ jobs:
       - name: Install UI dependencies
         working-directory: desktop
         run: npm ci
+
+      - name: Update version files
+        shell: bash
+        run: |
+          VERSION="${{ needs.version.outputs.version }}"
+          echo "Setting version to $VERSION"
+
+          # Update desktop/package.json
+          if command -v jq &> /dev/null; then
+            jq ".version = \"$VERSION\"" desktop/package.json > tmp.json && mv tmp.json desktop/package.json
+          else
+            # Windows fallback using node
+            node -e "const fs=require('fs'); const p=JSON.parse(fs.readFileSync('desktop/package.json')); p.version='$VERSION'; fs.writeFileSync('desktop/package.json', JSON.stringify(p,null,2));"
+          fi
+
+          # Update desktop/src-tauri/tauri.conf.json
+          if command -v jq &> /dev/null; then
+            jq ".version = \"$VERSION\"" desktop/src-tauri/tauri.conf.json > tmp.json && mv tmp.json desktop/src-tauri/tauri.conf.json
+          else
+            node -e "const fs=require('fs'); const p=JSON.parse(fs.readFileSync('desktop/src-tauri/tauri.conf.json')); p.version='$VERSION'; fs.writeFileSync('desktop/src-tauri/tauri.conf.json', JSON.stringify(p,null,2));"
+          fi
+
+          # Update desktop/src-tauri/Cargo.toml
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            sed -i 's/^version = .*/version = "'"$VERSION"'"/' desktop/src-tauri/Cargo.toml
+          else
+            sed -i '' 's/^version = .*/version = "'"$VERSION"'"/' desktop/src-tauri/Cargo.toml 2>/dev/null || \
+            sed -i 's/^version = .*/version = "'"$VERSION"'"/' desktop/src-tauri/Cargo.toml
+          fi
+
+          echo "Version files updated"
 
       - name: Import Apple certificate
         if: runner.os == 'macOS'
@@ -272,7 +331,7 @@ jobs:
   build-cli:
     name: Build CLI (${{ matrix.os }})
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: test
+    needs: [version, test]
     strategy:
       fail-fast: false
       matrix:
@@ -299,6 +358,20 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: "build-cli"
+
+      - name: Update version in Cargo.toml
+        shell: bash
+        run: |
+          VERSION="${{ needs.version.outputs.version }}"
+          echo "Setting CLI version to $VERSION"
+
+          # Update workspace version in root Cargo.toml
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            sed -i 's/^version = .*/version = "'"$VERSION"'"/' Cargo.toml
+          else
+            sed -i '' 's/^version = .*/version = "'"$VERSION"'"/' Cargo.toml 2>/dev/null || \
+            sed -i 's/^version = .*/version = "'"$VERSION"'"/' Cargo.toml
+          fi
 
       - name: Build CLI
         run: cargo build --release --bin tl
@@ -357,7 +430,7 @@ jobs:
   pack-sdk:
     name: Pack SDK
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: test
+    needs: [version, test]
     runs-on: ubuntu-latest
 
     steps:
@@ -369,6 +442,12 @@ jobs:
           node-version: 20
           cache: 'npm'
           cache-dependency-path: sdk/package-lock.json
+
+      - name: Update SDK version
+        run: |
+          VERSION="${{ needs.version.outputs.version }}"
+          echo "Setting SDK version to $VERSION"
+          jq ".version = \"$VERSION\"" sdk/package.json > tmp.json && mv tmp.json sdk/package.json
 
       - name: Install dependencies
         working-directory: sdk
@@ -387,4 +466,24 @@ jobs:
         with:
           name: sdk-npm-package
           path: sdk/*.tgz
+          retention-days: 90
+
+  # Save version info for release workflow
+  save-version:
+    name: Save Version
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [version, build-desktop, build-cli, pack-sdk]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Save version to artifact
+        run: |
+          echo "${{ needs.version.outputs.version }}" > version.txt
+          echo "Version: $(cat version.txt)"
+
+      - name: Upload version artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: version
+          path: version.txt
           retention-days: 90

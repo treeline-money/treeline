@@ -1,0 +1,131 @@
+name: Promote
+
+# Promotes a release candidate to production
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to promote (leave empty for latest release)'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  promote:
+    name: Promote to Production
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Get version to promote
+        id: version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            # Get latest release
+            VERSION=$(gh release list --repo treeline-money/treeline --limit 1 --json tagName --jq '.[0].tagName')
+          fi
+
+          if [ -z "$VERSION" ]; then
+            echo "No release found"
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Promoting version: $VERSION"
+
+      - name: Check if already promoted
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+
+          # Check if latest.json exists and matches this version
+          gh release download "$VERSION" --repo treeline-money/treeline --pattern "latest.json" --dir /tmp --clobber 2>/dev/null || true
+
+          if [ -f /tmp/latest.json ]; then
+            CURRENT=$(cat /tmp/latest.json | jq -r '.version')
+            if [ "$CURRENT" = "$VERSION" ]; then
+              echo "Version $VERSION is already promoted"
+              exit 1
+            fi
+          fi
+
+          echo "Ready to promote $VERSION"
+
+      - name: Download staging manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+
+          # Download latest-staging.json
+          gh release download "$VERSION" --repo treeline-money/treeline --pattern "latest-staging.json" --dir /tmp --clobber
+
+          if [ ! -f /tmp/latest-staging.json ]; then
+            echo "No latest-staging.json found for $VERSION"
+            exit 1
+          fi
+
+          # Rename to latest.json
+          mv /tmp/latest-staging.json /tmp/latest.json
+          cat /tmp/latest.json
+
+      - name: Upload to treeline repo
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          gh release upload "$VERSION" /tmp/latest.json --repo treeline-money/treeline --clobber
+
+      - name: Upload to treeline-releases repo
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          gh release upload "$VERSION" /tmp/latest.json --repo treeline-money/treeline-releases --clobber
+
+      - name: Post to Discord #releases
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_RELEASES }}
+        run: |
+          if [ -z "$DISCORD_WEBHOOK" ]; then
+            echo "DISCORD_WEBHOOK_RELEASES not set, skipping Discord notification"
+            exit 0
+          fi
+
+          VERSION="${{ steps.version.outputs.version }}"
+
+          # Get release notes
+          RELEASE_NOTES=$(gh release view "$VERSION" --repo treeline-money/treeline --json body --jq '.body')
+          if [ -z "$RELEASE_NOTES" ]; then
+            RELEASE_NOTES="Release $VERSION"
+          fi
+          RELEASE_NOTES_ESCAPED=$(echo "$RELEASE_NOTES" | jq -Rs '.')
+
+          curl -X POST "$DISCORD_WEBHOOK" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"embeds\": [{
+                \"title\": \"Treeline $VERSION Released\",
+                \"description\": $RELEASE_NOTES_ESCAPED,
+                \"color\": 5814783,
+                \"footer\": {\"text\": \"Treeline Desktop App\"},
+                \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
+              }]
+            }"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Summary
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          echo "✓ Promoted $VERSION to production"
+          echo "✓ Users will now receive the update via auto-updater"
+          echo ""
+          echo "Next: Update the download page at treeline.money (optional)"
