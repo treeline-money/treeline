@@ -363,7 +363,7 @@ jobs:
           VERSION="${{ inputs.version }}"
           gh release upload "$VERSION" latest-staging.json --clobber
 
-      - name: Publish SDK to npm
+      - name: Build and publish SDK to npm
         run: |
           VERSION="${{ inputs.version }}"
 
@@ -373,9 +373,13 @@ jobs:
             exit 0
           fi
 
-          # Extract and publish the SDK tarball using OIDC trusted publishing
-          cd artifacts/sdk-npm-package
-          npm publish *.tgz --access public --provenance
+          # Build SDK from source with correct version (already updated in version files step)
+          cd sdk
+          npm install
+          npm run build
+
+          echo "Publishing @treeline-money/plugin-sdk@$VERSION"
+          npm publish --access public --provenance
 
       - name: Post to Discord #staging-releases
         env:
