@@ -14,6 +14,10 @@ on:
         required: false
         type: string
         default: ''
+  # Dummy push trigger to prevent GitHub showing "failed" runs on every push
+  push:
+    paths:
+      - '.github/workflows/this-file-does-not-exist'
 
 permissions:
   contents: write
