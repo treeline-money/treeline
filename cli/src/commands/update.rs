@@ -347,12 +347,12 @@ pub fn run(yes: bool, check_only: bool) -> Result<()> {
 pub fn maybe_notify_update() {
     let state = UpdateState::load();
 
-    // Check if we should do a new check (once per day)
+    // Check if we should do a new check (every 2 hours)
     let should_check = state
         .last_check
         .map(|last| {
             let elapsed = Utc::now().signed_duration_since(last);
-            elapsed.num_hours() >= 24
+            elapsed.num_hours() >= 2
         })
         .unwrap_or(true);
 
