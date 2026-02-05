@@ -82,20 +82,8 @@ fn get_artifact_name() -> Result<&'static str> {
 
 /// Get the install path for the CLI binary
 fn get_install_path() -> Result<PathBuf> {
-    if cfg!(windows) {
-        // Windows: ~/.treeline/bin/tl.exe
-        Ok(get_treeline_dir().join("bin").join("tl.exe"))
-    } else {
-        // Unix: try to detect where tl is currently installed
-        if let Ok(output) = Command::new("which").arg("tl").output() {
-            if output.status.success() {
-                let path = String::from_utf8_lossy(&output.stdout);
-                return Ok(PathBuf::from(path.trim()));
-            }
-        }
-        // Default to /usr/local/bin/tl
-        Ok(PathBuf::from("/usr/local/bin/tl"))
-    }
+    // Use the path of the currently running executable
+    std::env::current_exe().context("Failed to determine current executable path")
 }
 
 /// Fetch the latest release info from GitHub
