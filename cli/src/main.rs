@@ -159,10 +159,19 @@ enum Commands {
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
+    // Check if this is the update command (skip update notification for it)
+    let is_update_command = matches!(cli.command, Commands::Update { .. });
+
     let result = run(cli);
 
     match result {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(()) => {
+            // Check for updates after successful commands (except update itself)
+            if !is_update_command {
+                update::maybe_notify_update();
+            }
+            ExitCode::SUCCESS
+        }
         Err(e) => {
             eprintln!("{}", e);
             ExitCode::FAILURE
