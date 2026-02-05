@@ -145,10 +145,14 @@ enum Commands {
         command: logs::LogsCommands,
     },
 
-    /// Check for and install CLI updates
+    /// Update to the latest version
     Update {
-        #[command(subcommand)]
-        command: Option<update::UpdateCommands>,
+        /// Skip confirmation prompt
+        #[arg(long, short = 'y')]
+        yes: bool,
+        /// Only check for updates, don't install
+        #[arg(long)]
+        check: bool,
     },
 }
 
@@ -202,6 +206,6 @@ fn run(cli: Cli) -> Result<()> {
         Commands::Setup { command } => setup::run(command),
         Commands::Plugin { command } => plugin::run(command),
         Commands::Logs { command } => logs::run(command),
-        Commands::Update { command } => update::run(command),
+        Commands::Update { yes, check } => update::run(yes, check),
     }
 }

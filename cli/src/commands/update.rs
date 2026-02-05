@@ -1,8 +1,6 @@
-//! CLI update management
+//! CLI update command
 //!
-//! Provides commands for checking and installing CLI updates.
-//! - `tl update` or `tl update check` - Check if a new version is available
-//! - `tl update install` - Download and install the latest version
+//! `tl update` - Check for updates and install the latest version
 
 use std::env::consts::{ARCH, OS};
 use std::fs;
@@ -12,7 +10,6 @@ use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
-use clap::Subcommand;
 use colored::Colorize;
 use serde::{Deserialize, Serialize};
 
@@ -22,7 +19,7 @@ const GITHUB_REPO: &str = "treeline-money/treeline";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Update state stored in ~/.treeline/update-state.json
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateState {
     /// Last time we checked for updates
@@ -31,9 +28,6 @@ pub struct UpdateState {
     pub latest_version: Option<String>,
     /// Whether user has been notified about this version
     pub notified_version: Option<String>,
-    /// Disable update checks entirely
-    #[serde(default)]
-    pub disabled: bool,
 }
 
 impl UpdateState {
@@ -62,52 +56,17 @@ impl UpdateState {
 }
 
 /// GitHub release response (subset of fields we need)
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct GitHubRelease {
     tag_name: String,
     html_url: String,
-    body: Option<String>,
-    published_at: Option<String>,
     assets: Vec<GitHubAsset>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct GitHubAsset {
     name: String,
     browser_download_url: String,
-}
-
-#[derive(Subcommand)]
-pub enum UpdateCommands {
-    /// Check for available updates
-    Check {
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
-
-    /// Install the latest version
-    Install {
-        /// Skip confirmation prompt
-        #[arg(long, short = 'y')]
-        yes: bool,
-    },
-
-    /// Enable update notifications
-    Enable,
-
-    /// Disable update notifications
-    Disable,
-}
-
-/// Result of checking for updates
-#[derive(Debug, Serialize)]
-pub struct UpdateCheckResult {
-    pub current_version: String,
-    pub latest_version: String,
-    pub update_available: bool,
-    pub release_url: Option<String>,
-    pub release_notes: Option<String>,
 }
 
 /// Get the artifact name for the current platform
@@ -141,7 +100,10 @@ fn get_install_path() -> Result<PathBuf> {
 
 /// Fetch the latest release info from GitHub
 fn fetch_latest_release() -> Result<GitHubRelease> {
-    let url = format!("https://api.github.com/repos/{}/releases/latest", GITHUB_REPO);
+    let url = format!(
+        "https://api.github.com/repos/{}/releases/latest",
+        GITHUB_REPO
+    );
 
     let client = reqwest::blocking::Client::builder()
         .user_agent("treeline-cli")
@@ -172,13 +134,6 @@ fn is_newer_version(current: &str, latest: &str) -> bool {
     let current = current.strip_prefix('v').unwrap_or(current);
     let latest = latest.strip_prefix('v').unwrap_or(latest);
 
-    // Parse as dot-separated numbers
-    let parse_version = |v: &str| -> Vec<u32> {
-        v.split('.')
-            .filter_map(|part| part.parse::<u32>().ok())
-            .collect()
-    };
-
     let current_parts = parse_version(current);
     let latest_parts = parse_version(latest);
 
@@ -196,32 +151,11 @@ fn is_newer_version(current: &str, latest: &str) -> bool {
     latest_parts.len() > current_parts.len()
 }
 
-/// Check for updates
-pub fn check_for_update() -> Result<UpdateCheckResult> {
-    let release = fetch_latest_release()?;
-
-    // Strip 'v' prefix from tag if present
-    let latest_version = release
-        .tag_name
-        .strip_prefix('v')
-        .unwrap_or(&release.tag_name)
-        .to_string();
-
-    let update_available = is_newer_version(CURRENT_VERSION, &latest_version);
-
-    // Update state
-    let mut state = UpdateState::load();
-    state.last_check = Some(Utc::now());
-    state.latest_version = Some(latest_version.clone());
-    let _ = state.save();
-
-    Ok(UpdateCheckResult {
-        current_version: CURRENT_VERSION.to_string(),
-        latest_version,
-        update_available,
-        release_url: Some(release.html_url),
-        release_notes: release.body,
-    })
+/// Parse a version string into numeric components
+fn parse_version(v: &str) -> Vec<u32> {
+    v.split('.')
+        .filter_map(|part| part.parse::<u32>().ok())
+        .collect()
 }
 
 /// Download and install the update
@@ -246,7 +180,7 @@ fn install_update(release: &GitHubRelease) -> Result<()> {
 
     println!("Downloading {}...", artifact_name);
 
-    // Download to temp file
+    // Download the binary
     let client = reqwest::blocking::Client::builder()
         .user_agent("treeline-cli")
         .build()?;
@@ -288,7 +222,6 @@ fn install_update(release: &GitHubRelease) -> Result<()> {
             "Installing to system directory requires sudo...".yellow()
         );
 
-        // Use sudo mv to install
         let status = Command::new("sudo")
             .args(["mv", "-f"])
             .arg(&temp_path)
@@ -297,18 +230,15 @@ fn install_update(release: &GitHubRelease) -> Result<()> {
             .context("Failed to run sudo")?;
 
         if !status.success() {
-            // Clean up temp file
             let _ = fs::remove_file(&temp_path);
             bail!("Installation failed (sudo returned non-zero)");
         }
 
-        // Ensure correct permissions
         let _ = Command::new("sudo")
             .args(["chmod", "+x"])
             .arg(&install_path)
             .status();
     } else {
-        // Direct move
         if install_path.exists() {
             fs::remove_file(&install_path)?;
         }
@@ -326,60 +256,23 @@ fn install_update(release: &GitHubRelease) -> Result<()> {
 /// Check if a path is writable (or its parent directory if it doesn't exist)
 fn is_writable(path: &PathBuf) -> bool {
     if path.exists() {
-        // Try to open for writing
         fs::OpenOptions::new().write(true).open(path).is_ok()
     } else if let Some(parent) = path.parent() {
-        // Check if parent directory is writable
-        parent.exists() && fs::metadata(parent).map(|m| !m.permissions().readonly()).unwrap_or(false)
+        parent.exists()
+            && fs::metadata(parent)
+                .map(|m| !m.permissions().readonly())
+                .unwrap_or(false)
     } else {
         false
     }
 }
 
-/// Run the update check command
-pub fn run_check(json: bool) -> Result<()> {
-    let result = check_for_update()?;
-
-    if json {
-        println!("{}", serde_json::to_string_pretty(&result)?);
-        return Ok(());
-    }
-
-    println!(
-        "Current version: {}",
-        result.current_version.cyan()
-    );
-    println!(
-        "Latest version:  {}",
-        if result.update_available {
-            result.latest_version.green().to_string()
-        } else {
-            result.latest_version.to_string()
-        }
-    );
+/// Run the update command
+/// Checks for updates and installs the latest version if available.
+pub fn run(yes: bool, check_only: bool) -> Result<()> {
+    println!("Checking for updates...");
     println!();
 
-    if result.update_available {
-        println!(
-            "{}",
-            "A new version is available!".green().bold()
-        );
-        println!();
-        println!("Run {} to install the update.", "tl update install".cyan());
-
-        if let Some(url) = &result.release_url {
-            println!();
-            println!("Release notes: {}", url);
-        }
-    } else {
-        println!("{}", "You're on the latest version.".green());
-    }
-
-    Ok(())
-}
-
-/// Run the update install command
-pub fn run_install(yes: bool) -> Result<()> {
     let release = fetch_latest_release()?;
 
     let latest_version = release
@@ -387,26 +280,50 @@ pub fn run_install(yes: bool) -> Result<()> {
         .strip_prefix('v')
         .unwrap_or(&release.tag_name);
 
+    // Update state
+    let mut state = UpdateState::load();
+    state.last_check = Some(Utc::now());
+    state.latest_version = Some(latest_version.to_string());
+    let _ = state.save();
+
     let update_available = is_newer_version(CURRENT_VERSION, latest_version);
 
     println!("Current version: {}", CURRENT_VERSION.cyan());
-    println!("Latest version:  {}", latest_version.green());
+    println!(
+        "Latest version:  {}",
+        if update_available {
+            latest_version.green().to_string()
+        } else {
+            latest_version.to_string()
+        }
+    );
     println!();
 
     if !update_available {
-        println!("{}", "You're already on the latest version.".green());
+        println!("{}", "You're on the latest version.".green());
+        return Ok(());
+    }
+
+    if check_only {
+        println!("{}", "Update available!".green().bold());
+        println!("Run {} to install.", "tl update".cyan());
+        if let Some(url) = Some(&release.html_url) {
+            println!();
+            println!("Release notes: {}", url);
+        }
         return Ok(());
     }
 
     // Confirmation prompt
     if !yes {
-        print!("Do you want to install version {}? [y/N] ", latest_version);
+        print!("Install version {}? [Y/n] ", latest_version);
         std::io::stdout().flush()?;
 
         let mut input = String::new();
         std::io::stdin().read_line(&mut input)?;
 
-        if !matches!(input.trim().to_lowercase().as_str(), "y" | "yes") {
+        let input = input.trim().to_lowercase();
+        if !input.is_empty() && !matches!(input.as_str(), "y" | "yes") {
             println!("Update cancelled.");
             return Ok(());
         }
@@ -421,63 +338,14 @@ pub fn run_install(yes: bool) -> Result<()> {
         "Success!".green().bold(),
         latest_version.green()
     );
-    println!();
-    println!("Run {} to see what's new.", "tl --version".cyan());
 
     Ok(())
 }
 
-/// Run the update enable command
-pub fn run_enable() -> Result<()> {
-    let mut state = UpdateState::load();
-    state.disabled = false;
-    state.save()?;
-
-    println!("{}", "Update notifications enabled.".green());
-    println!(
-        "Treeline will check for updates and notify you when a new version is available."
-    );
-
-    Ok(())
-}
-
-/// Run the update disable command
-pub fn run_disable() -> Result<()> {
-    let mut state = UpdateState::load();
-    state.disabled = true;
-    state.save()?;
-
-    println!("{}", "Update notifications disabled.".yellow());
-    println!(
-        "You can still manually check for updates with {}.",
-        "tl update check".cyan()
-    );
-
-    Ok(())
-}
-
-/// Main entry point for update commands
-pub fn run(command: Option<UpdateCommands>) -> Result<()> {
-    match command {
-        None | Some(UpdateCommands::Check { json: false }) => run_check(false),
-        Some(UpdateCommands::Check { json: true }) => run_check(true),
-        Some(UpdateCommands::Install { yes }) => run_install(yes),
-        Some(UpdateCommands::Enable) => run_enable(),
-        Some(UpdateCommands::Disable) => run_disable(),
-    }
-}
-
-/// Check for updates in the background (called from other commands)
-/// Shows a notification if an update is available and hasn't been shown before.
-/// This is designed to be non-blocking and silent on errors.
+/// Check for updates in the background (called from other commands).
+/// Shows a notification if an update is available.
 pub fn maybe_notify_update() {
-    // Run in a way that doesn't block the main command
     let state = UpdateState::load();
-
-    // Skip if disabled
-    if state.disabled {
-        return;
-    }
 
     // Check if we should do a new check (once per day)
     let should_check = state
@@ -490,21 +358,29 @@ pub fn maybe_notify_update() {
 
     if should_check {
         // Do a fresh check (this makes a network request)
-        if let Ok(result) = check_for_update() {
-            if result.update_available {
-                // Check if we already notified about this version
+        if let Ok(release) = fetch_latest_release() {
+            let latest = release
+                .tag_name
+                .strip_prefix('v')
+                .unwrap_or(&release.tag_name);
+
+            // Update state
+            let mut state = UpdateState::load();
+            state.last_check = Some(Utc::now());
+            state.latest_version = Some(latest.to_string());
+            let _ = state.save();
+
+            if is_newer_version(CURRENT_VERSION, latest) {
                 let already_notified = state
                     .notified_version
                     .as_ref()
-                    .map(|v| v == &result.latest_version)
+                    .map(|v| v == latest)
                     .unwrap_or(false);
 
                 if !already_notified {
-                    print_update_notification(&result.latest_version);
-
-                    // Mark as notified
+                    print_update_notification(latest);
                     let mut state = UpdateState::load();
-                    state.notified_version = Some(result.latest_version);
+                    state.notified_version = Some(latest.to_string());
                     let _ = state.save();
                 }
             }
@@ -520,8 +396,6 @@ pub fn maybe_notify_update() {
 
             if !already_notified {
                 print_update_notification(latest);
-
-                // Mark as notified
                 let mut state = UpdateState::load();
                 state.notified_version = Some(latest.clone());
                 let _ = state.save();
@@ -536,15 +410,11 @@ fn print_update_notification(version: &str) {
         "{}",
         format!(
             "  A new version of Treeline is available: {} -> {}",
-            CURRENT_VERSION,
-            version
+            CURRENT_VERSION, version
         )
         .yellow()
     );
-    eprintln!(
-        "{}",
-        format!("  Run '{}' to update.", "tl update install").yellow()
-    );
+    eprintln!("{}", "  Run 'tl update' to update.".yellow());
     eprintln!();
 }
 
@@ -553,26 +423,84 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_version_comparison() {
-        // Same version
+    fn test_version_comparison_same() {
         assert!(!is_newer_version("26.2.301", "26.2.301"));
+    }
 
-        // Newer patch
+    #[test]
+    fn test_version_comparison_newer_patch() {
         assert!(is_newer_version("26.2.301", "26.2.302"));
+        assert!(is_newer_version("26.2.301", "26.2.400"));
+    }
 
-        // Newer minor
+    #[test]
+    fn test_version_comparison_newer_minor() {
         assert!(is_newer_version("26.2.301", "26.3.100"));
+        assert!(is_newer_version("26.2.301", "26.12.1"));
+    }
 
-        // Newer major
+    #[test]
+    fn test_version_comparison_newer_major() {
         assert!(is_newer_version("26.2.301", "27.1.100"));
+        assert!(is_newer_version("26.2.301", "27.0.0"));
+    }
 
-        // Older version
+    #[test]
+    fn test_version_comparison_older() {
         assert!(!is_newer_version("26.2.301", "26.2.300"));
         assert!(!is_newer_version("26.2.301", "26.1.999"));
         assert!(!is_newer_version("26.2.301", "25.12.999"));
+    }
 
-        // With 'v' prefix
+    #[test]
+    fn test_version_comparison_with_v_prefix() {
         assert!(is_newer_version("v26.2.301", "v26.2.302"));
         assert!(is_newer_version("26.2.301", "v26.2.302"));
+        assert!(is_newer_version("v26.2.301", "26.2.302"));
+        assert!(!is_newer_version("v26.2.301", "v26.2.301"));
+    }
+
+    #[test]
+    fn test_version_parsing() {
+        assert_eq!(parse_version("26.2.301"), vec![26, 2, 301]);
+        assert_eq!(parse_version("1.0.0"), vec![1, 0, 0]);
+        assert_eq!(parse_version("0.1.0"), vec![0, 1, 0]);
+    }
+
+    #[test]
+    fn test_update_state_default() {
+        let state = UpdateState::default();
+        assert!(state.last_check.is_none());
+        assert!(state.latest_version.is_none());
+        assert!(state.notified_version.is_none());
+    }
+
+    #[test]
+    fn test_update_state_serialization() {
+        let state = UpdateState {
+            last_check: Some(Utc::now()),
+            latest_version: Some("26.2.302".to_string()),
+            notified_version: None,
+        };
+
+        let json = serde_json::to_string(&state).unwrap();
+        let parsed: UpdateState = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(state.latest_version, parsed.latest_version);
+        assert_eq!(state.notified_version, parsed.notified_version);
+    }
+
+    #[test]
+    fn test_artifact_name() {
+        // This test will pass on the current platform
+        let result = get_artifact_name();
+        // Just verify it doesn't error on supported platforms
+        if cfg!(target_os = "linux") && cfg!(target_arch = "x86_64") {
+            assert_eq!(result.unwrap(), "tl-linux-x64");
+        } else if cfg!(target_os = "macos") {
+            assert_eq!(result.unwrap(), "tl-macos-arm64");
+        } else if cfg!(target_os = "windows") && cfg!(target_arch = "x86_64") {
+            assert_eq!(result.unwrap(), "tl-windows-x64.exe");
+        }
     }
 }
