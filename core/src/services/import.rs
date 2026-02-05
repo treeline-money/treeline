@@ -477,9 +477,8 @@ impl ImportService {
         // Collect IDs for auto-tagging
         let new_tx_ids: Vec<Uuid> = new_transactions.iter().map(|tx| tx.id).collect();
 
-        for tx in &new_transactions {
-            self.repository.upsert_transaction(tx)?;
-        }
+        // Bulk insert all new transactions (single connection, single checkpoint)
+        self.repository.bulk_insert_transactions(&new_transactions)?;
 
         // Apply auto-tag rules to newly imported transactions
         if !new_tx_ids.is_empty() {

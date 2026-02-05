@@ -870,6 +870,218 @@ impl DuckDbRepository {
         })
     }
 
+    // === Bulk transaction operations ===
+    // These methods use a single connection for multiple operations to avoid
+    // the visibility gap between check and insert that causes duplicate transactions.
+
+    /// Get existing SimpleFIN IDs from a list (single connection)
+    ///
+    /// Returns a HashSet of sf_ids that already exist in the database.
+    /// Used for bulk deduplication during sync.
+    pub fn get_existing_sf_ids(&self, sf_ids: &[String]) -> Result<std::collections::HashSet<String>> {
+        use std::collections::HashSet;
+
+        if sf_ids.is_empty() {
+            return Ok(HashSet::new());
+        }
+
+        self.with_connection(|conn| {
+            // Build WHERE sf_id IN (?, ?, ...) clause
+            let placeholders: Vec<&str> = sf_ids.iter().map(|_| "?").collect();
+            let sql = format!(
+                "SELECT sf_id FROM sys_transactions WHERE sf_id IN ({})",
+                placeholders.join(", ")
+            );
+
+            let mut stmt = conn.prepare(&sql)?;
+
+            // Build params vector
+            let params: Vec<&dyn duckdb::ToSql> = sf_ids
+                .iter()
+                .map(|s| s as &dyn duckdb::ToSql)
+                .collect();
+
+            let rows = stmt.query_map(params.as_slice(), |row| {
+                let sf_id: String = row.get(0)?;
+                Ok(sf_id)
+            })?;
+
+            let mut existing = HashSet::new();
+            for row in rows {
+                if let Ok(sf_id) = row {
+                    existing.insert(sf_id);
+                }
+            }
+
+            Ok(existing)
+        })
+    }
+
+    /// Get existing Lunchflow IDs from a list (single connection)
+    ///
+    /// Returns a HashSet of lf_ids that already exist in the database.
+    /// Used for bulk deduplication during sync.
+    pub fn get_existing_lf_ids(&self, lf_ids: &[String]) -> Result<std::collections::HashSet<String>> {
+        use std::collections::HashSet;
+
+        if lf_ids.is_empty() {
+            return Ok(HashSet::new());
+        }
+
+        self.with_connection(|conn| {
+            // Build WHERE lf_id IN (?, ?, ...) clause
+            let placeholders: Vec<&str> = lf_ids.iter().map(|_| "?").collect();
+            let sql = format!(
+                "SELECT lf_id FROM sys_transactions WHERE lf_id IN ({})",
+                placeholders.join(", ")
+            );
+
+            let mut stmt = conn.prepare(&sql)?;
+
+            // Build params vector
+            let params: Vec<&dyn duckdb::ToSql> = lf_ids
+                .iter()
+                .map(|s| s as &dyn duckdb::ToSql)
+                .collect();
+
+            let rows = stmt.query_map(params.as_slice(), |row| {
+                let lf_id: String = row.get(0)?;
+                Ok(lf_id)
+            })?;
+
+            let mut existing = HashSet::new();
+            for row in rows {
+                if let Ok(lf_id) = row {
+                    existing.insert(lf_id);
+                }
+            }
+
+            Ok(existing)
+        })
+    }
+
+    /// Bulk insert transactions (single connection, single checkpoint)
+    ///
+    /// Inserts multiple transactions in a single connection with a single checkpoint
+    /// at the end. This is much more efficient than individual upsert_transaction calls
+    /// and eliminates the visibility gap that can cause duplicate transactions.
+    ///
+    /// Returns the number of transactions inserted.
+    pub fn bulk_insert_transactions(&self, transactions: &[Transaction]) -> Result<usize> {
+        if transactions.is_empty() {
+            return Ok(0);
+        }
+
+        self.with_connection_write(|conn| {
+            let mut count = 0;
+
+            for tx in transactions {
+                // Write empty JSON for external_ids - kept for backwards compat with DB schema
+                let external_ids = "{}";
+                let sf_extra = tx.sf_extra.as_ref().map(|v| v.to_string());
+
+                // Build tags array literal for DuckDB: ['tag1', 'tag2']
+                let tags_literal = format_tags_array(&tx.tags);
+
+                // Use INSERT ... ON CONFLICT DO NOTHING to handle any race conditions
+                let sql = format!(
+                    "INSERT INTO sys_transactions (transaction_id, account_id, amount, description,
+                                                   transaction_date, posted_date, tags, external_ids,
+                                                   parent_transaction_id, created_at, updated_at,
+                                                   csv_fingerprint, csv_batch_id, is_manual, tags_auto_applied,
+                                                   sf_id, sf_posted, sf_amount, sf_description, sf_transacted_at, sf_pending, sf_extra,
+                                                   lf_id, lf_account_id, lf_amount, lf_currency, lf_date, lf_merchant, lf_description, lf_is_pending)
+                     VALUES (?, ?, ?, ?, ?, ?, {}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     ON CONFLICT (transaction_id) DO NOTHING",
+                    tags_literal
+                );
+
+                let rows_changed = conn.execute(
+                    &sql,
+                    params![
+                        tx.id.to_string(),
+                        tx.account_id.to_string(),
+                        tx.amount.to_string().parse::<f64>().unwrap_or(0.0),
+                        tx.description,
+                        tx.transaction_date.to_string(),
+                        tx.posted_date.to_string(),
+                        external_ids,
+                        tx.parent_transaction_id.map(|id| id.to_string()),
+                        tx.created_at.to_rfc3339(),
+                        tx.updated_at.to_rfc3339(),
+                        tx.csv_fingerprint,
+                        tx.csv_batch_id,
+                        tx.is_manual,
+                        tx.tags_auto_applied,
+                        tx.sf_id,
+                        tx.sf_posted,
+                        tx.sf_amount,
+                        tx.sf_description,
+                        tx.sf_transacted_at,
+                        tx.sf_pending,
+                        sf_extra,
+                        tx.lf_id,
+                        tx.lf_account_id,
+                        tx.lf_amount
+                            .map(|d| d.to_string().parse::<f64>().unwrap_or(0.0)),
+                        tx.lf_currency,
+                        tx.lf_date.map(|d| d.to_string()),
+                        tx.lf_merchant,
+                        tx.lf_description,
+                        tx.lf_is_pending,
+                    ],
+                )?;
+
+                if rows_changed > 0 {
+                    count += 1;
+                }
+            }
+
+            Ok(count)
+        })
+        // Single checkpoint happens here when with_connection_write completes
+    }
+
+    /// Check for duplicate SimpleFIN IDs in the database
+    ///
+    /// Returns sf_ids that appear more than once. Used by doctor check.
+    pub fn check_duplicate_sf_ids(&self) -> Result<Vec<String>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT sf_id FROM sys_transactions
+                 WHERE sf_id IS NOT NULL
+                 GROUP BY sf_id HAVING COUNT(*) > 1"
+            )?;
+
+            let duplicates: Vec<String> = stmt
+                .query_map([], |row| row.get(0))?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            Ok(duplicates)
+        })
+    }
+
+    /// Check for duplicate Lunchflow IDs in the database
+    ///
+    /// Returns lf_ids that appear more than once. Used by doctor check.
+    pub fn check_duplicate_lf_ids(&self) -> Result<Vec<String>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT lf_id FROM sys_transactions
+                 WHERE lf_id IS NOT NULL
+                 GROUP BY lf_id HAVING COUNT(*) > 1"
+            )?;
+
+            let duplicates: Vec<String> = stmt
+                .query_map([], |row| row.get(0))?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            Ok(duplicates)
+        })
+    }
+
     pub fn get_transaction_by_id(&self, id: &str) -> Result<Option<Transaction>> {
         self.with_connection(|conn| {
             // CAST(tags AS VARCHAR) required - see get_transactions() for explanation

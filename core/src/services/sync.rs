@@ -265,10 +265,13 @@ impl SyncService {
     /// Process transactions with deduplication logic
     ///
     /// Deduplication strategy:
-    /// 1. Check by provider-specific ID column (sf_id or lf_id) - indexed, fast
-    /// 2. Check by fingerprint (account + date + amount + description hash)
+    /// 1. Collect all provider-specific IDs (sf_id or lf_id) from incoming transactions
+    /// 2. Bulk check which IDs already exist (single connection)
+    /// 3. Filter to new transactions only
+    /// 4. Bulk insert new transactions (single connection, single checkpoint)
     ///
-    /// If either exists, skip the transaction to preserve user edits.
+    /// This approach eliminates the visibility gap between check and insert that
+    /// can cause duplicate transactions when using individual connections per operation.
     fn process_transactions(
         &self,
         provider_name: &str,
@@ -276,9 +279,10 @@ impl SyncService {
         external_to_internal: &HashMap<String, Uuid>,
         dry_run: bool,
     ) -> Result<(i64, i64, Vec<crate::services::tag::RuleFailure>)> {
-        let mut new_count = 0i64;
-        let mut skipped_count = 0i64;
-        let mut new_tx_ids: Vec<Uuid> = Vec::new();
+        // 1. Map account IDs and collect provider IDs for bulk check
+        let mut mapped_txs: Vec<crate::domain::Transaction> = Vec::new();
+        let mut sf_ids: Vec<String> = Vec::new();
+        let mut lf_ids: Vec<String> = Vec::new();
 
         for (ext_account_id, mut tx) in transactions {
             // Map to internal account ID
@@ -288,40 +292,55 @@ impl SyncService {
             };
             tx.account_id = internal_account_id;
 
-            // Check if exists by provider-specific ID column (indexed, fast)
-            // Note: csv_fingerprint is only for CSV imports, not provider syncs
-            let already_exists = match provider_name {
+            // Collect provider IDs for bulk check
+            match provider_name {
                 "simplefin" => {
-                    if let Some(ref sf_id) = tx.sf_id {
-                        self.repository.transaction_exists_by_sf_id(sf_id)?
-                    } else {
-                        false
+                    if let Some(ref id) = tx.sf_id {
+                        sf_ids.push(id.clone());
                     }
                 }
                 "lunchflow" => {
-                    if let Some(ref lf_id) = tx.lf_id {
-                        self.repository.transaction_exists_by_lf_id(lf_id)?
-                    } else {
-                        false
+                    if let Some(ref id) = tx.lf_id {
+                        lf_ids.push(id.clone());
                     }
                 }
-                // Demo mode: no provider ID, always insert (demo has its own DB)
-                _ => false,
-            };
-
-            if already_exists {
-                skipped_count += 1;
-            } else {
-                new_count += 1;
-                if !dry_run {
-                    new_tx_ids.push(tx.id);
-                    self.repository.upsert_transaction(&tx)?;
-                }
+                _ => {}
             }
+            mapped_txs.push(tx);
         }
 
-        // Apply auto-tag rules to newly synced transactions
-        let auto_tag_failures = if !dry_run && !new_tx_ids.is_empty() {
+        // 2. Bulk check for existing IDs (single connection)
+        let existing: std::collections::HashSet<String> = match provider_name {
+            "simplefin" => self.repository.get_existing_sf_ids(&sf_ids)?,
+            "lunchflow" => self.repository.get_existing_lf_ids(&lf_ids)?,
+            // Demo mode: no deduplication (demo has its own DB)
+            _ => std::collections::HashSet::new(),
+        };
+
+        // 3. Filter to new transactions only
+        let new_txs: Vec<crate::domain::Transaction> = mapped_txs
+            .into_iter()
+            .filter(|tx| {
+                let id = match provider_name {
+                    "simplefin" => tx.sf_id.as_ref(),
+                    "lunchflow" => tx.lf_id.as_ref(),
+                    _ => None,
+                };
+                // Keep if no provider ID (can't check), or if ID not in existing set
+                id.map(|id| !existing.contains(id)).unwrap_or(true)
+            })
+            .collect();
+
+        let new_count = new_txs.len() as i64;
+        let total_with_ids = (sf_ids.len() + lf_ids.len()) as i64;
+        let skipped_count = total_with_ids - new_count.min(total_with_ids);
+
+        // 4. Bulk insert (single connection, single checkpoint)
+        let auto_tag_failures = if !dry_run && !new_txs.is_empty() {
+            let new_tx_ids: Vec<Uuid> = new_txs.iter().map(|tx| tx.id).collect();
+            self.repository.bulk_insert_transactions(&new_txs)?;
+
+            // Apply auto-tag rules to newly synced transactions
             // Best-effort tagging - don't fail sync if rules fail
             match self.tag_service.apply_auto_tag_rules(&new_tx_ids) {
                 Ok(result) => result.failed_rules,

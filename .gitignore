@@ -31,3 +31,4 @@ desktop/src-tauri/binaries/
 # Claude (keep commands/ for skills under source control)
 .claude/*
 !.claude/commands/
+.env

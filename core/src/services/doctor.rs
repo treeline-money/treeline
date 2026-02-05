@@ -185,6 +185,48 @@ impl DoctorService {
             },
         );
 
+        // Duplicate transactions check - finds duplicate sf_ids or lf_ids
+        let duplicate_sf_ids = self.repository.check_duplicate_sf_ids()?;
+        let duplicate_lf_ids = self.repository.check_duplicate_lf_ids()?;
+        let total_duplicates = duplicate_sf_ids.len() + duplicate_lf_ids.len();
+
+        let dup_details: Vec<serde_json::Value> = duplicate_sf_ids
+            .iter()
+            .map(|id| json!({"type": "sf_id", "id": id}))
+            .chain(
+                duplicate_lf_ids
+                    .iter()
+                    .map(|id| json!({"type": "lf_id", "id": id})),
+            )
+            .collect();
+
+        checks.insert(
+            "duplicate_transactions".to_string(),
+            CheckResult {
+                status: if total_duplicates == 0 {
+                    "pass"
+                } else {
+                    "warning"
+                }
+                .to_string(),
+                message: if total_duplicates == 0 {
+                    "No duplicate transactions found".to_string()
+                } else {
+                    format!(
+                        "{} duplicate provider ID(s) found ({} sf_id, {} lf_id)",
+                        total_duplicates,
+                        duplicate_sf_ids.len(),
+                        duplicate_lf_ids.len()
+                    )
+                },
+                details: if total_duplicates == 0 {
+                    None
+                } else {
+                    Some(dup_details)
+                },
+            },
+        );
+
         // Budget double-counting check
         let budget_exists = self.repository.table_exists("plugin_budget.categories")?;
         if budget_exists {
