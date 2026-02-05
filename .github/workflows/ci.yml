@@ -109,10 +109,9 @@ jobs:
         working-directory: desktop/src-tauri
         run: cargo test
 
-  # Build desktop app (only on main pushes, not PRs)
+  # Build desktop app (runs on main pushes and PRs for smoke testing)
   build-desktop:
     name: Build Desktop (${{ matrix.os }})
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [version, test]
     strategy:
       fail-fast: false
@@ -191,7 +190,7 @@ jobs:
           echo "Version files updated"
 
       - name: Import Apple certificate
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && needs.version.outputs.is_main == 'true'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -214,19 +213,24 @@ jobs:
           rm $RUNNER_TEMP/certificate.p12
 
       - name: Write Apple API key (macOS)
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && needs.version.outputs.is_main == 'true'
         run: echo "${{ secrets.APPLE_API_KEY_CONTENT }}" > $RUNNER_TEMP/AuthKey.p8
 
-      - name: Build Tauri app (non-macOS)
-        if: runner.os != 'macOS'
+      - name: Build Tauri app (non-macOS - signed)
+        if: runner.os != 'macOS' && needs.version.outputs.is_main == 'true'
         working-directory: desktop
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run build && npx tauri build
 
-      - name: Build Tauri app (macOS)
-        if: runner.os == 'macOS'
+      - name: Build Tauri app (non-macOS - unsigned for PR)
+        if: runner.os != 'macOS' && needs.version.outputs.is_main != 'true'
+        working-directory: desktop
+        run: npm run build && npx tauri build
+
+      - name: Build Tauri app (macOS - signed)
+        if: runner.os == 'macOS' && needs.version.outputs.is_main == 'true'
         working-directory: desktop
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -235,8 +239,13 @@ jobs:
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: npm run build && npx tauri build
 
+      - name: Build Tauri app (macOS - unsigned for PR)
+        if: runner.os == 'macOS' && needs.version.outputs.is_main != 'true'
+        working-directory: desktop
+        run: npm run build && npx tauri build
+
       - name: Notarize app (macOS)
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && needs.version.outputs.is_main == 'true'
         run: |
           APP_PATH="desktop/src-tauri/target/release/bundle/macos/Treeline.app"
           DMG_PATH="desktop/src-tauri/target/release/bundle/dmg"
@@ -278,8 +287,61 @@ jobs:
 
           echo "Notarization complete!"
 
-      - name: Upload artifacts (macOS)
+      - name: Smoke test app (macOS)
         if: runner.os == 'macOS'
+        run: |
+          # Find the DMG
+          DMG_PATH=$(find desktop/src-tauri/target/release/bundle/dmg -name "*.dmg" | head -1)
+          echo "Testing DMG: $DMG_PATH"
+
+          # Mount the DMG
+          echo "Mounting DMG..."
+          MOUNT_OUTPUT=$(hdiutil attach "$DMG_PATH" -nobrowse)
+          MOUNT_POINT=$(echo "$MOUNT_OUTPUT" | grep -o '/Volumes/[^"]*' | head -1)
+          echo "Mounted at: $MOUNT_POINT"
+
+          # Find the app bundle
+          APP_PATH="$MOUNT_POINT/Treeline.app"
+
+          if [ ! -d "$APP_PATH" ]; then
+            echo "Could not find app at $APP_PATH"
+            ls -la "$MOUNT_POINT"
+            hdiutil detach "$MOUNT_POINT" || true
+            exit 1
+          fi
+
+          echo "Found app at: $APP_PATH"
+          echo "Starting application..."
+
+          # Run the app
+          open "$APP_PATH" &
+          APP_PID=$!
+
+          # Wait for app to initialize
+          sleep 10
+
+          # Check if the app is running (Treeline process)
+          if pgrep -x "Treeline" > /dev/null; then
+            echo "Application started successfully and is running"
+            # Gracefully terminate
+            pkill -x "Treeline" || true
+            sleep 2
+            pkill -9 -x "Treeline" 2>/dev/null || true
+          else
+            echo "Application crashed or failed to start"
+            # Unmount before exiting
+            hdiutil detach "$MOUNT_POINT" || true
+            exit 1
+          fi
+
+          # Unmount the DMG
+          echo "Unmounting DMG..."
+          hdiutil detach "$MOUNT_POINT" || true
+
+          echo "Smoke test passed!"
+
+      - name: Upload artifacts (macOS)
+        if: runner.os == 'macOS' && needs.version.outputs.is_main == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact-name }}
@@ -324,7 +386,7 @@ jobs:
           fi
 
       - name: Upload artifacts (Linux)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && needs.version.outputs.is_main == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact-name }}
@@ -333,8 +395,58 @@ jobs:
             desktop/src-tauri/target/release/bundle/appimage/*.AppImage.sig
           retention-days: 90
 
-      - name: Upload artifacts (Windows)
+      - name: Smoke test installer (Windows)
         if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # Find the installer
+          $INSTALLER = Get-ChildItem -Path "desktop/src-tauri/target/release/bundle/nsis/*.exe" -Exclude "*.sig" | Select-Object -First 1
+          Write-Output "Testing installer: $($INSTALLER.FullName)"
+
+          # Install silently
+          Write-Output "Installing application silently..."
+          Start-Process -FilePath $INSTALLER.FullName -ArgumentList "/S" -Wait
+
+          # Wait for installation to complete
+          Start-Sleep -Seconds 5
+
+          # Find installed app (Tauri NSIS installs to AppData/Local by default)
+          $APP = "$env:LOCALAPPDATA\Treeline\treeline.exe"
+
+          if (-not (Test-Path $APP)) {
+            # Try Program Files as fallback
+            $APP = "$env:ProgramFiles\Treeline\treeline.exe"
+          }
+
+          if (-not (Test-Path $APP)) {
+            Write-Error "Could not find installed application"
+            Get-ChildItem "$env:LOCALAPPDATA" -ErrorAction SilentlyContinue | Select-Object Name
+            exit 1
+          }
+
+          Write-Output "Found app at: $APP"
+          Write-Output "Starting application..."
+
+          # Run the app
+          $process = Start-Process -FilePath $APP -PassThru
+
+          # Wait for app to initialize
+          Start-Sleep -Seconds 10
+
+          # Check if process is still running (didn't crash)
+          if ($process.HasExited) {
+            Write-Error "Application crashed or failed to start (exit code: $($process.ExitCode))"
+            exit 1
+          }
+
+          Write-Output "Application started successfully and is running (PID: $($process.Id))"
+
+          # Gracefully terminate
+          Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+          Write-Output "Smoke test passed!"
+
+      - name: Upload artifacts (Windows)
+        if: runner.os == 'Windows' && needs.version.outputs.is_main == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact-name }}
