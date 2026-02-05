@@ -10,7 +10,7 @@ mod commands;
 mod output;
 
 use commands::{
-    backup, compact, demo, doctor, encrypt, logs, plugin, query, setup, status, sync, tag,
+    backup, compact, demo, doctor, encrypt, logs, plugin, query, setup, status, sync, tag, update,
 };
 
 /// Treeline - personal finance in your terminal
@@ -144,15 +144,34 @@ enum Commands {
         #[command(subcommand)]
         command: logs::LogsCommands,
     },
+
+    /// Update to the latest version
+    Update {
+        /// Skip confirmation prompt
+        #[arg(long, short = 'y')]
+        yes: bool,
+        /// Only check for updates, don't install
+        #[arg(long)]
+        check: bool,
+    },
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
+    // Check if this is the update command (skip update notification for it)
+    let is_update_command = matches!(cli.command, Commands::Update { .. });
+
     let result = run(cli);
 
     match result {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(()) => {
+            // Check for updates after successful commands (except update itself)
+            if !is_update_command {
+                update::maybe_notify_update();
+            }
+            ExitCode::SUCCESS
+        }
         Err(e) => {
             eprintln!("{}", e);
             ExitCode::FAILURE
@@ -196,5 +215,6 @@ fn run(cli: Cli) -> Result<()> {
         Commands::Setup { command } => setup::run(command),
         Commands::Plugin { command } => plugin::run(command),
         Commands::Logs { command } => logs::run(command),
+        Commands::Update { yes, check } => update::run(yes, check),
     }
 }

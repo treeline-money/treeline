@@ -12,6 +12,7 @@ pub mod setup;
 pub mod status;
 pub mod sync;
 pub mod tag;
+pub mod update;
 
 use anyhow::{Context, Result};
 use std::path::PathBuf;
