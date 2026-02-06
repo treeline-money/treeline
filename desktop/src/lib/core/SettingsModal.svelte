@@ -393,7 +393,7 @@
       try {
         const resultStr = await invoke<string>("check_plugin_update", { pluginId: plugin.id });
         const result = JSON.parse(resultStr);
-        if (result.success && result.has_update) {
+        if (result.has_update) {
           updates.set(plugin.id, {
             pluginId: plugin.id,
             installedVersion: result.installed_version,

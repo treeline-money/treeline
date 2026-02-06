@@ -95,7 +95,7 @@ class PluginUpdatesStore {
             pluginId: plugin.id,
           });
           const data = JSON.parse(result);
-          if (data.success && data.has_update) {
+          if (data.has_update) {
             updates.set(plugin.id, {
               pluginId: plugin.id,
               installedVersion: data.installed_version,
