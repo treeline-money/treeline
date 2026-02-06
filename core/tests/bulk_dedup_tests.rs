@@ -427,6 +427,80 @@ fn test_bulk_dedup_workflow() {
 }
 
 // =============================================================================
+// SF/LF ID Chunking Tests
+// =============================================================================
+
+#[test]
+fn test_get_existing_sf_ids_large_batch() {
+    // Test chunking with >500 IDs
+    let (_temp_dir, repo, _treeline_dir) = setup_test_env();
+    let account_id = create_test_account(&repo, "Test Account");
+
+    // Insert 600 transactions with sf_ids
+    let mut transactions: Vec<Transaction> = Vec::new();
+    for i in 0..600 {
+        let mut tx = Transaction::new(
+            Uuid::new_v4(),
+            account_id,
+            Decimal::new(100, 2),
+            NaiveDate::from_ymd_opt(2024, 1, 1).unwrap()
+                + chrono::Duration::days(i % 365),
+        );
+        tx.sf_id = Some(format!("sf_{:04}", i));
+        transactions.push(tx);
+    }
+    repo.bulk_insert_transactions(&transactions).expect("Insert failed");
+
+    // Query all 600 plus 100 new ones
+    let query_ids: Vec<String> = (0..700).map(|i| format!("sf_{:04}", i)).collect();
+
+    let existing = repo
+        .get_existing_sf_ids(&query_ids)
+        .expect("Query failed");
+
+    assert_eq!(
+        existing.len(),
+        600,
+        "Should find all 600 existing sf_ids across chunk boundary"
+    );
+}
+
+#[test]
+fn test_get_existing_lf_ids_large_batch() {
+    // Test chunking with >500 IDs
+    let (_temp_dir, repo, _treeline_dir) = setup_test_env();
+    let account_id = create_test_account(&repo, "Test Account");
+
+    // Insert 600 transactions with lf_ids
+    let mut transactions: Vec<Transaction> = Vec::new();
+    for i in 0..600 {
+        let mut tx = Transaction::new(
+            Uuid::new_v4(),
+            account_id,
+            Decimal::new(100, 2),
+            NaiveDate::from_ymd_opt(2024, 1, 1).unwrap()
+                + chrono::Duration::days(i % 365),
+        );
+        tx.lf_id = Some(format!("lf_{:04}", i));
+        transactions.push(tx);
+    }
+    repo.bulk_insert_transactions(&transactions).expect("Insert failed");
+
+    // Query all 600 plus 100 new ones
+    let query_ids: Vec<String> = (0..700).map(|i| format!("lf_{:04}", i)).collect();
+
+    let existing = repo
+        .get_existing_lf_ids(&query_ids)
+        .expect("Query failed");
+
+    assert_eq!(
+        existing.len(),
+        600,
+        "Should find all 600 existing lf_ids across chunk boundary"
+    );
+}
+
+// =============================================================================
 // SimpleFin Integration Tests (requires SIMPLEFIN_ACCESS_URL env var)
 // =============================================================================
 

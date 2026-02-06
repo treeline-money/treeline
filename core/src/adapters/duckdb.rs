@@ -1016,30 +1016,31 @@ impl DuckDbRepository {
         }
 
         self.with_connection(|conn| {
-            // Build WHERE sf_id IN (?, ?, ...) clause
-            let placeholders: Vec<&str> = sf_ids.iter().map(|_| "?").collect();
-            let sql = format!(
-                "SELECT sf_id FROM sys_transactions WHERE sf_id IN ({})",
-                placeholders.join(", ")
-            );
-
-            let mut stmt = conn.prepare(&sql)?;
-
-            // Build params vector
-            let params: Vec<&dyn duckdb::ToSql> = sf_ids
-                .iter()
-                .map(|s| s as &dyn duckdb::ToSql)
-                .collect();
-
-            let rows = stmt.query_map(params.as_slice(), |row| {
-                let sf_id: String = row.get(0)?;
-                Ok(sf_id)
-            })?;
-
             let mut existing = HashSet::new();
-            for row in rows {
-                if let Ok(sf_id) = row {
-                    existing.insert(sf_id);
+
+            for chunk in sf_ids.chunks(500) {
+                let placeholders: Vec<&str> = chunk.iter().map(|_| "?").collect();
+                let sql = format!(
+                    "SELECT sf_id FROM sys_transactions WHERE sf_id IN ({})",
+                    placeholders.join(", ")
+                );
+
+                let mut stmt = conn.prepare(&sql)?;
+
+                let params: Vec<&dyn duckdb::ToSql> = chunk
+                    .iter()
+                    .map(|s| s as &dyn duckdb::ToSql)
+                    .collect();
+
+                let rows = stmt.query_map(params.as_slice(), |row| {
+                    let sf_id: String = row.get(0)?;
+                    Ok(sf_id)
+                })?;
+
+                for row in rows {
+                    if let Ok(sf_id) = row {
+                        existing.insert(sf_id);
+                    }
                 }
             }
 
@@ -1059,30 +1060,31 @@ impl DuckDbRepository {
         }
 
         self.with_connection(|conn| {
-            // Build WHERE lf_id IN (?, ?, ...) clause
-            let placeholders: Vec<&str> = lf_ids.iter().map(|_| "?").collect();
-            let sql = format!(
-                "SELECT lf_id FROM sys_transactions WHERE lf_id IN ({})",
-                placeholders.join(", ")
-            );
-
-            let mut stmt = conn.prepare(&sql)?;
-
-            // Build params vector
-            let params: Vec<&dyn duckdb::ToSql> = lf_ids
-                .iter()
-                .map(|s| s as &dyn duckdb::ToSql)
-                .collect();
-
-            let rows = stmt.query_map(params.as_slice(), |row| {
-                let lf_id: String = row.get(0)?;
-                Ok(lf_id)
-            })?;
-
             let mut existing = HashSet::new();
-            for row in rows {
-                if let Ok(lf_id) = row {
-                    existing.insert(lf_id);
+
+            for chunk in lf_ids.chunks(500) {
+                let placeholders: Vec<&str> = chunk.iter().map(|_| "?").collect();
+                let sql = format!(
+                    "SELECT lf_id FROM sys_transactions WHERE lf_id IN ({})",
+                    placeholders.join(", ")
+                );
+
+                let mut stmt = conn.prepare(&sql)?;
+
+                let params: Vec<&dyn duckdb::ToSql> = chunk
+                    .iter()
+                    .map(|s| s as &dyn duckdb::ToSql)
+                    .collect();
+
+                let rows = stmt.query_map(params.as_slice(), |row| {
+                    let lf_id: String = row.get(0)?;
+                    Ok(lf_id)
+                })?;
+
+                for row in rows {
+                    if let Ok(lf_id) = row {
+                        existing.insert(lf_id);
+                    }
                 }
             }
 
