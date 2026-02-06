@@ -9,14 +9,22 @@ Treeline supports CSV import (works with any bank) and automatic bank sync for s
 
 Most banks let you download transaction history as CSV files.
 
-### How to Import
+### Desktop App
 
 1. Download a CSV from your bank's website
 2. Drag the file onto Treeline, or click **Import** in the toolbar
 3. Select the target account (or create a new one)
 4. Verify the column mappings and click **Import**
 
-Treeline auto-detects common column names like `date`, `amount`, `description`, `debit`, `credit`. If your CSV uses different names, use the dropdown menus to map them manually.
+### CLI
+
+```bash
+tl import bank_export.csv --account "Checking"
+```
+
+Preview first with `--dry-run`, use `--json` for scripted workflows. See the full [CLI reference](/cli/) for all flags.
+
+Treeline auto-detects common column names like `date`, `amount`, `description`, `debit`, `credit`. If your CSV uses different names, you can map them manually in the desktop app or override them with CLI flags like `--date-column`, `--amount-column`, etc.
 
 ### Common Adjustments
 

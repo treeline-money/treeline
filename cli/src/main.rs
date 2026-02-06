@@ -10,7 +10,8 @@ mod commands;
 mod output;
 
 use commands::{
-    backup, compact, demo, doctor, encrypt, logs, plugin, query, setup, status, sync, tag, update,
+    backup, compact, demo, doctor, encrypt, import, logs, plugin, query, setup, status, sync, tag,
+    update,
 };
 
 /// Treeline - personal finance in your terminal
@@ -35,6 +36,63 @@ enum Commands {
         /// Integration name (optional, syncs all if not specified)
         integration: Option<String>,
         /// Preview changes without applying
+        #[arg(long)]
+        dry_run: bool,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Import transactions from a CSV file
+    Import {
+        /// Path to CSV file (use "-" for stdin)
+        file: String,
+        /// Account ID (UUID) or name to import into
+        #[arg(short, long)]
+        account: String,
+        /// CSV column name for dates
+        #[arg(long)]
+        date_column: Option<String>,
+        /// CSV column name for amounts
+        #[arg(long)]
+        amount_column: Option<String>,
+        /// CSV column name for descriptions
+        #[arg(long)]
+        description_column: Option<String>,
+        /// CSV column name for debits (alternative to amount)
+        #[arg(long)]
+        debit_column: Option<String>,
+        /// CSV column name for credits (alternative to amount)
+        #[arg(long)]
+        credit_column: Option<String>,
+        /// CSV column name for running balance (creates balance snapshots)
+        #[arg(long)]
+        balance_column: Option<String>,
+        /// Negate all amounts (for credit card statements)
+        #[arg(long)]
+        flip_signs: bool,
+        /// Negate positive debit values (for unsigned debit/credit CSVs)
+        #[arg(long)]
+        debit_negative: bool,
+        /// Skip N rows before the header row
+        #[arg(long, default_value = "0")]
+        skip_rows: u32,
+        /// Number format: us (1,234.56), eu (1.234,56), eu_space (1 234,56)
+        #[arg(long, default_value = "us")]
+        number_format: String,
+        /// Known balance for historical balance calculation (preview only)
+        #[arg(long)]
+        anchor_balance: Option<f64>,
+        /// Date of anchor balance (YYYY-MM-DD, required with --anchor-balance)
+        #[arg(long)]
+        anchor_date: Option<String>,
+        /// Use a saved import profile
+        #[arg(long)]
+        profile: Option<String>,
+        /// Save settings as a named profile after import
+        #[arg(long)]
+        save_profile: Option<String>,
+        /// Preview without importing
         #[arg(long)]
         dry_run: bool,
         /// Output as JSON
@@ -187,6 +245,45 @@ fn run(cli: Cli) -> Result<()> {
             dry_run,
             json,
         } => sync::run(integration, dry_run, json),
+        Commands::Import {
+            file,
+            account,
+            date_column,
+            amount_column,
+            description_column,
+            debit_column,
+            credit_column,
+            balance_column,
+            flip_signs,
+            debit_negative,
+            skip_rows,
+            number_format,
+            anchor_balance,
+            anchor_date,
+            profile,
+            save_profile,
+            dry_run,
+            json,
+        } => import::run(
+            &file,
+            &account,
+            date_column.as_deref(),
+            amount_column.as_deref(),
+            description_column.as_deref(),
+            debit_column.as_deref(),
+            credit_column.as_deref(),
+            balance_column.as_deref(),
+            flip_signs,
+            debit_negative,
+            skip_rows,
+            &number_format,
+            anchor_balance,
+            anchor_date.as_deref(),
+            profile.as_deref(),
+            save_profile.as_deref(),
+            dry_run,
+            json,
+        ),
         Commands::Query {
             sql,
             file,

@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use crate::adapters::duckdb::DuckDbRepository;
 use crate::config::{ColumnMappings, Config, ImportOptions as ConfigImportOptions, ImportProfile};
-use crate::domain::{BalanceSnapshot, Transaction};
+use crate::domain::{Account, BalanceSnapshot, Transaction};
 use crate::services::TagService;
 
 /// Number format for parsing amounts
@@ -448,17 +448,22 @@ impl ImportService {
             });
         }
 
-        // Deduplicate: check which fingerprints already exist in csv_fingerprint column
+        // Deduplicate: bulk check which fingerprints already exist (single DB query)
+        let all_fingerprints: Vec<String> = transactions
+            .iter()
+            .filter_map(|tx| tx.csv_fingerprint.clone())
+            .collect();
+
+        let existing_fingerprints = self
+            .repository
+            .get_existing_csv_fingerprints(&all_fingerprints)?;
+
         let mut new_transactions = Vec::new();
         let mut duplicate_count = 0i64;
 
         for tx in transactions {
             if let Some(fp) = tx.csv_fingerprint.as_ref() {
-                // Check csv_fingerprint column for existing transactions
-                if self
-                    .repository
-                    .csv_fingerprint_exists_in_other_batches(fp, "")?
-                {
+                if existing_fingerprints.contains(fp) {
                     duplicate_count += 1;
                     continue;
                 }
@@ -486,12 +491,13 @@ impl ImportService {
             let _ = self.tag_service.apply_auto_tag_rules(&new_tx_ids);
         }
 
-        // Create balance snapshots from collected end-of-day balances
+        // Create balance snapshots from collected end-of-day balances (single DB operation)
         let mut balance_snapshots_created = 0i64;
         if !end_of_day_balances.is_empty() {
-            // Get existing snapshots for deduplication
+            // Get existing snapshots for deduplication (single query)
             let existing_snapshots = self.repository.get_balance_snapshots(Some(account_id))?;
 
+            let mut snapshots_to_insert = Vec::new();
             for (date, balance) in &end_of_day_balances {
                 // Create end-of-day timestamp (23:59:59.999999)
                 let snapshot_time = NaiveDateTime::new(
@@ -509,7 +515,7 @@ impl ImportService {
                     continue;
                 }
 
-                let snapshot = BalanceSnapshot {
+                snapshots_to_insert.push(BalanceSnapshot {
                     id: Uuid::new_v4(),
                     account_id: account_uuid,
                     balance: *balance,
@@ -517,12 +523,15 @@ impl ImportService {
                     source: Some("csv_import".to_string()),
                     created_at: Utc::now(),
                     updated_at: Utc::now(),
-                };
+                });
+            }
 
-                // Best-effort - don't fail import if snapshot insert fails
-                if self.repository.add_balance_snapshot(&snapshot).is_ok() {
-                    balance_snapshots_created += 1;
-                }
+            // Bulk insert all snapshots in a single connection+checkpoint
+            if let Ok(count) = self
+                .repository
+                .bulk_insert_balance_snapshots(&snapshots_to_insert)
+            {
+                balance_snapshots_created = count as i64;
             }
         }
 
@@ -566,6 +575,107 @@ impl ImportService {
     pub fn get_profile(&self, name: &str) -> Result<Option<ImportProfile>> {
         let config = Config::load(&self.treeline_dir)?;
         Ok(config.import_profiles.get(name).cloned())
+    }
+
+    /// Resolve an account identifier (UUID or name) to an account UUID string.
+    ///
+    /// Accepts:
+    /// - A UUID string (verified to exist)
+    /// - An exact account name or nickname (case-insensitive)
+    /// - A substring match (if exactly one account matches)
+    ///
+    /// Returns the account UUID as a string, or an error with available accounts listed.
+    pub fn resolve_account(&self, account: &str) -> Result<String> {
+        // Try as UUID first
+        if Uuid::parse_str(account).is_ok() {
+            if self.repository.get_account_by_id(account)?.is_some() {
+                return Ok(account.to_string());
+            }
+            anyhow::bail!("Account not found with ID: {}", account);
+        }
+
+        let accounts = self.repository.get_accounts()?;
+        let query = account.to_lowercase();
+
+        // Exact match on name or nickname
+        let exact: Vec<_> = accounts
+            .iter()
+            .filter(|a| {
+                a.name.to_lowercase() == query
+                    || a.nickname
+                        .as_ref()
+                        .map(|n| n.to_lowercase() == query)
+                        .unwrap_or(false)
+            })
+            .collect();
+
+        if exact.len() == 1 {
+            return Ok(exact[0].id.to_string());
+        }
+        if exact.len() > 1 {
+            let list = format_account_list(&exact);
+            anyhow::bail!(
+                "Multiple accounts match '{}'. Use the UUID:\n{}",
+                account,
+                list
+            );
+        }
+
+        // Substring match as fallback
+        let partial: Vec<_> = accounts
+            .iter()
+            .filter(|a| {
+                a.name.to_lowercase().contains(&query)
+                    || a.nickname
+                        .as_ref()
+                        .map(|n| n.to_lowercase().contains(&query))
+                        .unwrap_or(false)
+            })
+            .collect();
+
+        if partial.len() == 1 {
+            return Ok(partial[0].id.to_string());
+        }
+
+        if partial.is_empty() {
+            if accounts.is_empty() {
+                anyhow::bail!(
+                    "No accounts found. Create an account first with 'tl sync' or import to a new account."
+                );
+            }
+            let list = format_account_list(&accounts.iter().collect::<Vec<_>>());
+            anyhow::bail!(
+                "No account matching '{}'. Available accounts:\n{}",
+                account,
+                list
+            );
+        }
+
+        let list = format_account_list(&partial);
+        anyhow::bail!(
+            "Multiple accounts match '{}'. Be more specific or use the UUID:\n{}",
+            account,
+            list
+        );
+    }
+
+    /// Get a display name for an account UUID.
+    ///
+    /// Returns "Name (Nickname)" if a nickname exists, otherwise just "Name".
+    /// Falls back to the UUID string if the account is not found.
+    pub fn get_account_display_name(&self, account_id: &str) -> String {
+        self.repository
+            .get_account_by_id(account_id)
+            .ok()
+            .flatten()
+            .map(|a| {
+                if let Some(nick) = &a.nickname {
+                    format!("{} ({})", a.name, nick)
+                } else {
+                    a.name.clone()
+                }
+            })
+            .unwrap_or_else(|| account_id.to_string())
     }
 
     /// Auto-detect column mapping from CSV headers
@@ -859,6 +969,21 @@ pub struct TransactionPreview {
     /// Running balance (from CSV, if mapped)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub balance: Option<String>,
+}
+
+/// Format a list of accounts for display in error messages.
+fn format_account_list(accounts: &[&Account]) -> String {
+    accounts
+        .iter()
+        .map(|a| {
+            if let Some(nick) = &a.nickname {
+                format!("  {} ({}) — {}", a.name, nick, a.id)
+            } else {
+                format!("  {} — {}", a.name, a.id)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]

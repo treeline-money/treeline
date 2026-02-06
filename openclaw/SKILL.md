@@ -47,7 +47,7 @@ irm https://treeline.money/install.ps1 | iex
 
 Verify with `tl --version`.
 
-**Optional:** Download the [desktop app](https://treeline.money/download) for CSV import and visual exploration.
+**Optional:** Download the [desktop app](https://treeline.money/download) for visual exploration of your data.
 
 ### Demo Mode
 
@@ -85,10 +85,24 @@ Demo data is separate from real data.
 3. Run `tl setup lunchflow <api-key>`
 4. Run `tl sync`
 
-**CSV Import** (free, requires desktop app)
+**CSV Import** (free, CLI or desktop app)
 1. Export transactions as CSV from bank website
-2. In Treeline app: drag file onto window or click Import
-3. Map columns and import
+2. Find the account to import into: `tl status --json` (grab the account name or UUID)
+3. Preview: `tl import export.csv --account "Checking" --dry-run`
+4. Import: `tl import export.csv --account "Checking"`
+
+Auto-detection handles most CSVs. If columns don't match, specify them:
+```bash
+tl import export.csv --account "Checking" \
+  --date-column "Trans Date" \
+  --amount-column "Amount" \
+  --description-column "Memo"
+```
+
+For European formats: `--number-format eu` (1.234,56) or `--number-format eu_space` (1 234,56).
+For credit cards where charges are positive: `--flip-signs`.
+For CSVs with separate debit/credit columns: `--debit-column "Debit" --credit-column "Credit"`.
+For CSVs with bank letterhead rows before the header: `--skip-rows 3`.
 
 ---
 
@@ -155,6 +169,10 @@ tl query "SQL" --json  # Run any SQL query
 tl sync                # Sync accounts/transactions from bank integrations
 tl sync --dry-run      # Preview what would sync
 
+tl import FILE -a ACCOUNT          # Import transactions from CSV
+tl import FILE -a ACCOUNT --dry-run  # Preview import without applying
+tl import FILE -a ACCOUNT --json   # JSON output for scripting
+
 tl backup create       # Create a backup
 tl backup list         # List available backups
 tl backup restore NAME # Restore a backup
@@ -170,6 +188,56 @@ tl demo on|off         # Toggle demo mode (sample data)
 **Use `tl status` for quick balance checks** — it's faster than a SQL query.
 
 **Use `tl compact` if the user mentions slow queries** — it optimizes the database.
+
+### CSV Import Details
+
+`tl import` auto-detects column mappings from CSV headers. Most bank CSVs work out of the box:
+
+```bash
+tl import bank_export.csv --account "Chase Checking"
+```
+
+The `--account` / `-a` flag accepts an account name (case-insensitive, substring match) or UUID.
+
+**Always preview first** with `--dry-run` to verify columns were detected correctly:
+
+```bash
+tl import bank_export.csv -a "Checking" --dry-run --json
+```
+
+**All import flags** (all optional except `--account`):
+
+| Flag | Purpose | Example |
+|------|---------|---------|
+| `--date-column` | Override date column | `--date-column "Post Date"` |
+| `--amount-column` | Override amount column | `--amount-column "Amt"` |
+| `--description-column` | Override description column | `--description-column "Memo"` |
+| `--debit-column` | Use debit column (instead of amount) | `--debit-column "Debit"` |
+| `--credit-column` | Use credit column (instead of amount) | `--credit-column "Credit"` |
+| `--balance-column` | Running balance (creates snapshots) | `--balance-column "Balance"` |
+| `--flip-signs` | Negate amounts (credit card CSVs) | `--flip-signs` |
+| `--debit-negative` | Negate positive debits | `--debit-negative` |
+| `--skip-rows N` | Skip N rows before header | `--skip-rows 3` |
+| `--number-format` | `us`, `eu`, or `eu_space` | `--number-format eu` |
+| `--profile NAME` | Load a saved profile | `--profile chase` |
+| `--save-profile NAME` | Save settings as profile | `--save-profile chase` |
+| `--dry-run` | Preview without importing | `--dry-run` |
+| `--json` | JSON output | `--json` |
+
+**Common patterns for agents:**
+
+```bash
+# Step 1: Find the account UUID
+tl status --json
+
+# Step 2: Preview import
+tl import transactions.csv -a "550e8400-e29b-41d4-a716-446655440000" --dry-run --json
+
+# Step 3: Execute import
+tl import transactions.csv -a "550e8400-e29b-41d4-a716-446655440000" --json
+```
+
+Duplicate transactions are automatically detected and skipped on re-import via fingerprinting.
 
 ---
 
@@ -425,6 +493,8 @@ GROUP BY c.category_id, c.name, c.expected
 | "Recent transactions" | Order by date DESC, limit |
 | "Savings?" | Filter accounts by name/type |
 | "Retirement?" | Filter by 401k, IRA, retirement keywords |
+| "Import CSV" / "Upload transactions" | Guide through `tl import` — preview first with `--dry-run` |
+| "Import from [bank name]" | Use `tl import` with appropriate flags for that bank's CSV format |
 
 ---
 

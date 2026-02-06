@@ -17,6 +17,7 @@ The CLI is bundled with the desktop app. After installing Treeline, run `tl` fro
 
 - `tl status` - Show account status and summary
 - `tl sync` - Sync accounts and transactions from integrations
+- `tl import` - Import transactions from a CSV file
 - `tl query` - Execute SQL query against the database
 - `tl tag` - Apply tags to transactions
 - `tl backup` - Manage backups
@@ -59,6 +60,49 @@ if [ "$new_count" -gt 0 ]; then
   osascript -e "display notification \"$new_count new transactions\" with title \"Treeline\""
 fi
 ```
+
+### CSV Import
+
+Import transactions from any bank's CSV export:
+
+```bash
+# Auto-detect columns — works for most standard CSVs
+tl import bank_export.csv --account "Chase Checking"
+
+# Preview before importing
+tl import bank_export.csv --account "Chase Checking" --dry-run
+
+# European bank with custom columns and number format
+tl import export.csv --account "Savings" \
+  --number-format eu \
+  --date-column "Buchungstag" \
+  --amount-column "Betrag" \
+  --skip-rows 3
+
+# Credit card statement (charges shown as positive, need to flip)
+tl import amex.csv --account "Amex Gold" --flip-signs
+
+# Separate debit/credit columns instead of a single amount
+tl import bank.csv --account "Checking" \
+  --debit-column "Debit" --credit-column "Credit"
+
+# Import with balance column (creates balance snapshots automatically)
+tl import statement.csv --account "Checking" --balance-column "Balance"
+
+# Save settings as a profile for repeated use
+tl import export.csv --account "Savings" \
+  --number-format eu --skip-rows 3 --save-profile deutsche-bank
+
+# Reuse a saved profile
+tl import next_month.csv --account "Savings" --profile deutsche-bank
+
+# Pipe from stdin
+cat export.csv | tl import - --account "Checking"
+```
+
+Column mappings are auto-detected from CSV headers. Explicit flags override auto-detection. Duplicate transactions are automatically skipped on re-import.
+
+**Flags reference:** `tl import --help`
 
 ### SQL Queries
 
