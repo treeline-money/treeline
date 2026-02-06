@@ -665,6 +665,43 @@ fn test_save_profile_preserves_skip_rows() {
     assert_eq!(profile.skip_rows, 3, "skip_rows should be preserved as 3");
 }
 
+#[test]
+fn test_save_profile_preserves_number_format() {
+    use treeline_core::services::NumberFormat;
+
+    let (_temp_dir, repo, treeline_dir) = setup_test_env();
+    let import_service = ImportService::new(repo.clone(), treeline_dir.clone());
+
+    let mappings = ColumnMappings {
+        date: "Date".to_string(),
+        amount: "Amount".to_string(),
+        description: Some("Description".to_string()),
+        debit: None,
+        credit: None,
+        balance: None,
+    };
+
+    let options = ImportOptions {
+        number_format: NumberFormat::Eu,
+        ..ImportOptions::default()
+    };
+
+    import_service
+        .save_profile("eu_profile", &mappings, &options)
+        .expect("Save profile failed");
+
+    let profile = import_service
+        .get_profile("eu_profile")
+        .expect("Get profile failed")
+        .expect("Profile not found");
+
+    assert_eq!(
+        profile.options.number_format,
+        Some("eu".to_string()),
+        "number_format should be persisted as 'eu'"
+    );
+}
+
 // =============================================================================
 // Count-based CSV Fingerprint Deduplication Tests
 // =============================================================================

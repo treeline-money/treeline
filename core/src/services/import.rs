@@ -39,6 +39,16 @@ impl NumberFormat {
     }
 }
 
+impl std::fmt::Display for NumberFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NumberFormat::Us => write!(f, "us"),
+            NumberFormat::Eu => write!(f, "eu"),
+            NumberFormat::EuSpace => write!(f, "eu_space"),
+        }
+    }
+}
+
 /// Import options for CSV processing
 #[derive(Debug, Default)]
 pub struct ImportOptions {
@@ -590,6 +600,10 @@ impl ImportService {
                 options: ConfigImportOptions {
                     flip_signs: options.flip_signs,
                     debit_negative: options.debit_negative,
+                    number_format: match options.number_format {
+                        NumberFormat::Us => None, // Default, omit from config
+                        _ => Some(options.number_format.to_string()),
+                    },
                 },
             },
         );

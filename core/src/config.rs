@@ -150,6 +150,9 @@ pub struct ImportOptions {
     pub flip_signs: bool,
     #[serde(default)]
     pub debit_negative: bool,
+    /// Number format string: "us", "eu", or "eu_space". None defaults to US.
+    #[serde(default)]
+    pub number_format: Option<String>,
 }
 
 /// Column mappings for CSV import
