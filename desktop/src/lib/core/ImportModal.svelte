@@ -649,18 +649,9 @@
       );
       currentStep = "done";
       // Fetch the actual date range from imported transactions
+      // Note: auto-tag rules are already applied by ImportService in treeline-core
       if (result.batch_id) {
         await fetchImportedDateRange(result.batch_id);
-        // Apply auto-tag rules to newly imported transactions
-        try {
-          const tagged = await applyRulesToBatch(result.batch_id);
-          if (tagged > 0) {
-            console.log(`Auto-tagged ${tagged} transactions`);
-          }
-        } catch (e) {
-          console.error("Failed to apply auto-tag rules:", e);
-          // Non-fatal - don't block the success flow
-        }
       }
       // Move file to imported folder if it was from the watch folder
       if (filePath.includes(".treeline/imports/") && !filePath.includes("/imported/")) {

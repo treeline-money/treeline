@@ -17,7 +17,7 @@ use treeline_core::adapters::duckdb::DuckDbRepository;
 use treeline_core::config::ColumnMappings;
 use treeline_core::domain::{Account, BalanceSnapshot, Transaction};
 use treeline_core::services::{
-    BackupService, ImportOptions, ImportService, NumberFormat, TagService,
+    BackupService, BalanceService, ImportOptions, ImportService, NumberFormat, TagService,
 };
 
 // ============================================================================
@@ -789,4 +789,243 @@ fn test_vacuum_command_execution() {
     // VACUUM should succeed
     let result = repo.execute_sql("VACUUM");
     assert!(result.is_ok(), "VACUUM should succeed: {:?}", result.err());
+}
+
+// ============================================================================
+// Backfill Balance Tests
+// ============================================================================
+
+/// Test that backfill_execute creates correct snapshots using bulk insert
+#[test]
+fn test_backfill_execute_bulk() {
+    let temp_dir = TempDir::new().unwrap();
+    let repo = create_test_repo(&temp_dir);
+
+    let account = create_test_account("Backfill Test");
+    repo.upsert_account(&account).unwrap();
+
+    // Create 30 days of transactions (one per day, $10 each)
+    let base_date = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
+    for i in 0..30 {
+        let date = base_date + chrono::Duration::days(i);
+        let mut tx = create_test_transaction(account.id, -1000, date); // -$10.00
+        tx.description = Some(format!("Day {} expense", i + 1));
+        repo.upsert_transaction(&tx).unwrap();
+    }
+
+    let balance_service = BalanceService::new(repo.clone());
+
+    // Known balance: $700 on Jan 30 (started with $1000, spent $10/day for 30 days)
+    let known_date = NaiveDate::from_ymd_opt(2024, 1, 30).unwrap();
+    let known_balance = Decimal::new(70000, 2); // $700.00
+
+    let result = balance_service
+        .backfill_execute(
+            &account.id.to_string(),
+            known_balance,
+            known_date,
+            None,
+            None,
+        )
+        .unwrap();
+
+    assert_eq!(result.snapshots_created, 30, "Should create 30 snapshots");
+
+    // Verify snapshots exist
+    let snapshots = repo
+        .get_balance_snapshots(Some(&account.id.to_string()))
+        .unwrap();
+    assert_eq!(snapshots.len(), 30, "Should have 30 snapshots in DB");
+
+    // Verify the known date has the correct balance
+    let jan30_snapshot = snapshots
+        .iter()
+        .find(|s| s.snapshot_time.date() == known_date)
+        .expect("Should have snapshot for Jan 30");
+    assert_eq!(jan30_snapshot.balance, known_balance);
+
+    // Verify Jan 1 balance (should be $1000 - $10 = $990 end of day)
+    // Working backwards: $700 on Jan 30, each day added $10 going back
+    let jan1_snapshot = snapshots
+        .iter()
+        .find(|s| s.snapshot_time.date() == base_date)
+        .expect("Should have snapshot for Jan 1");
+    // Jan 1 EOD = 700 + (29 days * 10) = 700 + 290 = 990
+    assert_eq!(jan1_snapshot.balance, Decimal::new(99000, 2));
+}
+
+/// Test that backfill_execute replaces existing snapshots
+#[test]
+fn test_backfill_replaces_existing_snapshots() {
+    let temp_dir = TempDir::new().unwrap();
+    let repo = create_test_repo(&temp_dir);
+
+    let account = create_test_account("Backfill Replace Test");
+    repo.upsert_account(&account).unwrap();
+
+    let date = NaiveDate::from_ymd_opt(2024, 3, 15).unwrap();
+    let mut tx = create_test_transaction(account.id, -5000, date);
+    tx.description = Some("Test expense".to_string());
+    repo.upsert_transaction(&tx).unwrap();
+
+    let balance_service = BalanceService::new(repo.clone());
+
+    // First backfill with wrong balance
+    let result1 = balance_service
+        .backfill_execute(
+            &account.id.to_string(),
+            Decimal::new(10000, 2), // $100
+            date,
+            None,
+            None,
+        )
+        .unwrap();
+    assert_eq!(result1.snapshots_created, 1);
+
+    // Second backfill with corrected balance should replace
+    let result2 = balance_service
+        .backfill_execute(
+            &account.id.to_string(),
+            Decimal::new(20000, 2), // $200
+            date,
+            None,
+            None,
+        )
+        .unwrap();
+    assert_eq!(result2.snapshots_created, 1);
+    assert_eq!(result2.snapshots_updated, 1, "Should have replaced 1 existing snapshot");
+
+    // Verify only one snapshot with the corrected balance
+    let snapshots = repo
+        .get_balance_snapshots(Some(&account.id.to_string()))
+        .unwrap();
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(snapshots[0].balance, Decimal::new(20000, 2));
+}
+
+// ============================================================================
+// Bulk Auto-Tag Tests
+// ============================================================================
+
+/// Test that bulk_apply_tags_to_matching correctly tags matching transactions
+#[test]
+fn test_bulk_apply_tags_to_matching() {
+    let temp_dir = TempDir::new().unwrap();
+    let repo = create_test_repo(&temp_dir);
+
+    let account = create_test_account("Auto-Tag Test");
+    repo.upsert_account(&account).unwrap();
+
+    // Create transactions with varied descriptions
+    let date = NaiveDate::from_ymd_opt(2024, 6, 1).unwrap();
+    let mut tx_ids = Vec::new();
+
+    for (i, desc) in ["Walmart groceries", "Amazon purchase", "Walmart supplies", "Coffee shop", "Walmart return"]
+        .iter()
+        .enumerate()
+    {
+        let mut tx = create_test_transaction(account.id, (i as i64 + 1) * -1000, date);
+        tx.description = Some(desc.to_string());
+        repo.upsert_transaction(&tx).unwrap();
+        tx_ids.push(tx.id);
+    }
+
+    // Apply tags matching "walmart" in description
+    let modified = repo
+        .bulk_apply_tags_to_matching(
+            &tx_ids,
+            "description ILIKE '%walmart%'",
+            &["groceries".to_string(), "shopping".to_string()],
+        )
+        .unwrap();
+
+    assert_eq!(modified.len(), 3, "Should tag 3 Walmart transactions");
+
+    // Verify tagged transactions have correct tags
+    for tx_id in &modified {
+        let tx = repo
+            .get_transaction_by_id(&tx_id.to_string())
+            .unwrap()
+            .unwrap();
+        assert!(tx.tags.contains(&"groceries".to_string()));
+        assert!(tx.tags.contains(&"shopping".to_string()));
+        assert!(tx.tags_auto_applied);
+    }
+
+    // Verify non-matching transactions are untagged
+    let coffee_tx = repo
+        .get_transaction_by_id(&tx_ids[3].to_string())
+        .unwrap()
+        .unwrap();
+    assert!(coffee_tx.tags.is_empty(), "Coffee shop should have no tags");
+}
+
+/// Test that bulk_apply_tags_to_matching merges with existing tags
+#[test]
+fn test_bulk_apply_tags_additive() {
+    let temp_dir = TempDir::new().unwrap();
+    let repo = create_test_repo(&temp_dir);
+
+    let account = create_test_account("Additive Tag Test");
+    repo.upsert_account(&account).unwrap();
+
+    let date = NaiveDate::from_ymd_opt(2024, 6, 1).unwrap();
+    let mut tx = create_test_transaction(account.id, -1000, date);
+    tx.description = Some("Walmart groceries".to_string());
+    tx.tags = vec!["existing-tag".to_string()];
+    repo.upsert_transaction(&tx).unwrap();
+
+    // Apply new tags - should merge with existing
+    let modified = repo
+        .bulk_apply_tags_to_matching(
+            &[tx.id],
+            "description ILIKE '%walmart%'",
+            &["new-tag".to_string()],
+        )
+        .unwrap();
+
+    assert_eq!(modified.len(), 1);
+
+    let updated = repo
+        .get_transaction_by_id(&tx.id.to_string())
+        .unwrap()
+        .unwrap();
+    assert!(updated.tags.contains(&"existing-tag".to_string()), "Should keep existing tag");
+    assert!(updated.tags.contains(&"new-tag".to_string()), "Should add new tag");
+}
+
+/// Test apply_auto_tag_rules end-to-end with rules in the database
+#[test]
+fn test_apply_auto_tag_rules_bulk() {
+    let temp_dir = TempDir::new().unwrap();
+    let repo = create_test_repo(&temp_dir);
+
+    let account = create_test_account("Rule Test");
+    repo.upsert_account(&account).unwrap();
+
+    // Create an auto-tag rule via raw SQL
+    repo.execute_sql(
+        "INSERT INTO sys_transactions_rules (rule_id, name, sql_condition, tags, enabled, sort_order, created_at, updated_at)
+         VALUES ('rule1', 'Tag Groceries', 'description ILIKE ''%grocery%''', ['groceries'], true, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+    ).unwrap();
+
+    // Create transactions
+    let date = NaiveDate::from_ymd_opt(2024, 6, 1).unwrap();
+    let mut tx_ids = Vec::new();
+
+    for desc in &["Grocery store", "Gas station", "Grocery outlet"] {
+        let mut tx = create_test_transaction(account.id, -2000, date);
+        tx.description = Some(desc.to_string());
+        repo.upsert_transaction(&tx).unwrap();
+        tx_ids.push(tx.id);
+    }
+
+    // Apply auto-tag rules
+    let tag_service = TagService::new(repo.clone());
+    let result = tag_service.apply_auto_tag_rules(&tx_ids).unwrap();
+
+    assert_eq!(result.rules_evaluated, 1);
+    assert_eq!(result.rules_matched, 1);
+    assert_eq!(result.transactions_tagged, 2, "Should tag 2 grocery transactions");
+    assert!(result.failed_rules.is_empty());
 }

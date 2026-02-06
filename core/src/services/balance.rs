@@ -302,7 +302,7 @@ impl BalanceService {
         all_dates_sorted.sort_by(|a, b| b.cmp(a));
 
         let mut current_balance = known_balance;
-        let mut created = 0i64;
+        let mut snapshots_to_insert = Vec::new();
 
         for date in all_dates_sorted {
             let daily_total = daily_totals.get(&date).copied().unwrap_or(Decimal::ZERO);
@@ -317,7 +317,7 @@ impl BalanceService {
                     NaiveTime::from_hms_micro_opt(23, 59, 59, 999999).unwrap(),
                 );
 
-                let snapshot = BalanceSnapshot {
+                snapshots_to_insert.push(BalanceSnapshot {
                     id: Uuid::new_v4(),
                     account_id: account_uuid,
                     balance: current_balance,
@@ -325,14 +325,17 @@ impl BalanceService {
                     source: Some("backfill".to_string()),
                     created_at: Utc::now(),
                     updated_at: Utc::now(),
-                };
-                self.repository.add_balance_snapshot(&snapshot)?;
-                created += 1;
+                });
             }
 
             // Always update current_balance even if date is outside range
             current_balance -= daily_total;
         }
+
+        // Bulk insert all snapshots in a single connection+checkpoint
+        let created = self
+            .repository
+            .bulk_insert_balance_snapshots(&snapshots_to_insert)? as i64;
 
         Ok(BackfillExecuteResult {
             snapshots_created: created,

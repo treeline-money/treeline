@@ -258,38 +258,49 @@ fn get_db_path() -> Result<PathBuf, String> {
 
 /// Execute a SQL query using treeline-core
 /// All database access now goes through TreelineContext for unified connection management
+/// Uses spawn_blocking to avoid blocking the UI thread
 #[tauri::command]
-fn execute_query(
+async fn execute_query(
     query: String,
     readonly: Option<bool>, // Kept for API compatibility, but no longer used
-    encryption_state: State<EncryptionState>,
-    context_state: State<TreelineContextState>,
+    encryption_state: State<'_, EncryptionState>,
+    context_state: State<'_, TreelineContextState>,
 ) -> Result<String, String> {
     let _ = readonly; // Suppress unused warning - treeline-core handles read/write internally
 
     let key = get_encryption_key(&encryption_state)?;
-    let ctx_guard = get_or_create_context(&context_state, key)?;
-    let ctx = ctx_guard.as_ref().unwrap();
 
-    let result = ctx
-        .query_service
-        .execute_sql(&query)
-        .map_err(|e| format!("Failed to execute query: {}", e))?;
+    // Clone the shared repository Arc - drop the mutex guard before spawning
+    let repository = {
+        let ctx_guard = get_or_create_context(&context_state, key)?;
+        let ctx = ctx_guard.as_ref().unwrap();
+        ctx.repository.clone()
+    };
+    // Mutex guard dropped here - UI thread is free
 
-    serde_json::to_string(&result).map_err(|e| format!("Failed to serialize result: {}", e))
+    tauri::async_runtime::spawn_blocking(move || {
+        let query_service = treeline_core::services::QueryService::new(repository);
+        let result = query_service
+            .execute_sql(&query)
+            .map_err(|e| format!("Failed to execute query: {}", e))?;
+        serde_json::to_string(&result).map_err(|e| format!("Failed to serialize result: {}", e))
+    })
+    .await
+    .map_err(|e| format!("Task failed: {}", e))?
 }
 
 /// Execute a parameterized SQL query using treeline-core - SAFE from SQL injection
 /// Parameters are bound using ? placeholders
 /// If plugin_context is provided, validates query permissions before execution
+/// Uses spawn_blocking to avoid blocking the UI thread
 #[tauri::command]
-fn execute_query_with_params(
+async fn execute_query_with_params(
     query: String,
     params: Vec<serde_json::Value>,
     readonly: Option<bool>, // Kept for API compatibility, but no longer used
     plugin_context: Option<PluginContext>,
-    encryption_state: State<EncryptionState>,
-    context_state: State<TreelineContextState>,
+    encryption_state: State<'_, EncryptionState>,
+    context_state: State<'_, TreelineContextState>,
 ) -> Result<String, String> {
     let _ = readonly; // Suppress unused warning - treeline-core handles read/write internally
 
@@ -299,15 +310,24 @@ fn execute_query_with_params(
     }
 
     let key = get_encryption_key(&encryption_state)?;
-    let ctx_guard = get_or_create_context(&context_state, key)?;
-    let ctx = ctx_guard.as_ref().unwrap();
 
-    let result = ctx
-        .query_service
-        .execute_sql_with_params(&query, &params)
-        .map_err(|e| format!("Failed to execute query: {}", e))?;
+    // Clone the shared repository Arc - drop the mutex guard before spawning
+    let repository = {
+        let ctx_guard = get_or_create_context(&context_state, key)?;
+        let ctx = ctx_guard.as_ref().unwrap();
+        ctx.repository.clone()
+    };
+    // Mutex guard dropped here - UI thread is free
 
-    serde_json::to_string(&result).map_err(|e| format!("Failed to serialize result: {}", e))
+    tauri::async_runtime::spawn_blocking(move || {
+        let query_service = treeline_core::services::QueryService::new(repository);
+        let result = query_service
+            .execute_sql_with_params(&query, &params)
+            .map_err(|e| format!("Failed to execute query: {}", e))?;
+        serde_json::to_string(&result).map_err(|e| format!("Failed to serialize result: {}", e))
+    })
+    .await
+    .map_err(|e| format!("Task failed: {}", e))?
 }
 
 #[tauri::command]
@@ -1144,8 +1164,9 @@ async fn fetch_plugin_manifest(url: String, version: Option<String>) -> Result<S
 /// Preview CSV import using treeline-core ImportService
 /// Returns JSON with detected columns and preview transactions
 /// Format matches frontend ImportPreviewResult interface
+/// Uses spawn_blocking to avoid blocking the UI thread
 #[tauri::command]
-fn import_csv_preview(
+async fn import_csv_preview(
     file_path: String,
     account_id: String,
     date_column: Option<String>,
@@ -1160,86 +1181,99 @@ fn import_csv_preview(
     number_format: Option<String>,
     anchor_balance: Option<f64>,
     anchor_date: Option<String>,
-    encryption_state: State<EncryptionState>,
-    context_state: State<TreelineContextState>,
+    encryption_state: State<'_, EncryptionState>,
+    context_state: State<'_, TreelineContextState>,
 ) -> Result<String, String> {
     let key = get_encryption_key(&encryption_state)?;
-    let ctx_guard = get_or_create_context(&context_state, key)?;
-    let ctx = ctx_guard.as_ref().unwrap();
 
-    let mappings = ColumnMappings {
-        date: date_column.unwrap_or_else(|| "Date".to_string()),
-        amount: amount_column.unwrap_or_else(|| "Amount".to_string()),
-        description: description_column,
-        debit: debit_column,
-        credit: credit_column,
-        balance: balance_column,
+    // Clone the shared repository Arc - drop the mutex guard before spawning
+    let repository = {
+        let ctx_guard = get_or_create_context(&context_state, key)?;
+        let ctx = ctx_guard.as_ref().unwrap();
+        ctx.repository.clone()
     };
+    // Mutex guard dropped here - UI thread is free
+    let treeline_dir = get_treeline_dir()?;
 
-    let skip_rows_val = skip_rows.unwrap_or(0);
-    let number_format_val = number_format.unwrap_or_else(|| "us".to_string());
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let import_service =
+            treeline_core::services::ImportService::new(repository, treeline_dir);
 
-    // Parse anchor balance and date for preview balance calculation
-    let parsed_anchor_balance =
-        anchor_balance.map(|b| rust_decimal::Decimal::from_f64_retain(b).unwrap_or_default());
-    let parsed_anchor_date =
-        anchor_date.and_then(|d| chrono::NaiveDate::parse_from_str(&d, "%Y-%m-%d").ok());
+        let mappings = ColumnMappings {
+            date: date_column.unwrap_or_else(|| "Date".to_string()),
+            amount: amount_column.unwrap_or_else(|| "Amount".to_string()),
+            description: description_column,
+            debit: debit_column,
+            credit: credit_column,
+            balance: balance_column,
+        };
 
-    let options = ImportOptions {
-        flip_signs,
-        debit_negative,
-        skip_rows: skip_rows_val,
-        number_format: NumberFormat::from_str(&number_format_val),
-        anchor_balance: parsed_anchor_balance,
-        anchor_date: parsed_anchor_date,
-    };
+        let skip_rows_val = skip_rows.unwrap_or(0);
+        let number_format_val = number_format.unwrap_or_else(|| "us".to_string());
 
-    let result = ctx
-        .import_service
-        .import(
-            std::path::Path::new(&file_path),
-            &account_id,
-            &mappings,
-            &options,
-            true, // preview_only
-        )
-        .map_err(|e| e.to_string())?;
+        // Parse anchor balance and date for preview balance calculation
+        let parsed_anchor_balance =
+            anchor_balance.map(|b| rust_decimal::Decimal::from_f64_retain(b).unwrap_or_default());
+        let parsed_anchor_date =
+            anchor_date.and_then(|d| chrono::NaiveDate::parse_from_str(&d, "%Y-%m-%d").ok());
 
-    // Transform treeline-core ImportResult to frontend ImportPreviewResult format
-    // Frontend expects: { file, flip_signs, debit_negative, preview: [{date, description, amount, balance?}] }
-    let preview_transactions: Vec<serde_json::Value> = result
-        .transactions
-        .unwrap_or_default()
-        .into_iter()
-        .map(|tx| {
-            // Parse amount string to float
-            let amount: f64 = tx.amount.parse().unwrap_or(0.0);
-            // Parse balance string to float if present
-            let balance: Option<f64> = tx.balance.as_ref().and_then(|b| b.parse().ok());
-            serde_json::json!({
-                "date": tx.date,
-                "description": tx.description,
-                "amount": amount,
-                "balance": balance
+        let options = ImportOptions {
+            flip_signs,
+            debit_negative,
+            skip_rows: skip_rows_val,
+            number_format: NumberFormat::from_str(&number_format_val),
+            anchor_balance: parsed_anchor_balance,
+            anchor_date: parsed_anchor_date,
+        };
+
+        let result = import_service
+            .import(
+                std::path::Path::new(&file_path),
+                &account_id,
+                &mappings,
+                &options,
+                true, // preview_only
+            )
+            .map_err(|e| e.to_string())?;
+
+        // Transform treeline-core ImportResult to frontend ImportPreviewResult format
+        let preview_transactions: Vec<serde_json::Value> = result
+            .transactions
+            .unwrap_or_default()
+            .into_iter()
+            .map(|tx| {
+                let amount: f64 = tx.amount.parse().unwrap_or(0.0);
+                let balance: Option<f64> = tx.balance.as_ref().and_then(|b| b.parse().ok());
+                serde_json::json!({
+                    "date": tx.date,
+                    "description": tx.description,
+                    "amount": amount,
+                    "balance": balance
+                })
             })
-        })
-        .collect();
+            .collect();
 
-    let preview_result = serde_json::json!({
-        "file": file_path,
-        "flip_signs": flip_signs,
-        "debit_negative": debit_negative,
-        "skip_rows": skip_rows_val,
-        "number_format": number_format_val,
-        "preview": preview_transactions
-    });
+        let preview_result = serde_json::json!({
+            "file": file_path,
+            "flip_signs": flip_signs,
+            "debit_negative": debit_negative,
+            "skip_rows": skip_rows_val,
+            "number_format": number_format_val,
+            "preview": preview_transactions
+        });
 
-    serde_json::to_string(&preview_result).map_err(|e| e.to_string())
+        serde_json::to_string(&preview_result).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Task failed: {}", e))??;
+
+    Ok(result)
 }
 
 /// Execute CSV import using treeline-core ImportService
+/// Uses spawn_blocking to avoid blocking the UI thread
 #[tauri::command]
-fn import_csv_execute(
+async fn import_csv_execute(
     file_path: String,
     account_id: String,
     date_column: Option<String>,
@@ -1252,43 +1286,60 @@ fn import_csv_execute(
     debit_negative: bool,
     skip_rows: Option<u32>,
     number_format: Option<String>,
-    encryption_state: State<EncryptionState>,
-    context_state: State<TreelineContextState>,
+    encryption_state: State<'_, EncryptionState>,
+    context_state: State<'_, TreelineContextState>,
 ) -> Result<String, String> {
     let key = get_encryption_key(&encryption_state)?;
-    let ctx_guard = get_or_create_context(&context_state, key)?;
-    let ctx = ctx_guard.as_ref().unwrap();
 
-    let mappings = ColumnMappings {
-        date: date_column.unwrap_or_else(|| "Date".to_string()),
-        amount: amount_column.unwrap_or_else(|| "Amount".to_string()),
-        description: description_column,
-        debit: debit_column,
-        credit: credit_column,
-        balance: balance_column,
+    // Clone the shared repository Arc - drop the mutex guard before spawning
+    let repository = {
+        let ctx_guard = get_or_create_context(&context_state, key)?;
+        let ctx = ctx_guard.as_ref().unwrap();
+        ctx.repository.clone()
     };
+    // Mutex guard dropped here - UI thread is free
+    let treeline_dir = get_treeline_dir()?;
 
-    let options = ImportOptions {
-        flip_signs,
-        debit_negative,
-        skip_rows: skip_rows.unwrap_or(0),
-        number_format: NumberFormat::from_str(&number_format.unwrap_or_else(|| "us".to_string())),
-        anchor_balance: None, // Not used for execute
-        anchor_date: None,    // Not used for execute
-    };
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let import_service =
+            treeline_core::services::ImportService::new(repository, treeline_dir);
 
-    let result = ctx
-        .import_service
-        .import(
-            std::path::Path::new(&file_path),
-            &account_id,
-            &mappings,
-            &options,
-            false, // preview_only = false, actually execute
-        )
-        .map_err(|e| e.to_string())?;
+        let mappings = ColumnMappings {
+            date: date_column.unwrap_or_else(|| "Date".to_string()),
+            amount: amount_column.unwrap_or_else(|| "Amount".to_string()),
+            description: description_column,
+            debit: debit_column,
+            credit: credit_column,
+            balance: balance_column,
+        };
 
-    serde_json::to_string(&result).map_err(|e| e.to_string())
+        let options = ImportOptions {
+            flip_signs,
+            debit_negative,
+            skip_rows: skip_rows.unwrap_or(0),
+            number_format: NumberFormat::from_str(
+                &number_format.unwrap_or_else(|| "us".to_string()),
+            ),
+            anchor_balance: None, // Not used for execute
+            anchor_date: None,    // Not used for execute
+        };
+
+        let result = import_service
+            .import(
+                std::path::Path::new(&file_path),
+                &account_id,
+                &mappings,
+                &options,
+                false, // preview_only = false, actually execute
+            )
+            .map_err(|e| e.to_string())?;
+
+        serde_json::to_string(&result).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Task failed: {}", e))??;
+
+    Ok(result)
 }
 
 /// Open file picker dialog for CSV files
@@ -1481,90 +1532,102 @@ fn move_imported_file(file_path: String) -> Result<(), String> {
 
 /// Preview balance backfill - shows what snapshots would be created/updated
 /// Returns a list of calculated end-of-day balances without persisting them
+/// Uses spawn_blocking to avoid blocking the UI thread
 #[tauri::command]
-fn backfill_preview(
+async fn backfill_preview(
     account_id: String,
     known_balance: f64,
     known_date: String,
     start_date: Option<String>,
     end_date: Option<String>,
-    encryption_state: State<EncryptionState>,
-    context_state: State<TreelineContextState>,
+    encryption_state: State<'_, EncryptionState>,
+    context_state: State<'_, TreelineContextState>,
 ) -> Result<Vec<BalanceSnapshotPreview>, String> {
     use chrono::NaiveDate;
     use rust_decimal::Decimal;
 
     let key = get_encryption_key(&encryption_state)?;
-    let ctx_guard = get_or_create_context(&context_state, key)?;
-    let ctx = ctx_guard.as_ref().unwrap();
 
-    // Parse the known_date string to NaiveDate
+    // Clone the shared repository Arc - drop the mutex guard before spawning
+    let repository = {
+        let ctx_guard = get_or_create_context(&context_state, key)?;
+        let ctx = ctx_guard.as_ref().unwrap();
+        ctx.repository.clone()
+    };
+    // Mutex guard dropped here - UI thread is free
+
+    // Parse parameters before spawning (cheap, no I/O)
     let date = NaiveDate::parse_from_str(&known_date, "%Y-%m-%d")
         .map_err(|e| format!("Invalid date format: {}", e))?;
-
-    // Parse optional start_date
     let start = start_date
         .map(|s| NaiveDate::parse_from_str(&s, "%Y-%m-%d"))
         .transpose()
         .map_err(|e| format!("Invalid start_date format: {}", e))?;
-
-    // Parse optional end_date
     let end = end_date
         .map(|s| NaiveDate::parse_from_str(&s, "%Y-%m-%d"))
         .transpose()
         .map_err(|e| format!("Invalid end_date format: {}", e))?;
-
-    // Convert f64 to Decimal
     let balance =
         Decimal::try_from(known_balance).map_err(|e| format!("Invalid balance: {}", e))?;
 
-    ctx.balance_service
-        .backfill_preview(&account_id, balance, date, start, end)
-        .map_err(|e| e.to_string())
+    tauri::async_runtime::spawn_blocking(move || {
+        let balance_service = treeline_core::services::BalanceService::new(repository);
+        balance_service
+            .backfill_preview(&account_id, balance, date, start, end)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Task failed: {}", e))?
 }
 
 /// Execute balance backfill - creates/updates balance snapshots
 /// Replaces all existing snapshots in range with calculated values
+/// Uses spawn_blocking to avoid blocking the UI thread
 #[tauri::command]
-fn backfill_execute(
+async fn backfill_execute(
     account_id: String,
     known_balance: f64,
     known_date: String,
     start_date: Option<String>,
     end_date: Option<String>,
-    encryption_state: State<EncryptionState>,
-    context_state: State<TreelineContextState>,
+    encryption_state: State<'_, EncryptionState>,
+    context_state: State<'_, TreelineContextState>,
 ) -> Result<BackfillExecuteResult, String> {
     use chrono::NaiveDate;
     use rust_decimal::Decimal;
 
     let key = get_encryption_key(&encryption_state)?;
-    let ctx_guard = get_or_create_context(&context_state, key)?;
-    let ctx = ctx_guard.as_ref().unwrap();
 
-    // Parse the known_date string to NaiveDate
+    // Clone the shared repository Arc - drop the mutex guard before spawning
+    let repository = {
+        let ctx_guard = get_or_create_context(&context_state, key)?;
+        let ctx = ctx_guard.as_ref().unwrap();
+        ctx.repository.clone()
+    };
+    // Mutex guard dropped here - UI thread is free
+
+    // Parse parameters before spawning (cheap, no I/O)
     let date = NaiveDate::parse_from_str(&known_date, "%Y-%m-%d")
         .map_err(|e| format!("Invalid date format: {}", e))?;
-
-    // Parse optional start_date
     let start = start_date
         .map(|s| NaiveDate::parse_from_str(&s, "%Y-%m-%d"))
         .transpose()
         .map_err(|e| format!("Invalid start_date format: {}", e))?;
-
-    // Parse optional end_date
     let end = end_date
         .map(|s| NaiveDate::parse_from_str(&s, "%Y-%m-%d"))
         .transpose()
         .map_err(|e| format!("Invalid end_date format: {}", e))?;
-
-    // Convert f64 to Decimal
     let balance =
         Decimal::try_from(known_balance).map_err(|e| format!("Invalid balance: {}", e))?;
 
-    ctx.balance_service
-        .backfill_execute(&account_id, balance, date, start, end)
-        .map_err(|e| e.to_string())
+    tauri::async_runtime::spawn_blocking(move || {
+        let balance_service = treeline_core::services::BalanceService::new(repository);
+        balance_service
+            .backfill_execute(&account_id, balance, date, start, end)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Task failed: {}", e))?
 }
 
 /// Setup SimpleFIN integration using treeline-core SyncService

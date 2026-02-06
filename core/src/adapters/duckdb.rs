@@ -2111,6 +2111,81 @@ impl DuckDbRepository {
             Ok(result)
         })
     }
+    /// Apply tags to matching transactions in bulk (single connection).
+    ///
+    /// For each matching transaction, merges the new tags with existing tags (additive).
+    /// Sets tags_auto_applied = TRUE on all updated transactions.
+    /// Returns the set of transaction IDs that were actually modified.
+    pub fn bulk_apply_tags_to_matching(
+        &self,
+        tx_ids: &[Uuid],
+        sql_condition: &str,
+        tags: &[String],
+    ) -> Result<Vec<Uuid>> {
+        if tx_ids.is_empty() || tags.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        self.with_connection_write(|conn| {
+            // Build IN clause with UUIDs
+            let id_list: Vec<String> = tx_ids.iter().map(|id| format!("'{}'", id)).collect();
+            let in_clause = id_list.join(", ");
+
+            // Find matching transactions and their current tags
+            let sql = format!(
+                "SELECT transaction_id, CAST(tags AS VARCHAR) as tags FROM sys_transactions
+                 WHERE transaction_id IN ({})
+                 AND deleted_at IS NULL
+                 AND transaction_id IN (
+                     SELECT transaction_id FROM transactions
+                     WHERE transaction_id IN ({})
+                     AND ({})
+                 )",
+                in_clause, in_clause, sql_condition
+            );
+
+            let mut stmt = conn.prepare(&sql)?;
+            let rows: Vec<(String, String)> = stmt
+                .query_map([], |row| {
+                    let id_str: String = row.get(0)?;
+                    let tags_str: String = row.get(1)?;
+                    Ok((id_str, tags_str))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            let mut modified = Vec::new();
+
+            for (tx_id_str, existing_tags_str) in &rows {
+                let existing_tags = crate::adapters::duckdb::parse_duckdb_array(&existing_tags_str);
+
+                // Merge new tags (additive, no duplicates)
+                let mut merged = existing_tags.clone();
+                let mut changed = false;
+                for tag in tags {
+                    if !merged.contains(tag) {
+                        merged.push(tag.clone());
+                        changed = true;
+                    }
+                }
+
+                if changed {
+                    let tags_literal = format_tags_array(&merged);
+                    let update_sql = format!(
+                        "UPDATE sys_transactions SET tags = {}, tags_auto_applied = TRUE, updated_at = CURRENT_TIMESTAMP WHERE transaction_id = ?",
+                        tags_literal
+                    );
+                    conn.execute(&update_sql, params![tx_id_str])?;
+
+                    if let Ok(uuid) = Uuid::parse_str(tx_id_str) {
+                        modified.push(uuid);
+                    }
+                }
+            }
+
+            Ok(modified)
+        })
+    }
 }
 
 /// Query result structure

@@ -49,19 +49,28 @@ impl TagService {
         let mut transactions_tagged_set = std::collections::HashSet::new();
         let mut failed_rules = Vec::new();
 
-        // For each rule, find matching transactions and apply tags
+        // For each rule, find matching transactions and apply tags in bulk
+        // Each rule uses a single DB connection for both matching and updating
         for rule in &rules {
             // Skip rules with no tags to apply
             if rule.tags.is_empty() {
                 continue;
             }
 
-            // Find which transactions match this rule's condition
-            let matching_tx_ids = match self
-                .repository
-                .get_transactions_matching_rule(tx_ids, &rule.sql_condition)
-            {
-                Ok(ids) => ids,
+            // Find matching transactions and apply tags in a single DB connection
+            match self.repository.bulk_apply_tags_to_matching(
+                tx_ids,
+                &rule.sql_condition,
+                &rule.tags,
+            ) {
+                Ok(modified_ids) => {
+                    if !modified_ids.is_empty() {
+                        rules_matched += 1;
+                    }
+                    for id in modified_ids {
+                        transactions_tagged_set.insert(id);
+                    }
+                }
                 Err(e) => {
                     // Rule condition failed - record the failure and continue
                     // Sanitize error message to avoid leaking user data
@@ -71,37 +80,6 @@ impl TagService {
                         rule_name: rule.name.clone(),
                         error: sanitized_error,
                     });
-                    continue;
-                }
-            };
-
-            if matching_tx_ids.is_empty() {
-                continue;
-            }
-
-            rules_matched += 1;
-
-            // Apply tags to each matching transaction (additive)
-            for tx_id in &matching_tx_ids {
-                // Get existing tags
-                if let Some(tx) = self.repository.get_transaction_by_id(&tx_id.to_string())? {
-                    let mut tags = tx.tags;
-
-                    // Merge new tags (additive, no duplicates)
-                    let mut changed = false;
-                    for tag in &rule.tags {
-                        if !tags.contains(tag) {
-                            tags.push(tag.clone());
-                            changed = true;
-                        }
-                    }
-
-                    // Update if we added new tags (and mark as auto-applied)
-                    if changed {
-                        self.repository
-                            .update_transaction_tags_auto(&tx_id.to_string(), &tags)?;
-                        transactions_tagged_set.insert(*tx_id);
-                    }
                 }
             }
         }
