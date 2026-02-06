@@ -4,7 +4,7 @@ members = ["core", "cli"]
 exclude = ["desktop/src-tauri"]
 
 [workspace.package]
-version = "26.2.301"
+version = "0.0.0-dev"  # Dev placeholder - CI injects real CalVer at build time
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/treeline-money/treeline"
