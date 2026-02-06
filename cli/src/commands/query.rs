@@ -8,7 +8,7 @@ use comfy_table::{ContentArrangement, Table};
 
 use super::get_context;
 
-pub fn run(sql: Option<&str>, file: Option<&Path>, format: &str) -> Result<()> {
+pub fn run(sql: Option<&str>, file: Option<&Path>, format: &str, allow_writes: bool) -> Result<()> {
     // Get SQL from: argument, file, or stdin
     let sql_content = if let Some(sql) = sql {
         sql.to_string()
@@ -29,7 +29,12 @@ pub fn run(sql: Option<&str>, file: Option<&Path>, format: &str) -> Result<()> {
     };
 
     let ctx = get_context()?;
-    let result = ctx.query_service.execute(&sql_content)?;
+    let result = if allow_writes {
+        eprintln!("Warning: Write access enabled. Changes to the database are permanent.");
+        ctx.query_service.execute_sql(&sql_content)?
+    } else {
+        ctx.query_service.execute_readonly(&sql_content)?
+    };
 
     match format {
         "json" => {

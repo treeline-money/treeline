@@ -18,7 +18,7 @@ The CLI is bundled with the desktop app. After installing Treeline, run `tl` fro
 - `tl status` - Show account status and summary
 - `tl sync` - Sync accounts and transactions from integrations
 - `tl import` - Import transactions from a CSV file
-- `tl query` - Execute SQL query against the database
+- `tl query` (or `tl sql`) - Execute SQL query against the database
 - `tl tag` - Apply tags to transactions
 - `tl backup` - Manage backups
 - `tl compact` - Compact the database
@@ -106,6 +106,14 @@ Column mappings are auto-detected from CSV headers. Explicit flags override auto
 
 ### SQL Queries
 
+`tl sql` is an alias for `tl query` — use whichever you prefer.
+
+By default, queries run in **read-only mode** (the database is opened read-only). Use `--allow-writes` to enable write operations:
+
+```bash
+tl query "DELETE FROM transactions WHERE description = 'duplicate'" --allow-writes
+```
+
 Export to CSV:
 
 ```bash
@@ -115,10 +123,10 @@ tl query --format csv "SELECT * FROM transactions WHERE transaction_date >= '202
 Monthly summary:
 
 ```bash
-tl query "SELECT strftime('%Y-%m', transaction_date) as month,
-          SUM(CASE WHEN amount < 0 THEN amount ELSE 0 END) as spent,
-          SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as income
-          FROM transactions GROUP BY month ORDER BY month DESC LIMIT 6"
+tl sql "SELECT strftime('%Y-%m', transaction_date) as month,
+        SUM(CASE WHEN amount < 0 THEN amount ELSE 0 END) as spent,
+        SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as income
+        FROM transactions GROUP BY month ORDER BY month DESC LIMIT 6"
 ```
 
 ### Bulk Tagging

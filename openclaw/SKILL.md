@@ -164,7 +164,9 @@ The `tl` CLI can do more than just queries:
 tl status              # Quick account summary with balances
 tl status --json       # Same, but JSON output
 
-tl query "SQL" --json  # Run any SQL query
+tl query "SQL" --json  # Run any SQL query (read-only by default)
+tl sql "SQL" --json    # Same as tl query (alias)
+tl query "SQL" --allow-writes  # Enable write operations (INSERT, UPDATE, DELETE)
 
 tl sync                # Sync accounts/transactions from bank integrations
 tl sync --dry-run      # Preview what would sync
@@ -184,6 +186,8 @@ tl tag "groceries" --ids ID1,ID2  # Apply tags to transactions
 
 tl demo on|off         # Toggle demo mode (sample data)
 ```
+
+> **Note:** `tl query` and `tl sql` are identical — use whichever you prefer. The database is opened read-only by default. Use `--allow-writes` to enable write operations.
 
 **Use `tl status` for quick balance checks** — it's faster than a SQL query.
 

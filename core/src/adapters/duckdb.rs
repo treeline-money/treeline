@@ -141,17 +141,51 @@ impl DuckDbRepository {
         // _lock drops here (lock released)
     }
 
+    /// Execute a read-only operation with a DuckDB read-only connection.
+    ///
+    /// Unlike `with_connection`, this opens the database in READ_ONLY mode,
+    /// preventing any write operations at the database engine level.
+    fn with_readonly_connection<T, F>(&self, f: F) -> Result<T>
+    where
+        F: FnOnce(&Connection) -> Result<T>,
+    {
+        let _lock = self.acquire_lock()?;
+        let conn = Self::try_open_connection_with_mode(
+            &self.db_path,
+            self.encryption_key.as_deref(),
+            true,
+        )?;
+        f(&conn)
+    }
+
     /// Attempt to open a database connection (called by new() with retry logic)
     fn try_open_connection(db_path: &Path, encryption_key: Option<&str>) -> Result<Connection> {
+        Self::try_open_connection_with_mode(db_path, encryption_key, false)
+    }
+
+    /// Attempt to open a database connection with configurable access mode.
+    ///
+    /// When `read_only` is true, opens the database in DuckDB's READ_ONLY mode,
+    /// which prevents any write operations at the database engine level.
+    fn try_open_connection_with_mode(
+        db_path: &Path,
+        encryption_key: Option<&str>,
+        read_only: bool,
+    ) -> Result<Connection> {
         // IMPORTANT: Disable extension autoloading to avoid macOS code signing issues
         // (cached extensions in ~/.duckdb/extensions may have different Team IDs)
         let conn = if let Some(key) = encryption_key {
             // Encrypted database: open in-memory first, then ATTACH encrypted file
             let config = duckdb::Config::default().enable_autoload_extension(false)?;
             let conn = Connection::open_in_memory_with_flags(config)?;
+            let access_mode = if read_only {
+                ", ACCESS_MODE 'READ_ONLY'"
+            } else {
+                ""
+            };
             conn.execute(
                 &format!(
-                    "ATTACH '{}' AS main_db (ENCRYPTION_KEY '{}')",
+                    "ATTACH '{}' AS main_db (ENCRYPTION_KEY '{}'{access_mode})",
                     db_path.display(),
                     key
                 ),
@@ -160,7 +194,10 @@ impl DuckDbRepository {
             conn.execute("USE main_db", [])?;
             conn
         } else {
-            let config = duckdb::Config::default().enable_autoload_extension(false)?;
+            let mut config = duckdb::Config::default().enable_autoload_extension(false)?;
+            if read_only {
+                config = config.access_mode(duckdb::AccessMode::ReadOnly)?;
+            }
             Connection::open_with_flags(db_path, config)?
         };
 
@@ -1372,6 +1409,64 @@ impl DuckDbRepository {
                     .collect()
             } else {
                 // No rows, try to get column count from statement
+                let count = stmt.column_count();
+                (0..count)
+                    .map(|i| {
+                        stmt.column_name(i)
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|_| format!("col{}", i))
+                    })
+                    .collect()
+            };
+
+            let row_count = rows.len();
+
+            Ok(QueryResult {
+                columns,
+                rows,
+                row_count,
+            })
+        })
+    }
+
+    /// Execute a read-only SQL query using a DuckDB read-only connection.
+    ///
+    /// Enforces read-only at the DuckDB engine level -- any attempt to
+    /// execute a write statement will be rejected by DuckDB itself.
+    pub fn execute_query_readonly(&self, sql: &str) -> Result<QueryResult> {
+        validate_sql_syntax(sql)?;
+
+        self.with_readonly_connection(|conn| {
+            let mut stmt = conn.prepare(sql)?;
+            let mut result_rows = stmt.query([])?;
+
+            let mut rows: Vec<Vec<serde_json::Value>> = Vec::new();
+            let mut column_count = 0;
+
+            while let Some(row) = result_rows.next()? {
+                if rows.is_empty() {
+                    column_count = row.as_ref().column_count();
+                }
+
+                let mut row_values: Vec<serde_json::Value> = Vec::new();
+                for i in 0..column_count {
+                    let value = Self::get_column_value(row, i);
+                    row_values.push(value);
+                }
+                rows.push(row_values);
+            }
+
+            drop(result_rows);
+
+            let columns: Vec<String> = if column_count > 0 {
+                (0..column_count)
+                    .map(|i| {
+                        stmt.column_name(i)
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|_| format!("col{}", i))
+                    })
+                    .collect()
+            } else {
                 let count = stmt.column_count();
                 (0..count)
                     .map(|i| {
