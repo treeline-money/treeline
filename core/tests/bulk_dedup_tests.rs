@@ -631,6 +631,185 @@ fn test_lunchflow_rapid_sync_no_duplicates() {
 }
 
 // =============================================================================
+// Count-based CSV Fingerprint Deduplication Tests
+// =============================================================================
+
+#[test]
+fn test_csv_import_identical_rows_all_imported() {
+    // 3 identical CSV rows should all be imported on first import
+    let (_temp_dir, repo, treeline_dir) = setup_test_env();
+    let account_id = create_test_account(&repo, "Test Checking");
+
+    let import_service = ImportService::new(repo.clone(), treeline_dir.clone());
+
+    // CSV with 3 identical rows
+    let csv_content = r#"Date,Amount,Description
+2024-01-15,-25.50,Coffee Shop
+2024-01-15,-25.50,Coffee Shop
+2024-01-15,-25.50,Coffee Shop"#;
+
+    let csv_path = create_csv_file(&treeline_dir, "identical.csv", csv_content);
+
+    let mappings = ColumnMappings {
+        date: "Date".to_string(),
+        amount: "Amount".to_string(),
+        description: Some("Description".to_string()),
+        debit: None,
+        credit: None,
+        balance: None,
+    };
+    let options = ImportOptions::default();
+
+    let result = import_service
+        .import(&csv_path, &account_id.to_string(), &mappings, &options, false)
+        .expect("Import failed");
+
+    assert_eq!(result.imported, 3, "All 3 identical rows should be imported");
+
+    let count = repo.get_transaction_count().expect("Failed to get count");
+    assert_eq!(count, 3, "DB should have 3 transactions");
+}
+
+#[test]
+fn test_csv_import_reimport_after_delete() {
+    // Import 3 identical, delete 2, re-import → 2 re-added (3 total)
+    let (_temp_dir, repo, treeline_dir) = setup_test_env();
+    let account_id = create_test_account(&repo, "Test Checking");
+
+    let import_service = ImportService::new(repo.clone(), treeline_dir.clone());
+
+    let csv_content = r#"Date,Amount,Description
+2024-01-15,-25.50,Coffee Shop
+2024-01-15,-25.50,Coffee Shop
+2024-01-15,-25.50,Coffee Shop"#;
+
+    let csv_path = create_csv_file(&treeline_dir, "reimport.csv", csv_content);
+
+    let mappings = ColumnMappings {
+        date: "Date".to_string(),
+        amount: "Amount".to_string(),
+        description: Some("Description".to_string()),
+        debit: None,
+        credit: None,
+        balance: None,
+    };
+    let options = ImportOptions::default();
+
+    // First import: all 3
+    let result1 = import_service
+        .import(&csv_path, &account_id.to_string(), &mappings, &options, false)
+        .expect("First import failed");
+    assert_eq!(result1.imported, 3);
+
+    // Delete 2 of the 3 (keep 1)
+    // Use execute_sql to delete by LIMIT
+    repo.execute_sql(
+        "DELETE FROM sys_transactions WHERE transaction_id IN (SELECT transaction_id FROM sys_transactions ORDER BY transaction_id LIMIT 2)",
+    )
+    .expect("Delete failed");
+
+    let count_after_delete = repo.get_transaction_count().expect("Failed to get count");
+    assert_eq!(count_after_delete, 1, "Should have 1 remaining after deleting 2");
+
+    // Re-import same CSV: should add 2 back (csv has 3, db has 1 → import 2)
+    let result2 = import_service
+        .import(&csv_path, &account_id.to_string(), &mappings, &options, false)
+        .expect("Re-import failed");
+
+    assert_eq!(result2.imported, 2, "Should re-import 2 deleted transactions");
+    assert_eq!(result2.skipped, 1, "Should skip 1 that still exists");
+
+    let final_count = repo.get_transaction_count().expect("Failed to get count");
+    assert_eq!(final_count, 3, "Should have 3 total after re-import");
+}
+
+#[test]
+fn test_csv_import_reimport_no_delete() {
+    // Import 3 identical, re-import → 0 added (still 3)
+    let (_temp_dir, repo, treeline_dir) = setup_test_env();
+    let account_id = create_test_account(&repo, "Test Checking");
+
+    let import_service = ImportService::new(repo.clone(), treeline_dir.clone());
+
+    let csv_content = r#"Date,Amount,Description
+2024-01-15,-25.50,Coffee Shop
+2024-01-15,-25.50,Coffee Shop
+2024-01-15,-25.50,Coffee Shop"#;
+
+    let csv_path = create_csv_file(&treeline_dir, "no_delete.csv", csv_content);
+
+    let mappings = ColumnMappings {
+        date: "Date".to_string(),
+        amount: "Amount".to_string(),
+        description: Some("Description".to_string()),
+        debit: None,
+        credit: None,
+        balance: None,
+    };
+    let options = ImportOptions::default();
+
+    // First import
+    let result1 = import_service
+        .import(&csv_path, &account_id.to_string(), &mappings, &options, false)
+        .expect("First import failed");
+    assert_eq!(result1.imported, 3);
+
+    // Re-import without deleting anything
+    let result2 = import_service
+        .import(&csv_path, &account_id.to_string(), &mappings, &options, false)
+        .expect("Re-import failed");
+
+    assert_eq!(result2.imported, 0, "Should import 0 on re-import");
+    assert_eq!(result2.skipped, 3, "Should skip all 3 as duplicates");
+
+    let count = repo.get_transaction_count().expect("Failed to get count");
+    assert_eq!(count, 3, "Should still have 3 total");
+}
+
+#[test]
+fn test_csv_fingerprint_counts() {
+    // Test the get_csv_fingerprint_counts method directly
+    let (_temp_dir, repo, _treeline_dir) = setup_test_env();
+    let account_id = create_test_account(&repo, "Test Account");
+
+    // Insert transactions with duplicate fingerprints
+    let mut transactions: Vec<Transaction> = Vec::new();
+    for i in 0..3 {
+        let mut tx = Transaction::new(
+            Uuid::new_v4(),
+            account_id,
+            Decimal::new(100, 2),
+            NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
+        );
+        tx.csv_fingerprint = Some("same_fp".to_string());
+        tx.csv_batch_id = Some("batch_1".to_string());
+        tx.description = Some(format!("TX {}", i));
+        transactions.push(tx);
+    }
+
+    // Add one with a different fingerprint
+    let mut unique_tx = Transaction::new(
+        Uuid::new_v4(),
+        account_id,
+        Decimal::new(200, 2),
+        NaiveDate::from_ymd_opt(2024, 1, 2).unwrap(),
+    );
+    unique_tx.csv_fingerprint = Some("unique_fp".to_string());
+    unique_tx.csv_batch_id = Some("batch_1".to_string());
+    transactions.push(unique_tx);
+
+    repo.bulk_insert_transactions(&transactions).expect("Insert failed");
+
+    let counts = repo
+        .get_csv_fingerprint_counts(&["same_fp".to_string(), "unique_fp".to_string(), "missing_fp".to_string()])
+        .expect("Count query failed");
+
+    assert_eq!(counts.get("same_fp"), Some(&3), "same_fp should have count 3");
+    assert_eq!(counts.get("unique_fp"), Some(&1), "unique_fp should have count 1");
+    assert_eq!(counts.get("missing_fp"), None, "missing_fp should not be present");
+}
+
+// =============================================================================
 // Combined Provider Tests
 // =============================================================================
 

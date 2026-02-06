@@ -448,25 +448,51 @@ impl ImportService {
             });
         }
 
-        // Deduplicate: bulk check which fingerprints already exist (single DB query)
+        // Deduplicate using count-based logic:
+        // If CSV has 3 identical rows (same fingerprint) and DB has 1, import 2 more.
         let all_fingerprints: Vec<String> = transactions
             .iter()
             .filter_map(|tx| tx.csv_fingerprint.clone())
             .collect();
 
-        let existing_fingerprints = self
+        // Count how many times each fingerprint appears in this CSV batch
+        let mut csv_fingerprint_counts: HashMap<String, usize> = HashMap::new();
+        for fp in &all_fingerprints {
+            *csv_fingerprint_counts.entry(fp.clone()).or_insert(0) += 1;
+        }
+
+        // Get unique fingerprints for DB query
+        let unique_fingerprints: Vec<String> = csv_fingerprint_counts.keys().cloned().collect();
+
+        // Query DB for existing counts
+        let db_fingerprint_counts = self
             .repository
-            .get_existing_csv_fingerprints(&all_fingerprints)?;
+            .get_csv_fingerprint_counts(&unique_fingerprints)?;
+
+        // For each fingerprint, calculate how many we're allowed to import:
+        // allowed = max(0, csv_count - db_count)
+        let mut allowed_per_fp: HashMap<String, usize> = HashMap::new();
+        for (fp, csv_count) in &csv_fingerprint_counts {
+            let db_count = db_fingerprint_counts.get(fp).copied().unwrap_or(0);
+            let allowed = csv_count.saturating_sub(db_count);
+            allowed_per_fp.insert(fp.clone(), allowed);
+        }
+
+        // Track how many we've let through per fingerprint
+        let mut admitted_per_fp: HashMap<String, usize> = HashMap::new();
 
         let mut new_transactions = Vec::new();
         let mut duplicate_count = 0i64;
 
         for tx in transactions {
             if let Some(fp) = tx.csv_fingerprint.as_ref() {
-                if existing_fingerprints.contains(fp) {
+                let allowed = allowed_per_fp.get(fp).copied().unwrap_or(0);
+                let admitted = admitted_per_fp.entry(fp.clone()).or_insert(0);
+                if *admitted >= allowed {
                     duplicate_count += 1;
                     continue;
                 }
+                *admitted += 1;
             }
             new_transactions.push(tx);
         }

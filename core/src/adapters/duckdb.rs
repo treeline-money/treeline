@@ -951,6 +951,55 @@ impl DuckDbRepository {
         })
     }
 
+    /// Bulk count CSV fingerprints in the database (single connection)
+    ///
+    /// Returns a HashMap of fingerprint → count for fingerprints that exist.
+    /// Used for count-based deduplication: if a CSV has 3 identical rows and
+    /// the DB already has 1, we should import 2 more (not skip all 3).
+    pub fn get_csv_fingerprint_counts(
+        &self,
+        fingerprints: &[String],
+    ) -> Result<std::collections::HashMap<String, usize>> {
+        use std::collections::HashMap;
+
+        if fingerprints.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        self.with_connection(|conn| {
+            let mut counts = HashMap::new();
+
+            for chunk in fingerprints.chunks(500) {
+                let placeholders: Vec<&str> = chunk.iter().map(|_| "?").collect();
+                let sql = format!(
+                    "SELECT csv_fingerprint, COUNT(*) as cnt FROM sys_transactions WHERE csv_fingerprint IN ({}) GROUP BY csv_fingerprint",
+                    placeholders.join(", ")
+                );
+
+                let mut stmt = conn.prepare(&sql)?;
+
+                let params: Vec<&dyn duckdb::ToSql> = chunk
+                    .iter()
+                    .map(|s| s as &dyn duckdb::ToSql)
+                    .collect();
+
+                let rows = stmt.query_map(params.as_slice(), |row| {
+                    let fp: String = row.get(0)?;
+                    let count: i64 = row.get(1)?;
+                    Ok((fp, count as usize))
+                })?;
+
+                for row in rows {
+                    if let Ok((fp, count)) = row {
+                        *counts.entry(fp).or_insert(0) += count;
+                    }
+                }
+            }
+
+            Ok(counts)
+        })
+    }
+
     // === Bulk transaction operations ===
     // These methods use a single connection for multiple operations to avoid
     // the visibility gap between check and insert that causes duplicate transactions.
