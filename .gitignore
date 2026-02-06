@@ -5,6 +5,10 @@ target/
 # Node (for sdk and template)
 node_modules/
 
+# Build artifacts
+artifacts/
+desktop/dist/
+
 # IDEs
 .vscode/
 .idea/
