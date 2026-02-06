@@ -1,0 +1,218 @@
+name: App Smoke Test
+
+# Simulates a real user: downloads the latest release from GitHub and
+# verifies the app installs and launches without crashing on every platform.
+on:
+  # Run automatically after a new release is published
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+
+  # Daily at ~12pm Pacific (8pm UTC = 12pm PST / 1pm PDT)
+  schedule:
+    - cron: '0 20 * * *'
+
+  # Manual trigger
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to test (leave empty for latest release)'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  resolve-version:
+    name: Resolve Version
+    runs-on: ubuntu-latest
+    # Skip if triggered by a failed Release run
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      has_release: ${{ steps.version.outputs.has_release }}
+
+    steps:
+      - name: Get latest release version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION=$(gh release list --repo ${{ github.repository }} --limit 1 --json tagName --jq '.[0].tagName')
+          fi
+
+          if [ -z "$VERSION" ]; then
+            echo "::warning::No release found — nothing to test"
+            echo "has_release=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "has_release=true" >> $GITHUB_OUTPUT
+          echo "Testing version: $VERSION"
+
+  test-linux:
+    name: Smoke Test (Linux)
+    needs: resolve-version
+    if: needs.resolve-version.outputs.has_release == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Download AppImage from GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ needs.resolve-version.outputs.version }}"
+          echo "Downloading Treeline $VERSION for Linux..."
+          gh release download "$VERSION" \
+            --repo ${{ github.repository }} \
+            --pattern "*.AppImage" \
+            --dir .
+
+          APPIMAGE=$(ls *.AppImage | head -1)
+          echo "Downloaded: $APPIMAGE ($(du -h "$APPIMAGE" | cut -f1))"
+          echo "appimage=$APPIMAGE" >> "$GITHUB_ENV"
+
+      - name: Install runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libfuse2
+
+      - name: Launch and verify
+        run: |
+          chmod +x "$appimage"
+
+          echo "Starting Treeline with xvfb..."
+          xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" ./"$appimage" &
+          APP_PID=$!
+
+          # Give the app time to initialize (or crash)
+          sleep 15
+
+          if kill -0 $APP_PID 2>/dev/null; then
+            echo "✓ Treeline launched successfully on Linux (PID $APP_PID)"
+            kill $APP_PID 2>/dev/null || true
+            sleep 2
+            kill -9 $APP_PID 2>/dev/null || true
+          else
+            echo "✗ Treeline crashed or failed to start on Linux"
+            exit 1
+          fi
+
+  test-macos:
+    name: Smoke Test (macOS)
+    needs: resolve-version
+    if: needs.resolve-version.outputs.has_release == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Download DMG from GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ needs.resolve-version.outputs.version }}"
+          echo "Downloading Treeline $VERSION for macOS..."
+          gh release download "$VERSION" \
+            --repo ${{ github.repository }} \
+            --pattern "*.dmg" \
+            --dir .
+
+          DMG=$(ls *.dmg | head -1)
+          echo "Downloaded: $DMG ($(du -h "$DMG" | cut -f1))"
+          echo "dmg=$DMG" >> "$GITHUB_ENV"
+
+      - name: Install and launch
+        run: |
+          echo "Mounting DMG..."
+          hdiutil attach "$dmg" -nobrowse -noverify
+
+          echo "Copying app to /Applications..."
+          cp -R /Volumes/Treeline/Treeline.app /Applications/
+
+          echo "Unmounting DMG..."
+          hdiutil detach /Volumes/Treeline
+
+          # Clear quarantine (simulates user clicking "Open" on first launch)
+          xattr -cr /Applications/Treeline.app
+
+          echo "Launching Treeline..."
+          open /Applications/Treeline.app
+
+          # Give the app time to initialize (or crash)
+          sleep 15
+
+          if pgrep -x "Treeline" > /dev/null; then
+            echo "✓ Treeline launched successfully on macOS (PID $(pgrep -x Treeline))"
+            pkill -x "Treeline" || true
+          else
+            echo "✗ Treeline is not running on macOS"
+            exit 1
+          fi
+
+  test-windows:
+    name: Smoke Test (Windows)
+    needs: resolve-version
+    if: needs.resolve-version.outputs.has_release == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Download installer from GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $VERSION = "${{ needs.resolve-version.outputs.version }}"
+          Write-Output "Downloading Treeline $VERSION for Windows..."
+          gh release download $VERSION `
+            --repo ${{ github.repository }} `
+            --pattern "*-setup.exe" `
+            --dir .
+
+          $installer = (Get-ChildItem -Filter "*-setup.exe" | Select-Object -First 1).Name
+          Write-Output "Downloaded: $installer ($([math]::Round((Get-Item $installer).Length / 1MB, 1)) MB)"
+          echo "installer=$installer" >> $env:GITHUB_ENV
+
+      - name: Install silently
+        shell: pwsh
+        run: |
+          Write-Output "Running silent install..."
+          $proc = Start-Process -FilePath ".\$env:installer" -ArgumentList "/S" -Wait -PassThru
+          Write-Output "Installer exited with code: $($proc.ExitCode)"
+
+          # Tauri NSIS installs to $LOCALAPPDATA\<productName>
+          $exePath = "$env:LOCALAPPDATA\Treeline\Treeline.exe"
+
+          if (-not (Test-Path $exePath)) {
+            Write-Error "Treeline.exe not found at $exePath"
+            Get-ChildItem "$env:LOCALAPPDATA" -Filter "Treeline*" -Recurse -ErrorAction SilentlyContinue | Format-Table FullName
+            exit 1
+          }
+
+          Write-Output "Found: $exePath"
+          echo "exe_path=$exePath" >> $env:GITHUB_ENV
+
+      - name: Launch and verify
+        shell: pwsh
+        run: |
+          Write-Output "Launching Treeline..."
+          Start-Process -FilePath $env:exe_path
+
+          # Give the app time to initialize (or crash)
+          Start-Sleep -Seconds 20
+
+          $process = Get-Process -Name "Treeline" -ErrorAction SilentlyContinue
+          if ($process) {
+            Write-Output "✓ Treeline launched successfully on Windows (PID $($process.Id))"
+            Stop-Process -Name "Treeline" -Force -ErrorAction SilentlyContinue
+          } else {
+            Write-Error "✗ Treeline is not running on Windows"
+            exit 1
+          }
