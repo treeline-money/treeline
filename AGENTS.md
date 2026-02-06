@@ -191,7 +191,7 @@ The CLI (`tl`) provides command-line access to core functionality:
 - `tl status` - Account summary
 - `tl sync` - Sync from integrations
 - `tl import` - Import transactions from CSV
-- `tl query <sql>` - Execute SQL
+- `tl query <sql>` (or `tl sql`) - Execute SQL (read-only by default, `--allow-writes` for writes)
 - `tl plugin` - Manage plugins
 - `tl backup` - Backup/restore
 
