@@ -77,14 +77,6 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            . -> target
-            desktop/src-tauri -> target
-          shared-key: "ci"
-
       - name: Install Linux dependencies
         run: |
           sudo apt-get update
