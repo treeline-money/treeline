@@ -101,6 +101,7 @@ enum Commands {
     },
 
     /// Execute SQL query against the database
+    #[command(alias = "sql")]
     Query {
         /// SQL query to execute
         sql: Option<String>,
@@ -113,6 +114,9 @@ enum Commands {
         /// Output as JSON (shorthand for --format json)
         #[arg(long)]
         json: bool,
+        /// Allow write operations (INSERT, UPDATE, DELETE, etc). Without this flag, the database is opened read-only.
+        #[arg(long)]
+        allow_writes: bool,
     },
 
     /// Apply tags to transactions
@@ -289,9 +293,10 @@ fn run(cli: Cli) -> Result<()> {
             file,
             format,
             json,
+            allow_writes,
         } => {
             let fmt = if json { "json".to_string() } else { format };
-            query::run(sql.as_deref(), file.as_deref(), &fmt)
+            query::run(sql.as_deref(), file.as_deref(), &fmt, allow_writes)
         }
         Commands::Tag {
             tags,
