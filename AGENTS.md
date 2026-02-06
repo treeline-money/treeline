@@ -180,17 +180,22 @@ See `desktop/AGENTS.md` for detailed UI development guidelines.
 `treeline-core` provides:
 - Database adapters (DuckDB)
 - Integration adapters (SimpleFIN)
-- Services (sync, backup, encryption, plugins)
+- Services (sync, backup, encryption, import, plugins)
 - Domain models (Account, Transaction)
+
+**Hexagonal architecture:** The layers are adapters → services → domain. Consumers (CLI, desktop) must only call services, never adapters/repository directly. `TreelineContext` exposes services (`ctx.import_service`, `ctx.sync_service`, etc.) as the public API. If you need new functionality, add it to the appropriate service — don't reach into `ctx.repository` from the CLI or desktop.
 
 ### CLI
 
 The CLI (`tl`) provides command-line access to core functionality:
 - `tl status` - Account summary
 - `tl sync` - Sync from integrations
+- `tl import` - Import transactions from CSV
 - `tl query <sql>` - Execute SQL
 - `tl plugin` - Manage plugins
 - `tl backup` - Backup/restore
+
+**CLI commands are thin wrappers.** Each command handles argument parsing, output formatting, and logging. All business logic belongs in core services. CLI commands must never call `ctx.repository` directly — always go through a service.
 
 ## Logging
 
