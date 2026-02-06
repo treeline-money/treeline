@@ -16,8 +16,8 @@ metadata: {"clawdbot":{"emoji":"🌲"}}
 ## Quick Start
 
 ```bash
-# 1. Install the CLI
-curl -fsSL https://treeline.money/install.sh | sh
+# 1. Install the CLI (script is bundled with this skill)
+sh ./install.sh
 source ~/.zshrc  # or restart terminal
 
 # 2. Enable demo mode (sample data)
@@ -31,20 +31,22 @@ tl status
 
 ## First Time Setup
 
-> **For agents:** If `tl` commands fail with "command not found", guide the user through installation. Start with demo mode so they can try queries immediately.
+> **For agents:** If `tl` commands fail with "command not found", guide the user through installation using the bundled install scripts. Start with demo mode so they can try queries immediately.
 >
 > **Important:** Never run installation or setup commands without asking the user first. Present the command and wait for confirmation before executing.
 
 ### Installing the CLI
 
+The install scripts are bundled with this skill. They download the latest CLI binary from GitHub releases and add it to your PATH.
+
 Mac/Linux:
 ```bash
-curl -fsSL https://treeline.money/install.sh | sh
+sh ./install.sh
 ```
 
 Windows (PowerShell):
 ```powershell
-irm https://treeline.money/install.ps1 | iex
+.\install.ps1
 ```
 
 Verify with `tl --version`.
