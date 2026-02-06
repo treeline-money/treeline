@@ -635,6 +635,207 @@ fn test_lunchflow_rapid_sync_no_duplicates() {
 // =============================================================================
 
 #[test]
+fn test_get_existing_csv_fingerprints() {
+    let (_temp_dir, repo, _treeline_dir) = setup_test_env();
+    let account_id = create_test_account(&repo, "Test Account");
+
+    // Insert some transactions with csv_fingerprints
+    let mut transactions: Vec<Transaction> = Vec::new();
+    for i in 0..10 {
+        let mut tx = Transaction::new(
+            Uuid::new_v4(),
+            account_id,
+            Decimal::new(100, 2),
+            NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
+        );
+        tx.csv_fingerprint = Some(format!("existing_fp_{}", i));
+        tx.csv_batch_id = Some("batch_1".to_string());
+        transactions.push(tx);
+    }
+    repo.bulk_insert_transactions(&transactions)
+        .expect("Insert failed");
+
+    // Query for a mix of existing and non-existing fingerprints
+    let query_fps: Vec<String> = (0..15)
+        .map(|i| {
+            if i < 10 {
+                format!("existing_fp_{}", i) // These exist
+            } else {
+                format!("new_fp_{}", i) // These don't exist
+            }
+        })
+        .collect();
+
+    let existing = repo
+        .get_existing_csv_fingerprints(&query_fps)
+        .expect("Query failed");
+
+    assert_eq!(existing.len(), 10, "Should find 10 existing fingerprints");
+
+    // Verify the right ones are found
+    for i in 0..10 {
+        assert!(
+            existing.contains(&format!("existing_fp_{}", i)),
+            "Should contain existing_fp_{}",
+            i
+        );
+    }
+    for i in 10..15 {
+        assert!(
+            !existing.contains(&format!("new_fp_{}", i)),
+            "Should NOT contain new_fp_{}",
+            i
+        );
+    }
+
+    // Test with empty input
+    let empty_result = repo
+        .get_existing_csv_fingerprints(&[])
+        .expect("Empty query failed");
+    assert_eq!(empty_result.len(), 0);
+}
+
+#[test]
+fn test_get_existing_csv_fingerprints_large_batch() {
+    // Test the chunking logic (chunks of 500)
+    let (_temp_dir, repo, _treeline_dir) = setup_test_env();
+    let account_id = create_test_account(&repo, "Test Account");
+
+    // Insert 600 transactions with fingerprints (crosses the 500-chunk boundary)
+    let mut transactions: Vec<Transaction> = Vec::new();
+    for i in 0..600 {
+        let mut tx = Transaction::new(
+            Uuid::new_v4(),
+            account_id,
+            Decimal::new((i + 1) * 10, 2),
+            NaiveDate::from_ymd_opt(2024, 1, 1).unwrap()
+                + chrono::Duration::days(i % 365),
+        );
+        tx.csv_fingerprint = Some(format!("fp_{:04}", i));
+        tx.csv_batch_id = Some("batch_large".to_string());
+        transactions.push(tx);
+    }
+    repo.bulk_insert_transactions(&transactions)
+        .expect("Insert failed");
+
+    // Query all 600 plus 100 new ones
+    let query_fps: Vec<String> = (0..700)
+        .map(|i| format!("fp_{:04}", i))
+        .collect();
+
+    let existing = repo
+        .get_existing_csv_fingerprints(&query_fps)
+        .expect("Query failed");
+
+    assert_eq!(
+        existing.len(),
+        600,
+        "Should find all 600 existing fingerprints across chunk boundary"
+    );
+}
+
+#[test]
+fn test_bulk_insert_balance_snapshots() {
+    use treeline_core::domain::BalanceSnapshot;
+
+    let (_temp_dir, repo, _treeline_dir) = setup_test_env();
+    let account_id = create_test_account(&repo, "Test Account");
+
+    // Create balance snapshots for 30 days
+    let mut snapshots: Vec<BalanceSnapshot> = Vec::new();
+    for i in 0..30 {
+        let date = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap()
+            + chrono::Duration::days(i);
+        let snapshot_time = chrono::NaiveDateTime::new(
+            date,
+            chrono::NaiveTime::from_hms_micro_opt(23, 59, 59, 999999).unwrap(),
+        );
+        snapshots.push(BalanceSnapshot {
+            id: Uuid::new_v4(),
+            account_id,
+            balance: Decimal::new(100000 + i * 100, 2), // $1000 + $1/day
+            snapshot_time,
+            source: Some("csv_import".to_string()),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        });
+    }
+
+    // Bulk insert
+    let count = repo
+        .bulk_insert_balance_snapshots(&snapshots)
+        .expect("Bulk snapshot insert failed");
+    assert_eq!(count, 30, "Should insert 30 snapshots");
+
+    // Verify they exist
+    let stored = repo
+        .get_balance_snapshots(Some(&account_id.to_string()))
+        .expect("Get snapshots failed");
+    assert_eq!(stored.len(), 30, "Should have 30 snapshots stored");
+
+    // Test with empty input
+    let empty_count = repo
+        .bulk_insert_balance_snapshots(&[])
+        .expect("Empty insert failed");
+    assert_eq!(empty_count, 0);
+}
+
+#[test]
+fn test_csv_import_with_balance_column() {
+    let (_temp_dir, repo, treeline_dir) = setup_test_env();
+    let account_id = create_test_account(&repo, "Test Checking");
+
+    let import_service = ImportService::new(repo.clone(), treeline_dir.clone());
+
+    // CSV with a balance column
+    let csv_content = r#"Date,Amount,Description,Balance
+2024-01-15,100.00,Paycheck,1100.00
+2024-01-16,-25.50,Grocery Store,1074.50
+2024-01-17,-15.00,Coffee Shop,1059.50
+2024-01-18,50.00,Refund,1109.50
+2024-01-19,-200.00,Rent Payment,909.50"#;
+
+    let csv_path = create_csv_file(&treeline_dir, "balance_import.csv", csv_content);
+
+    let mappings = ColumnMappings {
+        date: "Date".to_string(),
+        amount: "Amount".to_string(),
+        description: Some("Description".to_string()),
+        debit: None,
+        credit: None,
+        balance: Some("Balance".to_string()),
+    };
+    let options = ImportOptions::default();
+
+    let result = import_service
+        .import(
+            &csv_path,
+            &account_id.to_string(),
+            &mappings,
+            &options,
+            false,
+        )
+        .expect("Import with balance column failed");
+
+    assert_eq!(result.imported, 5, "Should import 5 transactions");
+    assert!(
+        result.balance_snapshots_created > 0,
+        "Should create balance snapshots (got {})",
+        result.balance_snapshots_created
+    );
+
+    // Verify snapshots were stored
+    let snapshots = repo
+        .get_balance_snapshots(Some(&account_id.to_string()))
+        .expect("Get snapshots failed");
+    assert_eq!(
+        snapshots.len() as i64,
+        result.balance_snapshots_created,
+        "Stored snapshot count should match result"
+    );
+}
+
+#[test]
 fn test_multiple_providers_no_cross_contamination() {
     // Test that transactions from different providers don't interfere
     let (_temp_dir, repo, _treeline_dir) = setup_test_env();
