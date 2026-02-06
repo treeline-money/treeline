@@ -586,7 +586,7 @@ impl ImportService {
             ImportProfile {
                 column_mappings: mappings.clone(),
                 date_format: None,
-                skip_rows: 0,
+                skip_rows: options.skip_rows as usize,
                 options: ConfigImportOptions {
                     flip_signs: options.flip_signs,
                     debit_negative: options.debit_negative,

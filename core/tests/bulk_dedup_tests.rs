@@ -631,6 +631,41 @@ fn test_lunchflow_rapid_sync_no_duplicates() {
 }
 
 // =============================================================================
+// Import Profile Persistence Tests
+// =============================================================================
+
+#[test]
+fn test_save_profile_preserves_skip_rows() {
+    let (_temp_dir, repo, treeline_dir) = setup_test_env();
+    let import_service = ImportService::new(repo.clone(), treeline_dir.clone());
+
+    let mappings = ColumnMappings {
+        date: "Date".to_string(),
+        amount: "Amount".to_string(),
+        description: Some("Description".to_string()),
+        debit: None,
+        credit: None,
+        balance: None,
+    };
+
+    let options = ImportOptions {
+        skip_rows: 3,
+        ..ImportOptions::default()
+    };
+
+    import_service
+        .save_profile("test_profile", &mappings, &options)
+        .expect("Save profile failed");
+
+    let profile = import_service
+        .get_profile("test_profile")
+        .expect("Get profile failed")
+        .expect("Profile not found");
+
+    assert_eq!(profile.skip_rows, 3, "skip_rows should be preserved as 3");
+}
+
+// =============================================================================
 // Count-based CSV Fingerprint Deduplication Tests
 // =============================================================================
 
