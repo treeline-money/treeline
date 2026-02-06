@@ -563,12 +563,10 @@ impl ImportService {
             }
 
             // Bulk insert all snapshots in a single connection+checkpoint
-            if let Ok(count) = self
+            let count = self
                 .repository
-                .bulk_insert_balance_snapshots(&snapshots_to_insert)
-            {
-                balance_snapshots_created = count as i64;
-            }
+                .bulk_insert_balance_snapshots(&snapshots_to_insert)?;
+            balance_snapshots_created = count as i64;
         }
 
         Ok(ImportResult {
