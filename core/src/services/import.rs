@@ -448,17 +448,22 @@ impl ImportService {
             });
         }
 
-        // Deduplicate: check which fingerprints already exist in csv_fingerprint column
+        // Deduplicate: bulk check which fingerprints already exist (single DB query)
+        let all_fingerprints: Vec<String> = transactions
+            .iter()
+            .filter_map(|tx| tx.csv_fingerprint.clone())
+            .collect();
+
+        let existing_fingerprints = self
+            .repository
+            .get_existing_csv_fingerprints(&all_fingerprints)?;
+
         let mut new_transactions = Vec::new();
         let mut duplicate_count = 0i64;
 
         for tx in transactions {
             if let Some(fp) = tx.csv_fingerprint.as_ref() {
-                // Check csv_fingerprint column for existing transactions
-                if self
-                    .repository
-                    .csv_fingerprint_exists_in_other_batches(fp, "")?
-                {
+                if existing_fingerprints.contains(fp) {
                     duplicate_count += 1;
                     continue;
                 }
@@ -486,12 +491,13 @@ impl ImportService {
             let _ = self.tag_service.apply_auto_tag_rules(&new_tx_ids);
         }
 
-        // Create balance snapshots from collected end-of-day balances
+        // Create balance snapshots from collected end-of-day balances (single DB operation)
         let mut balance_snapshots_created = 0i64;
         if !end_of_day_balances.is_empty() {
-            // Get existing snapshots for deduplication
+            // Get existing snapshots for deduplication (single query)
             let existing_snapshots = self.repository.get_balance_snapshots(Some(account_id))?;
 
+            let mut snapshots_to_insert = Vec::new();
             for (date, balance) in &end_of_day_balances {
                 // Create end-of-day timestamp (23:59:59.999999)
                 let snapshot_time = NaiveDateTime::new(
@@ -509,7 +515,7 @@ impl ImportService {
                     continue;
                 }
 
-                let snapshot = BalanceSnapshot {
+                snapshots_to_insert.push(BalanceSnapshot {
                     id: Uuid::new_v4(),
                     account_id: account_uuid,
                     balance: *balance,
@@ -517,12 +523,15 @@ impl ImportService {
                     source: Some("csv_import".to_string()),
                     created_at: Utc::now(),
                     updated_at: Utc::now(),
-                };
+                });
+            }
 
-                // Best-effort - don't fail import if snapshot insert fails
-                if self.repository.add_balance_snapshot(&snapshot).is_ok() {
-                    balance_snapshots_created += 1;
-                }
+            // Bulk insert all snapshots in a single connection+checkpoint
+            if let Ok(count) = self
+                .repository
+                .bulk_insert_balance_snapshots(&snapshots_to_insert)
+            {
+                balance_snapshots_created = count as i64;
             }
         }
 

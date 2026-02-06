@@ -870,6 +870,54 @@ impl DuckDbRepository {
         })
     }
 
+    /// Bulk check which CSV fingerprints already exist in the database (single connection)
+    ///
+    /// Returns a HashSet of fingerprints that already exist.
+    /// Used for bulk deduplication during CSV import instead of per-row queries.
+    pub fn get_existing_csv_fingerprints(
+        &self,
+        fingerprints: &[String],
+    ) -> Result<std::collections::HashSet<String>> {
+        use std::collections::HashSet;
+
+        if fingerprints.is_empty() {
+            return Ok(HashSet::new());
+        }
+
+        self.with_connection(|conn| {
+            // DuckDB has a parameter limit; process in chunks to stay safe
+            let mut existing = HashSet::new();
+
+            for chunk in fingerprints.chunks(500) {
+                let placeholders: Vec<&str> = chunk.iter().map(|_| "?").collect();
+                let sql = format!(
+                    "SELECT DISTINCT csv_fingerprint FROM sys_transactions WHERE csv_fingerprint IN ({})",
+                    placeholders.join(", ")
+                );
+
+                let mut stmt = conn.prepare(&sql)?;
+
+                let params: Vec<&dyn duckdb::ToSql> = chunk
+                    .iter()
+                    .map(|s| s as &dyn duckdb::ToSql)
+                    .collect();
+
+                let rows = stmt.query_map(params.as_slice(), |row| {
+                    let fp: String = row.get(0)?;
+                    Ok(fp)
+                })?;
+
+                for row in rows {
+                    if let Ok(fp) = row {
+                        existing.insert(fp);
+                    }
+                }
+            }
+
+            Ok(existing)
+        })
+    }
+
     // === Bulk transaction operations ===
     // These methods use a single connection for multiple operations to avoid
     // the visibility gap between check and insert that causes duplicate transactions.
@@ -1120,6 +1168,38 @@ impl DuckDbRepository {
                 ],
             )?;
             Ok(())
+        })
+    }
+
+    /// Bulk insert balance snapshots in a single connection+checkpoint.
+    ///
+    /// Returns the number of snapshots inserted.
+    pub fn bulk_insert_balance_snapshots(&self, snapshots: &[BalanceSnapshot]) -> Result<usize> {
+        if snapshots.is_empty() {
+            return Ok(0);
+        }
+
+        self.with_connection_write(|conn| {
+            let mut count = 0;
+            for snapshot in snapshots {
+                let rows_changed = conn.execute(
+                    "INSERT INTO sys_balance_snapshots (snapshot_id, account_id, balance, snapshot_time, source, created_at, updated_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    params![
+                        snapshot.id.to_string(),
+                        snapshot.account_id.to_string(),
+                        snapshot.balance.to_string().parse::<f64>().unwrap_or(0.0),
+                        snapshot.snapshot_time.to_string(),
+                        snapshot.source.as_ref().map(|s| s.to_string()),
+                        snapshot.created_at.to_rfc3339(),
+                        snapshot.updated_at.to_rfc3339(),
+                    ],
+                )?;
+                if rows_changed > 0 {
+                    count += 1;
+                }
+            }
+            Ok(count)
         })
     }
 
