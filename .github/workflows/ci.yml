@@ -59,9 +59,32 @@ jobs:
           echo "Generated version: $VERSION (release $RUN for today)"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-  # Run tests (always runs)
-  test:
-    name: Tests
+  # Core + CLI tests (no GUI deps needed)
+  test-core-cli:
+    name: Test Core + CLI
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Get cache key
+        id: cache-key
+        run: echo "week=$(date -u +%Y-%W)" >> $GITHUB_OUTPUT
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "ci-core-${{ steps.cache-key.outputs.week }}"
+
+      - name: Run tests
+        run: cargo test
+
+  # Desktop tests (needs GUI deps + frontend build)
+  test-desktop:
+    name: Test Desktop
     runs-on: ubuntu-latest
 
     steps:
@@ -89,10 +112,8 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: |
-            . -> target
-            desktop/src-tauri -> target
-          prefix-key: "ci-${{ steps.cache-key.outputs.week }}"
+          workspaces: "desktop/src-tauri -> target"
+          prefix-key: "ci-desktop-${{ steps.cache-key.outputs.week }}"
 
       - name: Install Linux dependencies
         run: |
@@ -111,10 +132,7 @@ jobs:
         working-directory: desktop
         run: npm run build
 
-      - name: Run Rust tests (core + cli)
-        run: cargo test
-
-      - name: Run Rust tests (desktop)
+      - name: Run tests
         working-directory: desktop/src-tauri
         run: cargo test
 
@@ -122,7 +140,7 @@ jobs:
   build-desktop:
     name: Build Desktop (${{ matrix.os }})
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [version, test]
+    needs: [version, test-core-cli, test-desktop]
     strategy:
       fail-fast: false
       matrix:
@@ -356,7 +374,7 @@ jobs:
   build-cli:
     name: Build CLI (${{ matrix.os }})
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [version, test]
+    needs: [version, test-core-cli, test-desktop]
     strategy:
       fail-fast: false
       matrix:
@@ -455,7 +473,7 @@ jobs:
   pack-sdk:
     name: Pack SDK
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [version, test]
+    needs: [version, test-core-cli, test-desktop]
     runs-on: ubuntu-latest
 
     steps:
