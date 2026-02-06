@@ -77,6 +77,18 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Get cache key
+        id: cache-key
+        run: echo "week=$(date -u +%Y-%W)" >> $GITHUB_OUTPUT
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            desktop/src-tauri -> target
+          prefix-key: "ci-${{ steps.cache-key.outputs.week }}"
+
       - name: Install Linux dependencies
         run: |
           sudo apt-get update
