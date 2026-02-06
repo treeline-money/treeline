@@ -334,7 +334,7 @@ jobs:
           cd artifacts/sdk-npm-package
           npm publish *.tgz --access public --provenance
 
-      - name: Update OpenClaw skill version and sync install scripts
+      - name: Update OpenClaw skill version
         run: |
           VERSION="${{ steps.version.outputs.version }}"
 
@@ -343,11 +343,6 @@ jobs:
 
           echo "Updated OpenClaw skill to version $VERSION"
           grep "^version:" openclaw/SKILL.md
-
-          # Ensure install scripts are present (source of truth: treeline.money repo)
-          # These are bundled with the skill so VT scans them instead of seeing curl|sh
-          echo "Verifying install scripts are bundled..."
-          ls -la openclaw/install.sh openclaw/install.ps1
 
       - name: Publish OpenClaw skill to ClawHub
         continue-on-error: true

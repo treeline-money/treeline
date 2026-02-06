@@ -4,7 +4,7 @@ description: Chat with your finances from Treeline Money. Query balances, spendi
 version: 0.0.6
 user-invocable: true
 homepage: https://treeline.money
-metadata: {"clawdbot":{"emoji":"🌲"}}
+metadata: {"clawdbot":{"emoji":"🌲","requires":{"bins":["tl"]},"install":[{"id":"tl-mac","kind":"download","url":"https://github.com/treeline-money/treeline/releases/latest/download/tl-macos-arm64","bins":["tl"],"label":"Install Treeline CLI (macOS)","os":["darwin"]},{"id":"tl-linux","kind":"download","url":"https://github.com/treeline-money/treeline/releases/latest/download/tl-linux-x64","bins":["tl"],"label":"Install Treeline CLI (Linux)","os":["linux"]},{"id":"tl-win","kind":"download","url":"https://github.com/treeline-money/treeline/releases/latest/download/tl-windows-x64.exe","bins":["tl.exe"],"label":"Install Treeline CLI (Windows)","os":["win32"]}]}}
 ---
 
 # Treeline Money
@@ -16,9 +16,7 @@ metadata: {"clawdbot":{"emoji":"🌲"}}
 ## Quick Start
 
 ```bash
-# 1. Install the CLI (script is bundled with this skill)
-sh ./install.sh
-source ~/.zshrc  # or restart terminal
+# 1. Install the CLI (OpenClaw handles this automatically)
 
 # 2. Enable demo mode (sample data)
 tl demo on
@@ -31,23 +29,11 @@ tl status
 
 ## First Time Setup
 
-> **For agents:** If `tl` commands fail with "command not found", guide the user through installation using the bundled install scripts. Start with demo mode so they can try queries immediately.
->
-> **Important:** Never run installation or setup commands without asking the user first. Present the command and wait for confirmation before executing.
+> **For agents:** If `tl` commands fail with "command not found", the CLI needs to be installed. OpenClaw handles installation automatically via the skill metadata. Start with demo mode so users can try queries immediately.
 
 ### Installing the CLI
 
-The install scripts are bundled with this skill. They download the latest CLI binary from GitHub releases and add it to your PATH.
-
-Mac/Linux:
-```bash
-sh ./install.sh
-```
-
-Windows (PowerShell):
-```powershell
-.\install.ps1
-```
+The Treeline CLI is installed automatically by OpenClaw when this skill is added. The binary is downloaded directly from [GitHub releases](https://github.com/treeline-money/treeline/releases).
 
 Verify with `tl --version`.
 
