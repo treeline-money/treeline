@@ -82,7 +82,10 @@ jobs:
       - name: Install runtime dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb libfuse2
+          sudo apt-get install -y \
+            xvfb libfuse2 \
+            libwebkit2gtk-4.1-0 libgtk-3-0 \
+            libegl1 libgl1
 
       - name: Launch and verify
         run: |
@@ -102,6 +105,9 @@ jobs:
             kill -9 $APP_PID 2>/dev/null || true
           else
             echo "✗ Treeline crashed or failed to start on Linux"
+            # Check if the AppImage extracted and ran but the inner process crashed
+            echo "--- Checking for error output ---"
+            wait $APP_PID 2>/dev/null || true
             exit 1
           fi
 
@@ -142,20 +148,32 @@ jobs:
           # Clear quarantine (simulates user clicking "Open" on first launch)
           xattr -cr /Applications/Treeline.app
 
+          # Detect the actual binary name from the app bundle
+          BINARY_NAME=$(ls /Applications/Treeline.app/Contents/MacOS/ | head -1)
+          echo "Binary name: $BINARY_NAME"
+
           echo "Launching Treeline..."
           open /Applications/Treeline.app
 
           # Give the app time to initialize (or crash)
           sleep 15
 
-          if pgrep -x "Treeline" > /dev/null; then
-            echo "✓ Treeline launched successfully on macOS (PID $(pgrep -x Treeline))"
-            pkill -x "Treeline" || true
+          if pgrep -x "$BINARY_NAME" > /dev/null; then
+            echo "✓ Treeline launched successfully on macOS (PID $(pgrep -x "$BINARY_NAME"))"
+            pkill -x "$BINARY_NAME" || true
           else
             echo "✗ Treeline is not running on macOS"
+            # Diagnostic info for debugging
+            echo "--- Processes matching 'treeline' (case insensitive) ---"
+            pgrep -il treeline || echo "(none)"
+            echo "--- Recent crash reports ---"
+            ls -t ~/Library/Logs/DiagnosticReports/*reeline* 2>/dev/null | head -5 || echo "(none)"
             exit 1
           fi
 
+  # NOTE: windows-latest has Visual C++ Redistributable pre-installed, so this
+  # won't catch missing MSVCP140.dll issues that affect fresh Windows machines.
+  # See: https://github.com/treeline-money/treeline/pull/9
   test-windows:
     name: Smoke Test (Windows)
     needs: resolve-version
