@@ -8,10 +8,6 @@ on:
     workflows: ["Release"]
     types: [completed]
 
-  # Daily at ~12pm Pacific (8pm UTC = 12pm PST / 1pm PDT)
-  schedule:
-    - cron: '0 20 * * *'
-
   # Manual trigger
   workflow_dispatch:
     inputs:
