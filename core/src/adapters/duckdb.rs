@@ -440,6 +440,96 @@ impl DuckDbRepository {
         })
     }
 
+    /// Bulk upsert accounts in a single connection+checkpoint.
+    ///
+    /// Uses the same INSERT...ON CONFLICT logic as upsert_account but in one connection.
+    pub fn bulk_upsert_accounts(&self, accounts: &[Account]) -> Result<()> {
+        if accounts.is_empty() {
+            return Ok(());
+        }
+
+        self.with_connection_write(|conn| {
+            for account in accounts {
+                let external_ids = "{}";
+                let sf_extra = account.sf_extra.as_ref().map(|v| v.to_string());
+
+                conn.execute(
+                    "INSERT INTO sys_accounts (account_id, name, nickname, account_type, classification, currency,
+                                               external_ids, institution_name, institution_url, institution_domain,
+                                               created_at, updated_at, is_manual,
+                                               sf_id, sf_name, sf_currency, sf_balance, sf_available_balance,
+                                               sf_balance_date, sf_org_name, sf_org_url, sf_org_domain, sf_extra,
+                                               lf_id, lf_name, lf_institution_name, lf_institution_logo,
+                                               lf_provider, lf_currency, lf_status)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     ON CONFLICT (account_id) DO UPDATE SET
+                        name = EXCLUDED.name,
+                        nickname = COALESCE(sys_accounts.nickname, EXCLUDED.nickname),
+                        account_type = COALESCE(sys_accounts.account_type, EXCLUDED.account_type),
+                        classification = COALESCE(sys_accounts.classification, EXCLUDED.classification),
+                        currency = EXCLUDED.currency,
+                        external_ids = EXCLUDED.external_ids,
+                        institution_name = COALESCE(EXCLUDED.institution_name, sys_accounts.institution_name),
+                        institution_url = COALESCE(EXCLUDED.institution_url, sys_accounts.institution_url),
+                        institution_domain = COALESCE(EXCLUDED.institution_domain, sys_accounts.institution_domain),
+                        updated_at = EXCLUDED.updated_at,
+                        is_manual = COALESCE(sys_accounts.is_manual, EXCLUDED.is_manual),
+                        sf_id = COALESCE(EXCLUDED.sf_id, sys_accounts.sf_id),
+                        sf_name = COALESCE(EXCLUDED.sf_name, sys_accounts.sf_name),
+                        sf_currency = COALESCE(EXCLUDED.sf_currency, sys_accounts.sf_currency),
+                        sf_balance = COALESCE(EXCLUDED.sf_balance, sys_accounts.sf_balance),
+                        sf_available_balance = COALESCE(EXCLUDED.sf_available_balance, sys_accounts.sf_available_balance),
+                        sf_balance_date = COALESCE(EXCLUDED.sf_balance_date, sys_accounts.sf_balance_date),
+                        sf_org_name = COALESCE(EXCLUDED.sf_org_name, sys_accounts.sf_org_name),
+                        sf_org_url = COALESCE(EXCLUDED.sf_org_url, sys_accounts.sf_org_url),
+                        sf_org_domain = COALESCE(EXCLUDED.sf_org_domain, sys_accounts.sf_org_domain),
+                        sf_extra = COALESCE(EXCLUDED.sf_extra, sys_accounts.sf_extra),
+                        lf_id = COALESCE(EXCLUDED.lf_id, sys_accounts.lf_id),
+                        lf_name = COALESCE(EXCLUDED.lf_name, sys_accounts.lf_name),
+                        lf_institution_name = COALESCE(EXCLUDED.lf_institution_name, sys_accounts.lf_institution_name),
+                        lf_institution_logo = COALESCE(EXCLUDED.lf_institution_logo, sys_accounts.lf_institution_logo),
+                        lf_provider = COALESCE(EXCLUDED.lf_provider, sys_accounts.lf_provider),
+                        lf_currency = COALESCE(EXCLUDED.lf_currency, sys_accounts.lf_currency),
+                        lf_status = COALESCE(EXCLUDED.lf_status, sys_accounts.lf_status)",
+                    params![
+                        account.id.to_string(),
+                        account.name,
+                        account.nickname,
+                        account.account_type.as_ref().map(|t| t.to_string()),
+                        account.classification.as_ref().map(|c| c.to_string()),
+                        account.currency,
+                        external_ids,
+                        account.institution_name,
+                        account.institution_url,
+                        account.institution_domain,
+                        account.created_at.to_rfc3339(),
+                        account.updated_at.to_rfc3339(),
+                        account.is_manual,
+                        account.sf_id,
+                        account.sf_name,
+                        account.sf_currency,
+                        account.sf_balance,
+                        account.sf_available_balance,
+                        account.sf_balance_date,
+                        account.sf_org_name,
+                        account.sf_org_url,
+                        account.sf_org_domain,
+                        sf_extra,
+                        account.lf_id,
+                        account.lf_name,
+                        account.lf_institution_name,
+                        account.lf_institution_logo,
+                        account.lf_provider,
+                        account.lf_currency,
+                        account.lf_status,
+                    ],
+                )?;
+            }
+
+            Ok(())
+        })
+    }
+
     /// Delete an account and all associated data (transactions, balance snapshots)
     ///
     /// This performs a cascade delete:
@@ -785,6 +875,88 @@ impl DuckDbRepository {
             );
             conn.execute(&sql, params![tx_id])?;
             Ok(())
+        })
+    }
+
+    /// Bulk update transaction tags in a single connection+checkpoint.
+    ///
+    /// Each entry is a (transaction_id, tags) pair. If `replace` is true, tags are
+    /// replaced entirely; otherwise existing tags are merged with new ones.
+    ///
+    /// Returns per-transaction results: (transaction_id, final_tags, success, error).
+    pub fn bulk_update_transaction_tags(
+        &self,
+        tx_ids: &[String],
+        new_tags: &[String],
+        replace: bool,
+    ) -> Result<Vec<(String, Option<Vec<String>>, bool, Option<String>)>> {
+        if tx_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        self.with_connection_write(|conn| {
+            let mut results = Vec::new();
+
+            if replace {
+                // Replace mode: just set tags directly, no need to read existing
+                let tags_literal = format_tags_array(new_tags);
+                let id_list: Vec<String> = tx_ids.iter().map(|id| format!("'{}'", id.replace('\'', "''"))).collect();
+                let in_clause = id_list.join(", ");
+
+                let sql = format!(
+                    "UPDATE sys_transactions SET tags = {}, updated_at = CURRENT_TIMESTAMP WHERE transaction_id IN ({})",
+                    tags_literal, in_clause
+                );
+                conn.execute(&sql, [])?;
+
+                for tx_id in tx_ids {
+                    results.push((tx_id.clone(), Some(new_tags.to_vec()), true, None));
+                }
+            } else {
+                // Merge mode: read existing tags, merge, then update all in one connection
+                let id_list: Vec<String> = tx_ids.iter().map(|id| format!("'{}'", id.replace('\'', "''"))).collect();
+                let in_clause = id_list.join(", ");
+
+                let sql = format!(
+                    "SELECT transaction_id, CAST(tags AS VARCHAR) as tags FROM sys_transactions WHERE transaction_id IN ({})",
+                    in_clause
+                );
+                let mut stmt = conn.prepare(&sql)?;
+                let existing: std::collections::HashMap<String, Vec<String>> = stmt
+                    .query_map([], |row| {
+                        let id: String = row.get(0)?;
+                        let tags_str: String = row.get(1)?;
+                        Ok((id, tags_str))
+                    })?
+                    .filter_map(|r| r.ok())
+                    .map(|(id, tags_str)| (id, parse_duckdb_array(&tags_str)))
+                    .collect();
+
+                for tx_id in tx_ids {
+                    if let Some(existing_tags) = existing.get(tx_id) {
+                        // Merge tags
+                        let mut merged = existing_tags.clone();
+                        for tag in new_tags {
+                            if !merged.contains(tag) {
+                                merged.push(tag.clone());
+                            }
+                        }
+
+                        let tags_literal = format_tags_array(&merged);
+                        let update_sql = format!(
+                            "UPDATE sys_transactions SET tags = {}, updated_at = CURRENT_TIMESTAMP WHERE transaction_id = ?",
+                            tags_literal
+                        );
+                        conn.execute(&update_sql, params![tx_id])?;
+
+                        results.push((tx_id.clone(), Some(merged), true, None));
+                    } else {
+                        results.push((tx_id.clone(), None, false, Some("Transaction not found".to_string())));
+                    }
+                }
+            }
+
+            Ok(results)
         })
     }
 

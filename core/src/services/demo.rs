@@ -61,20 +61,10 @@ impl DemoService {
         // Add demo integration
         repository.upsert_integration("demo", &serde_json::json!({}))?;
 
-        // Add demo accounts
-        for account in generate_demo_accounts() {
-            repository.upsert_account(&account)?;
-        }
-
-        // Add demo transactions
-        for tx in generate_demo_transactions() {
-            repository.upsert_transaction(&tx)?;
-        }
-
-        // Add demo balance snapshots
-        for snapshot in generate_demo_balance_snapshots() {
-            let _ = repository.add_balance_snapshot(&snapshot);
-        }
+        // Add demo data using bulk operations (single connection each)
+        repository.bulk_upsert_accounts(&generate_demo_accounts())?;
+        repository.bulk_insert_transactions(&generate_demo_transactions())?;
+        repository.bulk_insert_balance_snapshots(&generate_demo_balance_snapshots())?;
 
         Ok(())
     }

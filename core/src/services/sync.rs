@@ -159,8 +159,10 @@ impl SyncService {
             }
         }
 
-        // Process accounts
+        // Process accounts - map IDs and collect for bulk upsert
         let mut accounts_synced = 0i64;
+        let mut accounts_to_upsert = Vec::new();
+
         for mut account in accounts_result.accounts {
             // Get external ID from provider-specific column
             let ext_id = match name {
@@ -175,29 +177,33 @@ impl SyncService {
             if let Some(&existing_id) = external_to_internal.get(&ext_id) {
                 // Existing account - update ID
                 account.id = existing_id;
-                if !dry_run {
-                    self.repository.upsert_account(&account)?;
-                }
             } else {
                 // New account
                 external_to_internal.insert(ext_id, account.id);
                 accounts_synced += 1;
-                if !dry_run {
-                    self.repository.upsert_account(&account)?;
-                }
             }
+            accounts_to_upsert.push(account);
         }
 
-        // Save balance snapshots
+        // Bulk upsert all accounts in a single connection
+        if !dry_run && !accounts_to_upsert.is_empty() {
+            self.repository.bulk_upsert_accounts(&accounts_to_upsert)?;
+        }
+
+        // Save balance snapshots - map IDs and collect for bulk insert
         if !dry_run {
+            let mut snapshots_to_insert = Vec::new();
             for snapshot in accounts_result.balance_snapshots {
                 if let Some(ext_id) = orig_to_ext.get(&snapshot.account_id) {
                     if let Some(&internal_id) = external_to_internal.get(ext_id) {
                         let mut updated = snapshot;
                         updated.account_id = internal_id;
-                        let _ = self.repository.add_balance_snapshot(&updated);
+                        snapshots_to_insert.push(updated);
                     }
                 }
+            }
+            if !snapshots_to_insert.is_empty() {
+                let _ = self.repository.bulk_insert_balance_snapshots(&snapshots_to_insert);
             }
         }
 

@@ -87,10 +87,13 @@ class PluginUpdatesStore {
     const updates = new Map<string, PluginUpdateInfo>();
 
     try {
-      for (const plugin of installedPlugins) {
-        if (!plugin.source?.startsWith("https://github.com/")) continue;
+      const githubPlugins = installedPlugins.filter(
+        p => p.source?.startsWith("https://github.com/")
+      );
 
-        try {
+      // Check all plugins in parallel instead of sequentially
+      const results = await Promise.allSettled(
+        githubPlugins.map(async (plugin) => {
           const result = await invoke<string>("check_plugin_update", {
             pluginId: plugin.id,
           });
@@ -103,9 +106,8 @@ class PluginUpdatesStore {
               source: data.source,
             });
           }
-        } catch {
-          // Skip plugins that fail to check
         }
+        // Skip plugins that fail to check (rejected promises)
       }
 
       this._updates = updates;

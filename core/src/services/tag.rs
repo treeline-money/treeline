@@ -99,31 +99,44 @@ impl TagService {
         tags: &[String],
         replace: bool,
     ) -> Result<TagResult> {
-        let mut results = Vec::new();
-        let mut succeeded = 0i64;
-        let mut failed = 0i64;
+        // Validate all UUIDs upfront before doing any DB work
+        let mut invalid_results = Vec::new();
+        let mut valid_ids = Vec::new();
 
         for tx_id in tx_ids {
-            match self.apply_tags_to_transaction(tx_id, tags, replace) {
-                Ok(applied_tags) => {
-                    succeeded += 1;
-                    results.push(TagResultEntry {
-                        transaction_id: tx_id.clone(),
-                        tags: Some(applied_tags),
-                        success: true,
-                        error: None,
-                    });
-                }
-                Err(e) => {
-                    failed += 1;
-                    results.push(TagResultEntry {
-                        transaction_id: tx_id.clone(),
-                        tags: None,
-                        success: false,
-                        error: Some(e.to_string()),
-                    });
-                }
+            if Uuid::parse_str(tx_id).is_err() {
+                invalid_results.push(TagResultEntry {
+                    transaction_id: tx_id.clone(),
+                    tags: None,
+                    success: false,
+                    error: Some(format!("Invalid UUID: {}", tx_id)),
+                });
+            } else {
+                valid_ids.push(tx_id.clone());
             }
+        }
+
+        // Bulk update all valid transactions in a single connection
+        let bulk_results = self
+            .repository
+            .bulk_update_transaction_tags(&valid_ids, tags, replace)?;
+
+        let mut results = invalid_results;
+        let mut succeeded = 0i64;
+        let mut failed = results.len() as i64; // Count invalid UUIDs as failures
+
+        for (tx_id, final_tags, success, error) in bulk_results {
+            if success {
+                succeeded += 1;
+            } else {
+                failed += 1;
+            }
+            results.push(TagResultEntry {
+                transaction_id: tx_id,
+                tags: final_tags,
+                success,
+                error,
+            });
         }
 
         Ok(TagResult {
@@ -131,39 +144,6 @@ impl TagService {
             failed,
             results,
         })
-    }
-
-    fn apply_tags_to_transaction(
-        &self,
-        tx_id: &str,
-        new_tags: &[String],
-        replace: bool,
-    ) -> Result<Vec<String>> {
-        // Validate UUID format upfront (matches Python behavior)
-        if Uuid::parse_str(tx_id).is_err() {
-            anyhow::bail!("Invalid UUID: {}", tx_id);
-        }
-
-        let final_tags = if replace {
-            new_tags.to_vec()
-        } else {
-            // Get existing tags and merge
-            if let Some(tx) = self.repository.get_transaction_by_id(tx_id)? {
-                let mut tags = tx.tags;
-                for tag in new_tags {
-                    if !tags.contains(tag) {
-                        tags.push(tag.clone());
-                    }
-                }
-                tags
-            } else {
-                anyhow::bail!("Transaction not found");
-            }
-        };
-
-        self.repository
-            .update_transaction_tags(tx_id, &final_tags)?;
-        Ok(final_tags)
     }
 }
 

@@ -644,9 +644,10 @@ export async function applyRuleToExisting(rule: TagRule): Promise<number> {
       return 0;
     }
 
-    // Update each transaction to add the rule's tags
+    // Collect all transactions that need updating with their merged tags
     // Note: Must update sys_transactions (base table), not the transactions view
-    let updatedCount = 0;
+    const updates: { transactionId: string; newTags: string[] }[] = [];
+
     for (const row of result.rows) {
       const transactionId = row[0] as string;
       const existingTags = (row[1] as string[]) || [];
@@ -656,23 +657,39 @@ export async function applyRuleToExisting(rule: TagRule): Promise<number> {
 
       // Only update if tags actually changed
       if (newTags.length !== existingTags.length || !newTags.every((t) => existingTags.includes(t))) {
-        // Build parameterized tag list
-        const tagListSql = newTags.length > 0
-          ? `list_value(${newTags.map(() => '?').join(', ')})`
-          : `[]::VARCHAR[]`;
-
-        await executeQueryWithParams(
-          `UPDATE sys_transactions
-           SET tags = ${tagListSql}, tags_auto_applied = TRUE
-           WHERE transaction_id = ?`,
-          [...newTags, transactionId],
-          { readonly: false }
-        );
-        updatedCount++;
+        updates.push({ transactionId, newTags });
       }
     }
 
-    return updatedCount;
+    if (updates.length === 0) {
+      return 0;
+    }
+
+    // Escape a string for SQL (double up single quotes)
+    const escapeSql = (s: string) => s.replace(/'/g, "''");
+
+    // Build a single bulk UPDATE using UPDATE...FROM with VALUES
+    const valueRows = updates.map(({ transactionId, newTags }) => {
+      const tagList = newTags.length > 0
+        ? `list_value(${newTags.map(t => `'${escapeSql(t)}'`).join(', ')})`
+        : `[]::VARCHAR[]`;
+      return `('${escapeSql(transactionId)}', ${tagList})`;
+    }).join(',\n        ');
+
+    const ids = updates.map(u => `'${escapeSql(u.transactionId)}'`).join(', ');
+
+    await executeQuery(
+      `UPDATE sys_transactions AS t
+       SET tags = v.new_tags, tags_auto_applied = TRUE
+       FROM (VALUES
+         ${valueRows}
+       ) AS v(transaction_id, new_tags)
+       WHERE t.transaction_id = v.transaction_id
+         AND t.transaction_id IN (${ids})`,
+      { readonly: false }
+    );
+
+    return updates.length;
   } catch (e) {
     console.error("Failed to apply rule to existing transactions:", e);
     throw e;
@@ -789,7 +806,9 @@ export async function applyRulesToBatch(batchId: string): Promise<number> {
         continue;
       }
 
-      // Update each matching transaction to add the rule's tags
+      // Collect updates for this rule, then apply in bulk
+      const updates: { transactionId: string; newTags: string[] }[] = [];
+
       for (const row of result.rows) {
         const transactionId = row[0] as string;
         const existingTags = (row[1] as string[]) || [];
@@ -799,19 +818,36 @@ export async function applyRulesToBatch(batchId: string): Promise<number> {
 
         // Only update if tags actually changed
         if (newTags.length !== existingTags.length || !newTags.every((t) => existingTags.includes(t))) {
-          const tagListSql = newTags.length > 0
-            ? `list_value(${newTags.map(() => '?').join(', ')})`
-            : `[]::VARCHAR[]`;
-
-          await executeQueryWithParams(
-            `UPDATE sys_transactions
-             SET tags = ${tagListSql}, tags_auto_applied = TRUE
-             WHERE transaction_id = ?`,
-            [...newTags, transactionId],
-            { readonly: false }
-          );
-          totalTagged++;
+          updates.push({ transactionId, newTags });
         }
+      }
+
+      if (updates.length > 0) {
+        // Escape a string for SQL (double up single quotes)
+        const escapeSql = (s: string) => s.replace(/'/g, "''");
+
+        // Build a single bulk UPDATE using UPDATE...FROM with VALUES
+        const valueRows = updates.map(({ transactionId, newTags }) => {
+          const tagList = newTags.length > 0
+            ? `list_value(${newTags.map(t => `'${escapeSql(t)}'`).join(', ')})`
+            : `[]::VARCHAR[]`;
+          return `('${escapeSql(transactionId)}', ${tagList})`;
+        }).join(',\n          ');
+
+        const ids = updates.map(u => `'${escapeSql(u.transactionId)}'`).join(', ');
+
+        await executeQuery(
+          `UPDATE sys_transactions AS t
+           SET tags = v.new_tags, tags_auto_applied = TRUE
+           FROM (VALUES
+             ${valueRows}
+           ) AS v(transaction_id, new_tags)
+           WHERE t.transaction_id = v.transaction_id
+             AND t.transaction_id IN (${ids})`,
+          { readonly: false }
+        );
+
+        totalTagged += updates.length;
       }
     } catch (e) {
       // Log but don't fail the whole batch for one rule error
