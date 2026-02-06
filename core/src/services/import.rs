@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use crate::adapters::duckdb::DuckDbRepository;
 use crate::config::{ColumnMappings, Config, ImportOptions as ConfigImportOptions, ImportProfile};
-use crate::domain::{BalanceSnapshot, Transaction};
+use crate::domain::{Account, BalanceSnapshot, Transaction};
 use crate::services::TagService;
 
 /// Number format for parsing amounts
@@ -577,6 +577,107 @@ impl ImportService {
         Ok(config.import_profiles.get(name).cloned())
     }
 
+    /// Resolve an account identifier (UUID or name) to an account UUID string.
+    ///
+    /// Accepts:
+    /// - A UUID string (verified to exist)
+    /// - An exact account name or nickname (case-insensitive)
+    /// - A substring match (if exactly one account matches)
+    ///
+    /// Returns the account UUID as a string, or an error with available accounts listed.
+    pub fn resolve_account(&self, account: &str) -> Result<String> {
+        // Try as UUID first
+        if Uuid::parse_str(account).is_ok() {
+            if self.repository.get_account_by_id(account)?.is_some() {
+                return Ok(account.to_string());
+            }
+            anyhow::bail!("Account not found with ID: {}", account);
+        }
+
+        let accounts = self.repository.get_accounts()?;
+        let query = account.to_lowercase();
+
+        // Exact match on name or nickname
+        let exact: Vec<_> = accounts
+            .iter()
+            .filter(|a| {
+                a.name.to_lowercase() == query
+                    || a.nickname
+                        .as_ref()
+                        .map(|n| n.to_lowercase() == query)
+                        .unwrap_or(false)
+            })
+            .collect();
+
+        if exact.len() == 1 {
+            return Ok(exact[0].id.to_string());
+        }
+        if exact.len() > 1 {
+            let list = format_account_list(&exact);
+            anyhow::bail!(
+                "Multiple accounts match '{}'. Use the UUID:\n{}",
+                account,
+                list
+            );
+        }
+
+        // Substring match as fallback
+        let partial: Vec<_> = accounts
+            .iter()
+            .filter(|a| {
+                a.name.to_lowercase().contains(&query)
+                    || a.nickname
+                        .as_ref()
+                        .map(|n| n.to_lowercase().contains(&query))
+                        .unwrap_or(false)
+            })
+            .collect();
+
+        if partial.len() == 1 {
+            return Ok(partial[0].id.to_string());
+        }
+
+        if partial.is_empty() {
+            if accounts.is_empty() {
+                anyhow::bail!(
+                    "No accounts found. Create an account first with 'tl sync' or import to a new account."
+                );
+            }
+            let list = format_account_list(&accounts.iter().collect::<Vec<_>>());
+            anyhow::bail!(
+                "No account matching '{}'. Available accounts:\n{}",
+                account,
+                list
+            );
+        }
+
+        let list = format_account_list(&partial);
+        anyhow::bail!(
+            "Multiple accounts match '{}'. Be more specific or use the UUID:\n{}",
+            account,
+            list
+        );
+    }
+
+    /// Get a display name for an account UUID.
+    ///
+    /// Returns "Name (Nickname)" if a nickname exists, otherwise just "Name".
+    /// Falls back to the UUID string if the account is not found.
+    pub fn get_account_display_name(&self, account_id: &str) -> String {
+        self.repository
+            .get_account_by_id(account_id)
+            .ok()
+            .flatten()
+            .map(|a| {
+                if let Some(nick) = &a.nickname {
+                    format!("{} ({})", a.name, nick)
+                } else {
+                    a.name.clone()
+                }
+            })
+            .unwrap_or_else(|| account_id.to_string())
+    }
+
     /// Auto-detect column mapping from CSV headers
     ///
     /// Returns best-guess mapping for date, amount, description, and optionally debit/credit columns.
@@ -868,6 +969,21 @@ pub struct TransactionPreview {
     /// Running balance (from CSV, if mapped)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub balance: Option<String>,
+}
+
+/// Format a list of accounts for display in error messages.
+fn format_account_list(accounts: &[&Account]) -> String {
+    accounts
+        .iter()
+        .map(|a| {
+            if let Some(nick) = &a.nickname {
+                format!("  {} ({}) — {}", a.name, nick, a.id)
+            } else {
+                format!("  {} — {}", a.name, a.id)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]

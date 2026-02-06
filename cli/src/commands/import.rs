@@ -44,8 +44,8 @@ pub fn run(
     // Resolve file path — support stdin via "-"
     let file_path = resolve_file(file)?;
 
-    // Resolve account by UUID or name
-    let account_id = resolve_account(&ctx, account)?;
+    // Resolve account by UUID or name (via service layer)
+    let account_id = ctx.import_service.resolve_account(account)?;
 
     // Load profile if specified
     let loaded_profile = if let Some(profile_name) = profile {
@@ -77,24 +77,24 @@ pub fn run(
             .or_else(|| profile_mappings.map(|m| m.amount.clone()))
             .or(detected.amount)
             .unwrap_or_else(|| "Amount".to_string()),
-        description: date_column_or(
+        description: resolve_optional_column(
             description_column,
             profile_mappings.and_then(|m| m.description.as_deref()),
             detected.description.as_deref(),
         ),
-        debit: date_column_or(
+        debit: resolve_optional_column(
             debit_column,
             profile_mappings.and_then(|m| m.debit.as_deref()),
             detected.debit.as_deref(),
         ),
-        credit: date_column_or(
+        credit: resolve_optional_column(
             credit_column,
             profile_mappings.and_then(|m| m.credit.as_deref()),
             detected.credit.as_deref(),
         ),
-        balance: balance_column.map(String::from).or_else(|| {
-            profile_mappings.and_then(|m| m.balance.clone())
-        }),
+        balance: balance_column
+            .map(String::from)
+            .or_else(|| profile_mappings.and_then(|m| m.balance.clone())),
     };
 
     // Build import options with same resolution order
@@ -107,10 +107,10 @@ pub fn run(
         0
     };
 
-    let effective_flip_signs = flip_signs
-        || profile_opts.map(|o| o.flip_signs).unwrap_or(false);
-    let effective_debit_negative = debit_negative
-        || profile_opts.map(|o| o.debit_negative).unwrap_or(false);
+    let effective_flip_signs =
+        flip_signs || profile_opts.map(|o| o.flip_signs).unwrap_or(false);
+    let effective_debit_negative =
+        debit_negative || profile_opts.map(|o| o.debit_negative).unwrap_or(false);
 
     // Parse anchor balance/date for preview balance calculation
     let parsed_anchor_balance =
@@ -168,8 +168,8 @@ pub fn run(
         return Ok(());
     }
 
-    // Resolve account name for display
-    let account_display = resolve_account_display(&ctx, &account_id);
+    // Resolve account name for display (via service layer)
+    let account_display = ctx.import_service.get_account_display_name(&account_id);
 
     if dry_run {
         println!(
@@ -249,7 +249,7 @@ pub fn run(
 
 /// Resolve file path, handling stdin ("-") by writing to a temp file.
 fn resolve_file(file: &str) -> Result<PathBuf> {
-    if file == "-" || (!atty::is(atty::Stream::Stdin) && file == "-") {
+    if file == "-" {
         // Read from stdin to temp file (ImportService needs a file path)
         let mut buffer = String::new();
         io::stdin()
@@ -274,132 +274,8 @@ fn resolve_file(file: &str) -> Result<PathBuf> {
     }
 }
 
-/// Resolve account by UUID or name match.
-fn resolve_account(ctx: &treeline_core::TreelineContext, account: &str) -> Result<String> {
-    // Try as UUID first
-    if uuid::Uuid::parse_str(account).is_ok() {
-        // Verify it exists
-        if ctx.repository.get_account_by_id(account)?.is_some() {
-            return Ok(account.to_string());
-        }
-        anyhow::bail!("Account not found with ID: {}", account);
-    }
-
-    // Search by name/nickname (case-insensitive)
-    let accounts = ctx.repository.get_accounts()?;
-    let query = account.to_lowercase();
-
-    let matches: Vec<_> = accounts
-        .iter()
-        .filter(|a| {
-            a.name.to_lowercase() == query
-                || a.nickname
-                    .as_ref()
-                    .map(|n| n.to_lowercase() == query)
-                    .unwrap_or(false)
-        })
-        .collect();
-
-    match matches.len() {
-        0 => {
-            // Try substring match as fallback
-            let partial: Vec<_> = accounts
-                .iter()
-                .filter(|a| {
-                    a.name.to_lowercase().contains(&query)
-                        || a.nickname
-                            .as_ref()
-                            .map(|n| n.to_lowercase().contains(&query))
-                            .unwrap_or(false)
-                })
-                .collect();
-
-            if partial.len() == 1 {
-                return Ok(partial[0].id.to_string());
-            }
-
-            if partial.is_empty() {
-                let account_list: Vec<String> = accounts
-                    .iter()
-                    .map(|a| {
-                        if let Some(nick) = &a.nickname {
-                            format!("  {} ({}) — {}", a.name, nick, a.id)
-                        } else {
-                            format!("  {} — {}", a.name, a.id)
-                        }
-                    })
-                    .collect();
-
-                if account_list.is_empty() {
-                    anyhow::bail!(
-                        "No accounts found. Create an account first with 'tl sync' or import to a new account."
-                    );
-                }
-
-                anyhow::bail!(
-                    "No account matching '{}'. Available accounts:\n{}",
-                    account,
-                    account_list.join("\n")
-                );
-            }
-
-            let match_list: Vec<String> = partial
-                .iter()
-                .map(|a| {
-                    if let Some(nick) = &a.nickname {
-                        format!("  {} ({}) — {}", a.name, nick, a.id)
-                    } else {
-                        format!("  {} — {}", a.name, a.id)
-                    }
-                })
-                .collect();
-
-            anyhow::bail!(
-                "Multiple accounts match '{}'. Be more specific or use the UUID:\n{}",
-                account,
-                match_list.join("\n")
-            );
-        }
-        1 => Ok(matches[0].id.to_string()),
-        _ => {
-            let match_list: Vec<String> = matches
-                .iter()
-                .map(|a| {
-                    if let Some(nick) = &a.nickname {
-                        format!("  {} ({}) — {}", a.name, nick, a.id)
-                    } else {
-                        format!("  {} — {}", a.name, a.id)
-                    }
-                })
-                .collect();
-
-            anyhow::bail!(
-                "Multiple accounts match '{}'. Use the UUID:\n{}",
-                account,
-                match_list.join("\n")
-            );
-        }
-    }
-}
-
-/// Get display name for an account ID.
-fn resolve_account_display(ctx: &treeline_core::TreelineContext, account_id: &str) -> String {
-    ctx.repository
-        .get_account_by_id(account_id)
-        .ok()
-        .flatten()
-        .map(|a| {
-            if let Some(nick) = &a.nickname {
-                format!("{} ({})", a.name, nick)
-            } else {
-                a.name.clone()
-            }
-        })
-        .unwrap_or_else(|| account_id.to_string())
-}
-
-/// Helper: resolve optional column with flag > profile > detected priority.
-fn date_column_or(
+/// Resolve optional column with flag > profile > detected priority.
+fn resolve_optional_column(
     flag: Option<&str>,
     profile: Option<&str>,
     detected: Option<&str>,
