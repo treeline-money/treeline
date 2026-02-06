@@ -101,6 +101,8 @@ When the user invokes `/release`:
 
 7. **Monitor and report**:
    - Watch workflow progress
+   - If the release fails, check if the git tag was created (`git ls-remote --tags origin <version>`)
+     and delete it (`git push origin --delete <version>`) before retrying
    - Report when complete with link to release
 
 8. **Remind about next steps**:

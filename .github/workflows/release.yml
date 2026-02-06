@@ -117,9 +117,9 @@ jobs:
         if: steps.check-release.outputs.exists == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_NOTES: ${{ inputs.release_notes }}
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          RELEASE_NOTES="${{ inputs.release_notes }}"
 
           if [ -z "$RELEASE_NOTES" ]; then
             RELEASE_NOTES="Release $VERSION"
@@ -171,9 +171,9 @@ jobs:
         if: steps.check-release.outputs.exists == 'false'
         env:
           GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          RELEASE_NOTES: ${{ inputs.release_notes }}
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          RELEASE_NOTES="${{ inputs.release_notes }}"
           RELEASES_REPO="treeline-money/treeline-releases"
 
           if [ -z "$RELEASE_NOTES" ]; then
@@ -224,9 +224,9 @@ jobs:
       - name: Generate and upload latest-staging.json
         env:
           GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          RELEASE_NOTES: ${{ inputs.release_notes }}
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          RELEASE_NOTES="${{ inputs.release_notes }}"
           RELEASES_REPO="treeline-money/treeline-releases"
           PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
@@ -373,6 +373,7 @@ jobs:
       - name: Post to Discord #staging-releases
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_STAGING }}
+          RELEASE_NOTES: ${{ inputs.release_notes }}
         run: |
           if [ -z "$DISCORD_WEBHOOK" ]; then
             echo "DISCORD_WEBHOOK_STAGING not set, skipping Discord notification"
@@ -380,7 +381,6 @@ jobs:
           fi
 
           VERSION="${{ steps.version.outputs.version }}"
-          RELEASE_NOTES="${{ inputs.release_notes }}"
 
           if [ -z "$RELEASE_NOTES" ]; then
             RELEASE_NOTES="Release $VERSION"
