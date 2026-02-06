@@ -26,7 +26,6 @@
     type NumberFormat,
   } from "../sdk";
   import { getUserCurrencySymbol } from "../shared";
-  import { applyRulesToBatch } from "../plugins/transactions/rules";
   import { loadAccountsWithClassification, type AccountBasicInfo } from "../plugins/accounts/types";
 
   interface Props {
