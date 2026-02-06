@@ -3030,7 +3030,7 @@ dependencies = [
 
 [[package]]
 name = "treeline-cli"
-version = "26.2.301"
+version = "0.0.0-dev"
 dependencies = [
  "anyhow",
  "atty",
@@ -3052,7 +3052,7 @@ dependencies = [
 
 [[package]]
 name = "treeline-core"
-version = "26.2.301"
+version = "0.0.0-dev"
 dependencies = [
  "anyhow",
  "argon2",

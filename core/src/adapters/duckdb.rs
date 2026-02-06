@@ -1431,45 +1431,10 @@ impl DuckDbRepository {
 
     /// Execute a read-only SQL query using a DuckDB read-only connection.
     ///
-    /// Same SQL-level validation as `execute_query` (SELECT/WITH only),
-    /// but also enforces read-only access at the DuckDB engine level.
+    /// Enforces read-only at the DuckDB engine level -- any attempt to
+    /// execute a write statement will be rejected by DuckDB itself.
     pub fn execute_query_readonly(&self, sql: &str) -> Result<QueryResult> {
-        let sql_trimmed = sql.trim();
-        let first_word = sql_trimmed
-            .split_whitespace()
-            .next()
-            .unwrap_or("")
-            .to_uppercase();
-        if first_word != "SELECT" && first_word != "WITH" {
-            anyhow::bail!("Only SELECT queries are allowed. Use --allow-writes to enable write operations.");
-        }
-
-        let sql_upper = sql.to_uppercase();
-        let dangerous_patterns = [
-            " INSERT ",
-            " UPDATE ",
-            " DROP ",
-            " CREATE ",
-            " ALTER ",
-            " TRUNCATE ",
-            "\nINSERT ",
-            "\nUPDATE ",
-            "\nDROP ",
-            "\nCREATE ",
-            "\nALTER ",
-            "\nTRUNCATE ",
-            "(INSERT ",
-            "(UPDATE ",
-            "(DROP ",
-            "(CREATE ",
-            "(ALTER ",
-            "(TRUNCATE ",
-        ];
-        for pattern in dangerous_patterns {
-            if sql_upper.contains(pattern) {
-                anyhow::bail!("Only SELECT queries are allowed. Use --allow-writes to enable write operations.");
-            }
-        }
+        validate_sql_syntax(sql)?;
 
         self.with_readonly_connection(|conn| {
             let mut stmt = conn.prepare(sql)?;
