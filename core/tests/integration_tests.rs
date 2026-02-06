@@ -1029,3 +1029,105 @@ fn test_apply_auto_tag_rules_bulk() {
     assert_eq!(result.transactions_tagged, 2, "Should tag 2 grocery transactions");
     assert!(result.failed_rules.is_empty());
 }
+
+// ============================================================================
+// Read-Only Query Tests (execute_query_readonly)
+// ============================================================================
+
+/// Test that execute_query_readonly allows SELECT queries
+#[test]
+fn test_readonly_allows_select() {
+    let temp_dir = TempDir::new().unwrap();
+    let repo = create_test_repo(&temp_dir);
+
+    let result = repo.execute_query_readonly("SELECT 1 AS value");
+    assert!(result.is_ok(), "SELECT should work in readonly: {:?}", result.err());
+    let qr = result.unwrap();
+    assert_eq!(qr.columns, vec!["value"]);
+    assert_eq!(qr.row_count, 1);
+}
+
+/// Test that execute_query_readonly allows CTE (WITH) queries
+#[test]
+fn test_readonly_allows_cte() {
+    let temp_dir = TempDir::new().unwrap();
+    let repo = create_test_repo(&temp_dir);
+
+    let result = repo.execute_query_readonly(
+        "WITH nums AS (SELECT 1 AS n UNION ALL SELECT 2) SELECT * FROM nums",
+    );
+    assert!(result.is_ok(), "CTE should work in readonly: {:?}", result.err());
+    assert_eq!(result.unwrap().row_count, 2);
+}
+
+/// Test that execute_query_readonly can read real data
+#[test]
+fn test_readonly_reads_table_data() {
+    let temp_dir = TempDir::new().unwrap();
+    let repo = create_test_repo(&temp_dir);
+
+    // Insert data via write path
+    let account = create_test_account("Readonly Test");
+    repo.upsert_account(&account).unwrap();
+
+    // Read via readonly path
+    let result = repo.execute_query_readonly(
+        &format!("SELECT name FROM accounts WHERE account_id = '{}'", account.id),
+    );
+    assert!(result.is_ok());
+    let qr = result.unwrap();
+    assert_eq!(qr.row_count, 1);
+    assert_eq!(qr.rows[0][0], serde_json::json!("Readonly Test"));
+}
+
+/// Test that execute_query_readonly rejects write operations
+#[test]
+fn test_readonly_rejects_insert() {
+    let temp_dir = TempDir::new().unwrap();
+    let repo = create_test_repo(&temp_dir);
+
+    let result = repo.execute_query_readonly(
+        "INSERT INTO accounts (account_id, name) VALUES ('00000000-0000-0000-0000-000000000000', 'hack')",
+    );
+    assert!(result.is_err(), "INSERT should fail in readonly mode");
+}
+
+/// Test that execute_query_readonly rejects DELETE
+#[test]
+fn test_readonly_rejects_delete() {
+    let temp_dir = TempDir::new().unwrap();
+    let repo = create_test_repo(&temp_dir);
+
+    let result = repo.execute_query_readonly("DELETE FROM accounts");
+    assert!(result.is_err(), "DELETE should fail in readonly mode");
+}
+
+/// Test that execute_query_readonly rejects UPDATE
+#[test]
+fn test_readonly_rejects_update() {
+    let temp_dir = TempDir::new().unwrap();
+    let repo = create_test_repo(&temp_dir);
+
+    let result = repo.execute_query_readonly("UPDATE accounts SET name = 'hacked'");
+    assert!(result.is_err(), "UPDATE should fail in readonly mode");
+}
+
+/// Test that execute_query_readonly rejects DROP
+#[test]
+fn test_readonly_rejects_drop() {
+    let temp_dir = TempDir::new().unwrap();
+    let repo = create_test_repo(&temp_dir);
+
+    let result = repo.execute_query_readonly("DROP TABLE accounts");
+    assert!(result.is_err(), "DROP should fail in readonly mode");
+}
+
+/// Test that execute_query_readonly rejects CREATE
+#[test]
+fn test_readonly_rejects_create_table() {
+    let temp_dir = TempDir::new().unwrap();
+    let repo = create_test_repo(&temp_dir);
+
+    let result = repo.execute_query_readonly("CREATE TABLE evil (id INTEGER)");
+    assert!(result.is_err(), "CREATE TABLE should fail in readonly mode");
+}
