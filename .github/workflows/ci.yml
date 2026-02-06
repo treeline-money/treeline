@@ -288,7 +288,7 @@ jobs:
             desktop/src-tauri/target/release/bundle/dmg/*.dmg.sig
             desktop/src-tauri/target/release/bundle/macos/*.app.tar.gz
             desktop/src-tauri/target/release/bundle/macos/*.app.tar.gz.sig
-          retention-days: 90
+          retention-days: 7
 
       - name: Smoke test AppImage (Linux)
         if: runner.os == 'Linux'
@@ -331,7 +331,7 @@ jobs:
           path: |
             desktop/src-tauri/target/release/bundle/appimage/*.AppImage
             desktop/src-tauri/target/release/bundle/appimage/*.AppImage.sig
-          retention-days: 90
+          retention-days: 7
 
       - name: Upload artifacts (Windows)
         if: runner.os == 'Windows'
@@ -341,7 +341,7 @@ jobs:
           path: |
             desktop/src-tauri/target/release/bundle/nsis/*.exe
             desktop/src-tauri/target/release/bundle/nsis/*.exe.sig
-          retention-days: 90
+          retention-days: 7
 
   # Build CLI binaries (only on main pushes)
   build-cli:
@@ -432,7 +432,7 @@ jobs:
         with:
           name: ${{ matrix.artifact-name }}
           path: target/release/tl
-          retention-days: 90
+          retention-days: 7
 
       - name: Upload CLI artifact (Windows)
         if: runner.os == 'Windows'
@@ -440,7 +440,7 @@ jobs:
         with:
           name: ${{ matrix.artifact-name }}
           path: target/release/tl.exe
-          retention-days: 90
+          retention-days: 7
 
   # Pack SDK (don't publish yet - that happens at release time)
   pack-sdk:
@@ -482,7 +482,7 @@ jobs:
         with:
           name: sdk-npm-package
           path: sdk/*.tgz
-          retention-days: 90
+          retention-days: 7
 
   # Save version info for release workflow
   save-version:
@@ -502,4 +502,4 @@ jobs:
         with:
           name: version
           path: version.txt
-          retention-days: 90
+          retention-days: 7
