@@ -32,6 +32,8 @@ tl status
 ## First Time Setup
 
 > **For agents:** If `tl` commands fail with "command not found", guide the user through installation. Start with demo mode so they can try queries immediately.
+>
+> **Important:** Never run installation or setup commands without asking the user first. Present the command and wait for confirmation before executing.
 
 ### Installing the CLI
 
@@ -256,7 +258,7 @@ If it exists, read it first — it contains user-specific knowledge:
 - Personal preferences
 
 **Learning new context:** When you discover something about the user's setup:
-1. For small observations, note them in CONTEXT.md silently
+1. For small observations, note them in CONTEXT.md and briefly mention what you saved
 2. For significant assumptions or corrections, ask: "Want me to save that to your Treeline context?"
 
 See the [User Context Pattern](#user-context-pattern) section at the end for the template.
@@ -548,7 +550,7 @@ internal_transfer_tags: [transfer, savings, investment]
 ```
 
 **Maintenance:**
-- Update silently for small observations
+- Briefly mention updates for small observations
 - Ask before recording significant assumptions
 - Periodically validate against live data (accounts may close, tags may change)
 
