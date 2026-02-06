@@ -178,11 +178,7 @@ impl DuckDbRepository {
             // Encrypted database: open in-memory first, then ATTACH encrypted file
             let config = duckdb::Config::default().enable_autoload_extension(false)?;
             let conn = Connection::open_in_memory_with_flags(config)?;
-            let access_mode = if read_only {
-                ", ACCESS_MODE 'READ_ONLY'"
-            } else {
-                ""
-            };
+            let access_mode = if read_only { ", READ_ONLY" } else { "" };
             conn.execute(
                 &format!(
                     "ATTACH '{}' AS main_db (ENCRYPTION_KEY '{}'{access_mode})",

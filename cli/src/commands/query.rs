@@ -33,7 +33,13 @@ pub fn run(sql: Option<&str>, file: Option<&Path>, format: &str, allow_writes: b
         eprintln!("Warning: Write access enabled. Changes to the database are permanent.");
         ctx.query_service.execute_sql(&sql_content)?
     } else {
-        ctx.query_service.execute_readonly(&sql_content)?
+        ctx.query_service.execute_readonly(&sql_content).map_err(|e| {
+            if e.to_string().contains("read-only") {
+                anyhow::anyhow!("This query requires write access. Re-run with --allow-writes to modify the database.")
+            } else {
+                e
+            }
+        })?
     };
 
     match format {
