@@ -5,6 +5,7 @@ pub mod compact;
 pub mod demo;
 pub mod doctor;
 pub mod encrypt;
+pub mod import;
 pub mod logs;
 pub mod plugin;
 pub mod query;
