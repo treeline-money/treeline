@@ -1214,8 +1214,13 @@ async fn import_csv_preview(
         // Parse anchor balance and date for preview balance calculation
         let parsed_anchor_balance =
             anchor_balance.map(|b| rust_decimal::Decimal::from_f64_retain(b).unwrap_or_default());
-        let parsed_anchor_date =
-            anchor_date.and_then(|d| chrono::NaiveDate::parse_from_str(&d, "%Y-%m-%d").ok());
+        let parsed_anchor_date = match anchor_date {
+            Some(d) => Some(
+                chrono::NaiveDate::parse_from_str(&d, "%Y-%m-%d")
+                    .map_err(|e| format!("Invalid anchor date '{}': {}", d, e))?,
+            ),
+            None => None,
+        };
 
         let options = ImportOptions {
             flip_signs,
