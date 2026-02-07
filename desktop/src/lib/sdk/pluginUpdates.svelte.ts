@@ -106,9 +106,9 @@ class PluginUpdatesStore {
               source: data.source,
             });
           }
-        }
-        // Skip plugins that fail to check (rejected promises)
-      }
+        })
+      );
+      // Skip plugins that fail to check (rejected promises)
 
       this._updates = updates;
       this._lastChecked = Date.now();
