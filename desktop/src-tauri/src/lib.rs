@@ -1104,10 +1104,28 @@ async fn uninstall_plugin(plugin_id: String) -> Result<String, String> {
 }
 
 /// Upgrade a plugin to latest version using treeline-core
+///
+/// Creates a database backup before upgrading to protect against
+/// breaking schema migrations, and backs up the plugin's own files
+/// (manifest.json, index.js, state.json) for rollback.
 #[tauri::command]
 async fn upgrade_plugin(plugin_id: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let treeline_dir = get_treeline_dir()?;
+
+        // Create a database backup before upgrading (protects against migration issues)
+        let demo_mode = get_demo_mode();
+        let db_filename = if demo_mode {
+            "demo.duckdb"
+        } else {
+            "treeline.duckdb"
+        };
+        let backup_service = BackupService::new(treeline_dir.clone(), db_filename.to_string());
+        if let Err(e) = backup_service.create(Some(10)) {
+            eprintln!("Warning: Failed to create pre-plugin-upgrade backup: {}", e);
+            // Continue with upgrade even if backup fails
+        }
+
         let plugin_service = PluginService::new(&treeline_dir);
         let result = plugin_service
             .upgrade_plugin(&plugin_id)

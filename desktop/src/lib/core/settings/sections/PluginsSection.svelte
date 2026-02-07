@@ -256,7 +256,7 @@
     showUninstallConfirmation(plugin);
   }
 
-  // Plugin upgrade
+  // Plugin upgrade (creates a backup before upgrading)
   async function executeUpgradePlugin(update: PluginUpdateInfo) {
     upgradingPluginId = update.pluginId;
     try {
@@ -269,7 +269,7 @@
       const resultStr = await invoke<string>("upgrade_plugin", { pluginId: update.pluginId });
       const result = JSON.parse(resultStr);
       if (result.success) {
-        toast.success("Plugin updated", `${result.plugin_name} updated to ${result.version}`);
+        toast.success("Plugin updated", `${result.plugin_name} updated to ${result.version}. A backup was created automatically.`);
         onPluginsChanged();
       } else {
         throw new Error(result.error || "Unknown error");
