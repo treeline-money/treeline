@@ -71,10 +71,14 @@
     <span class="update-text">
       {#if isDownloadComplete}
         <strong>Update ready!</strong> — Restart to apply v{updateState.version}
+      {:else if isInstalling}
+        <strong>Backing up & updating...</strong>
+        <span class="backup-note">Your data is being safely backed up</span>
       {:else if updateState.isDownloading}
         <strong>Downloading update...</strong> — {updateState.downloadProgress}%
       {:else}
         <strong>Update available!</strong> — Treeline v{updateState.version} is ready
+        <span class="backup-note">Your data is automatically backed up before updating</span>
       {/if}
     </span>
     <div class="update-actions">
@@ -128,6 +132,13 @@
 
   .update-text strong {
     font-weight: 600;
+  }
+
+  .backup-note {
+    display: inline;
+    font-size: 0.75rem;
+    opacity: 0.85;
+    margin-left: 0.25rem;
   }
 
   .update-actions {
