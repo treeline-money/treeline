@@ -33,6 +33,7 @@
   } from "../sdk";
   import { invoke } from "@tauri-apps/api/core";
   import { getCorePluginManifests } from "../plugins";
+  import { startHotReload, stopHotReload } from "../plugins/hotReload";
   import { restartApp } from "../sdk/updater";
 
   // Import section components
@@ -504,6 +505,28 @@
     } catch (e) {
       console.error("Failed to set devtools:", e);
     }
+    // Disable hot reload when developer mode is turned off
+    if (!enabled && settings.app.pluginHotReload) {
+      await handlePluginHotReloadChange(false);
+    }
+  }
+
+  async function handlePluginHotReloadChange(enabled: boolean) {
+    if (!settings) return;
+    await setAppSetting("pluginHotReload", enabled);
+    settings.app.pluginHotReload = enabled;
+    // Start or stop the file watcher and frontend event listener
+    try {
+      if (enabled) {
+        await invoke("watch_plugins_dir");
+        await startHotReload();
+      } else {
+        await invoke("unwatch_plugins_dir");
+        stopHotReload();
+      }
+    } catch (e) {
+      console.error("Failed to toggle plugin hot reload:", e);
+    }
   }
 
   async function handleExitDemoMode() {
@@ -931,7 +954,9 @@
             {:else if activeSection === "advanced"}
               <AdvancedSection
                 developerMode={settings.app.developerMode ?? false}
+                pluginHotReload={settings.app.pluginHotReload ?? false}
                 onDeveloperModeChange={handleDeveloperModeChange}
+                onPluginHotReloadChange={handlePluginHotReloadChange}
               />
             {:else if activeSection === "about"}
               <AboutSection

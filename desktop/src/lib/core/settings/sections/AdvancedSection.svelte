@@ -4,10 +4,12 @@
 
   interface Props {
     developerMode: boolean;
+    pluginHotReload: boolean;
     onDeveloperModeChange: (enabled: boolean) => void;
+    onPluginHotReloadChange: (enabled: boolean) => void;
   }
 
-  let { developerMode, onDeveloperModeChange }: Props = $props();
+  let { developerMode, pluginHotReload, onDeveloperModeChange, onPluginHotReloadChange }: Props = $props();
 </script>
 
 <section class="section">
@@ -38,6 +40,33 @@
       </div>
     {/if}
   </div>
+
+  {#if developerMode}
+    <div class="setting-group">
+      <h4 class="group-title">Plugin Hot Reload</h4>
+      <p class="group-desc">
+        Automatically reload external plugins when their files change on disk.
+        Watches <code>~/.treeline/plugins/</code> for changes to <code>index.js</code> and <code>manifest.json</code>.
+        No app restart needed during plugin development.
+      </p>
+
+      <label class="checkbox-setting">
+        <input
+          type="checkbox"
+          checked={pluginHotReload}
+          onchange={(e) => onPluginHotReloadChange(e.currentTarget.checked)}
+        />
+        <span>Enable Plugin Hot Reload</span>
+      </label>
+
+      {#if pluginHotReload}
+        <div class="dev-mode-active">
+          <Icon name="refresh-cw" size={14} />
+          <span>Watching for plugin file changes. Edit your plugin and save to reload.</span>
+        </div>
+      {/if}
+    </div>
+  {/if}
 </section>
 
 <style>
@@ -49,6 +78,15 @@
     background: var(--bg-tertiary);
     border: 1px solid var(--border-primary);
     border-radius: 4px;
+    color: var(--text-secondary);
+  }
+
+  code {
+    font-size: 11px;
+    font-family: var(--font-mono);
+    background: var(--bg-tertiary);
+    padding: 1px 4px;
+    border-radius: 3px;
     color: var(--text-secondary);
   }
 

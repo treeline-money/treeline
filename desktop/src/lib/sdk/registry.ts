@@ -269,6 +269,61 @@ class PluginRegistry {
   }
 
   // ============================================================================
+  // Plugin unloading (for hot-reload)
+  // ============================================================================
+
+  /**
+   * Unregister all items registered by an external plugin.
+   * Used during hot-reload to cleanly remove a plugin before re-activating it.
+   */
+  unregisterPlugin(pluginId: string) {
+    // Remove sidebar items that belong to this plugin's views
+    const pluginViewIds = new Set<string>();
+    for (const [viewId, ownerPluginId] of this._viewToPlugin.entries()) {
+      if (ownerPluginId === pluginId) {
+        pluginViewIds.add(viewId);
+      }
+    }
+
+    // Remove sidebar items pointing to this plugin's views
+    this._sidebarItems = this._sidebarItems.filter(
+      (item) => !pluginViewIds.has(item.viewId)
+    );
+
+    // Remove views
+    for (const viewId of pluginViewIds) {
+      this._views.delete(viewId);
+      this._viewToPlugin.delete(viewId);
+    }
+
+    // Remove commands owned by this plugin (by convention: "pluginId:*")
+    for (const [cmdId] of this._commands) {
+      if (cmdId.startsWith(`${pluginId}:`)) {
+        this._commands.delete(cmdId);
+      }
+    }
+
+    // Remove status bar items owned by this plugin (by convention: "pluginId:*")
+    this._statusBarItems = this._statusBarItems.filter(
+      (item) => !item.id.startsWith(`${pluginId}:`)
+    );
+
+    // Close any open tabs for views that were removed
+    this._tabs = this._tabs.filter((tab) => !pluginViewIds.has(tab.viewId));
+    if (this._activeTabId && !this._tabs.find((t) => t.id === this._activeTabId)) {
+      this._activeTabId = this._tabs.length > 0 ? this._tabs[0].id : null;
+    }
+
+    // Remove plugin permissions
+    this._pluginPermissions.delete(pluginId);
+
+    // Remove from plugins map
+    this.plugins.delete(pluginId);
+
+    this.notify();
+  }
+
+  // ============================================================================
   // Plugin loading
   // ============================================================================
 

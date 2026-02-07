@@ -1,4 +1,5 @@
 use duckdb::Connection;
+use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::fs;
@@ -7,6 +8,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Mutex,
 };
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_updater::UpdaterExt;
 
@@ -137,6 +139,22 @@ impl Default for LoggingState {
     fn default() -> Self {
         Self {
             logger: Mutex::new(None),
+        }
+    }
+}
+
+/// App state holding the file watcher for plugin hot-reload (developer mode).
+/// When active, watches ~/.treeline/plugins/ for file changes and emits
+/// `plugin-file-changed` events to the frontend so it can reload the plugin.
+pub struct PluginWatcherState {
+    /// The debouncer handle; dropping it stops watching.
+    watcher: Mutex<Option<notify_debouncer_mini::Debouncer<notify::RecommendedWatcher>>>,
+}
+
+impl Default for PluginWatcherState {
+    fn default() -> Self {
+        Self {
+            watcher: Mutex::new(None),
         }
     }
 }
@@ -2010,6 +2028,104 @@ fn discover_plugins() -> Result<Vec<ExternalPlugin>, String> {
     Ok(plugins)
 }
 
+/// Start watching the plugins directory for file changes (hot-reload).
+/// Emits `plugin-file-changed` events with the changed plugin ID to the frontend.
+#[tauri::command]
+fn watch_plugins_dir(
+    app: AppHandle,
+    watcher_state: State<PluginWatcherState>,
+) -> Result<(), String> {
+    let mut guard = watcher_state
+        .watcher
+        .lock()
+        .map_err(|e| format!("Lock error: {}", e))?;
+
+    // Already watching - no-op
+    if guard.is_some() {
+        return Ok(());
+    }
+
+    let treeline_dir = get_treeline_dir()?;
+    let plugins_dir = treeline_dir.join("plugins");
+
+    if !plugins_dir.exists() {
+        fs::create_dir_all(&plugins_dir)
+            .map_err(|e| format!("Failed to create plugins directory: {}", e))?;
+    }
+
+    let plugins_dir_for_handler = plugins_dir.clone();
+    let app_handle = app.clone();
+
+    let mut debouncer = new_debouncer(Duration::from_millis(500), move |events: Result<Vec<notify_debouncer_mini::DebouncedEvent>, notify::Error>| {
+        let events = match events {
+            Ok(events) => events,
+            Err(e) => {
+                eprintln!("Plugin watcher error: {}", e);
+                return;
+            }
+        };
+
+        // Collect unique plugin IDs that changed
+        let mut changed_ids = std::collections::HashSet::new();
+        for event in &events {
+            if event.kind != DebouncedEventKind::Any {
+                continue;
+            }
+            let path = &event.path;
+            // Only care about index.js and manifest.json changes
+            if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
+                if filename != "index.js" && filename != "manifest.json" {
+                    continue;
+                }
+            } else {
+                continue;
+            }
+            // Extract plugin ID from path: plugins_dir/<plugin-id>/index.js
+            if let Ok(rel) = path.strip_prefix(&plugins_dir_for_handler) {
+                if let Some(plugin_id) = rel.iter().next().and_then(|c| c.to_str()) {
+                    changed_ids.insert(plugin_id.to_string());
+                }
+            }
+        }
+
+        for plugin_id in changed_ids {
+            println!("Plugin file changed: {}", plugin_id);
+            let _ = app_handle.emit("plugin-file-changed", plugin_id);
+        }
+    })
+    .map_err(|e| format!("Failed to create file watcher: {}", e))?;
+
+    // Start watching
+    debouncer
+        .watcher()
+        .watch(&plugins_dir, notify::RecursiveMode::Recursive)
+        .map_err(|e| format!("Failed to watch plugins directory: {}", e))?;
+
+    // Store the debouncer (keeps watcher alive)
+    *guard = Some(debouncer);
+
+    println!(
+        "Plugin hot-reload: watching {}",
+        plugins_dir.display()
+    );
+
+    Ok(())
+}
+
+/// Stop watching the plugins directory.
+#[tauri::command]
+fn unwatch_plugins_dir(watcher_state: State<PluginWatcherState>) -> Result<(), String> {
+    let mut guard = watcher_state
+        .watcher
+        .lock()
+        .map_err(|e| format!("Lock error: {}", e))?;
+    if guard.is_some() {
+        *guard = None;
+        println!("Plugin hot-reload: stopped watching");
+    }
+    Ok(())
+}
+
 /// Delete an account and all associated data (transactions, balance snapshots)
 /// This is a cascading delete - all transactions and snapshots for the account are removed
 #[tauri::command]
@@ -3056,6 +3172,7 @@ pub fn run() {
         .manage(AppUpdateState::default())
         .manage(TreelineContextState::default())
         .manage(LoggingState::default())
+        .manage(PluginWatcherState::default())
         .setup(|app| {
             let window = app.get_webview_window("main").unwrap();
             let devtools_state = app.state::<DevtoolsState>();
@@ -3141,6 +3258,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             discover_plugins,
             get_plugins_dir,
+            watch_plugins_dir,
+            unwatch_plugins_dir,
             get_treeline_dir_display,
             execute_query,
             execute_query_with_params,
