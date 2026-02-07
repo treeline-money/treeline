@@ -7,6 +7,7 @@
     installPlugin,
     uninstallPlugin,
     executeQuery,
+    createBackup,
     registry,
     toast,
     themeManager,
@@ -103,7 +104,7 @@
     dependentPlugins: { pluginId: string; pluginName: string; tables: string[] }[];
   }
   let uninstallConfirmation = $state<UninstallConfirmation | null>(null);
-  let deletePluginData = $state(true);
+  let deletePluginData = $state(false);
 
   // Install confirmation state
   interface InstallConfirmation {
@@ -164,6 +165,12 @@
     installingPluginId = plugin.id;
     installConfirmation = null;
     try {
+      // Create automatic backup before plugin install
+      try {
+        await createBackup(10);
+      } catch (e) {
+        console.warn("Pre-install backup failed:", e);
+      }
       const result = await installPlugin(plugin.repo);
       if (result.success) {
         toast.success("Plugin installed", `${result.plugin_name} ${result.version} installed`);
@@ -208,12 +215,12 @@
     const schemaName = permissions.schemaName || `plugin_${plugin.id.replace(/-/g, "_")}`;
     const dependentPlugins = findDependentPlugins(schemaName, plugin.id);
     uninstallConfirmation = { plugin, schemaName, dependentPlugins };
-    deletePluginData = true;
+    deletePluginData = false;
   }
 
   function cancelUninstall() {
     uninstallConfirmation = null;
-    deletePluginData = true;
+    deletePluginData = false;
   }
 
   async function confirmUninstall() {
@@ -253,6 +260,12 @@
   async function executeUpgradePlugin(update: PluginUpdateInfo) {
     upgradingPluginId = update.pluginId;
     try {
+      // Create automatic backup before plugin update
+      try {
+        await createBackup(10);
+      } catch (e) {
+        console.warn("Pre-update backup failed:", e);
+      }
       const resultStr = await invoke<string>("upgrade_plugin", { pluginId: update.pluginId });
       const result = JSON.parse(resultStr);
       if (result.success) {
