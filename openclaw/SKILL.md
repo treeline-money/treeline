@@ -81,20 +81,6 @@ After connecting a source, run `tl sync` to pull transactions.
 
 ---
 
-## Security
-
-**Local-only data access.** This skill reads from a local DuckDB database on the user's machine (`~/.treeline/treeline.duckdb`). No data leaves the device through the skill itself.
-
-**Read-only database access.** The `tl query` command opens the database in read-only mode. Mutations use dedicated CLI commands (`tl tag`, `tl import`) that validate input and prevent arbitrary writes.
-
-**Open-source CLI.** The `tl` binary is built from the public [treeline-money/treeline](https://github.com/treeline-money/treeline) repository. Release artifacts are produced by GitHub Actions CI from tagged commits.
-
-**No network calls.** The skill does not make network requests. Bank sync (`tl sync`) is a user-initiated action that connects to services the user has explicitly configured.
-
-**No credential handling.** Bank connection setup (API keys, tokens) is done by the user outside of this skill, via the desktop app or CLI setup commands. This skill does not receive, store, or transmit credentials.
-
----
-
 ## Limitations
 
 **Encrypted databases not supported.** If the user has enabled database encryption in Treeline, CLI commands will fail. They'll need to either:
