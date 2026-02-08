@@ -73,6 +73,7 @@
   let uninstallingPluginId = $state<string | null>(null);
   let loadingManifestPluginId = $state<string | null>(null);
   let upgradingPluginId = $state<string | null>(null);
+  let isUpdatingAll = $state(false);
 
   // Plugin detail modal state
   interface PluginDetail {
@@ -280,6 +281,54 @@
     }
   }
 
+  // Upgrade all plugins with a single backup
+  async function executeUpgradeAllPlugins() {
+    const updates = Array.from(pluginUpdates.values());
+    if (updates.length === 0) return;
+
+    isUpdatingAll = true;
+    try {
+      // Create a single backup before all updates
+      try {
+        await createBackup(10);
+      } catch (e) {
+        console.warn("Pre-update backup failed:", e);
+      }
+
+      let successCount = 0;
+      let failCount = 0;
+      for (const update of updates) {
+        upgradingPluginId = update.pluginId;
+        try {
+          const resultStr = await invoke<string>("upgrade_plugin", { pluginId: update.pluginId });
+          const result = JSON.parse(resultStr);
+          if (result.success) {
+            successCount++;
+          } else {
+            failCount++;
+          }
+        } catch {
+          failCount++;
+        }
+      }
+
+      if (successCount > 0) {
+        const msg = failCount > 0
+          ? `${successCount} plugin(s) updated, ${failCount} failed. A backup was created automatically.`
+          : `${successCount} plugin(s) updated. A backup was created automatically.`;
+        toast.success("Plugins updated", msg);
+      }
+      if (failCount > 0 && successCount === 0) {
+        toast.error("Update failed", "All plugin updates failed.");
+      }
+
+      onPluginsChanged();
+    } finally {
+      upgradingPluginId = null;
+      isUpdatingAll = false;
+    }
+  }
+
   // Plugin detail modal
   function openPluginDetail(plugin: CommunityPluginInfo | InstalledPluginInfo, fromRegistry: boolean) {
     const installed = isPluginInstalled(plugin.id);
@@ -402,6 +451,19 @@
     <h4 class="group-title">Browse Plugins</h4>
     <p class="group-desc">Discover and install plugins to extend Treeline.</p>
 
+    {#if pluginUpdates.size > 0}
+      <div class="update-all-banner">
+        <span class="update-all-text">{pluginUpdates.size} plugin update{pluginUpdates.size === 1 ? '' : 's'} available</span>
+        <button
+          class="btn primary small"
+          onclick={executeUpgradeAllPlugins}
+          disabled={isUpdatingAll}
+        >
+          {isUpdatingAll ? "Backing up & updating..." : "Update All"}
+        </button>
+      </div>
+    {/if}
+
     {#if isLoadingCommunityPlugins}
       <div class="loading-placeholder">Loading plugins...</div>
     {:else if communityPlugins.length === 0 && installedCommunityPlugins.length === 0}
@@ -431,9 +493,9 @@
                   <button
                     class="btn primary small"
                     onclick={() => executeUpgradePlugin(update)}
-                    disabled={upgradingPluginId === plugin.id}
+                    disabled={upgradingPluginId === plugin.id || isUpdatingAll}
                   >
-                    {upgradingPluginId === plugin.id ? "Backing up & updating..." : `Update to ${update.latestVersion}`}
+                    {upgradingPluginId === plugin.id ? (isUpdatingAll ? "Updating..." : "Backing up & updating...") : `Update to ${update.latestVersion}`}
                   </button>
                 {/if}
                 <button
@@ -680,6 +742,24 @@
     margin-bottom: var(--spacing-md);
     font-size: 12px;
     color: #efb444;
+  }
+
+  /* Update all banner */
+  .update-all-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--spacing-sm) var(--spacing-md);
+    background: rgba(59, 130, 246, 0.1);
+    border: 1px solid rgba(59, 130, 246, 0.25);
+    border-radius: 6px;
+    margin-bottom: var(--spacing-sm);
+  }
+
+  .update-all-text {
+    font-size: 12px;
+    color: var(--text-secondary);
+    font-weight: 500;
   }
 
   /* Plugin list */
