@@ -434,7 +434,7 @@
                     onclick={() => executeUpgradePlugin(update)}
                     disabled={upgradingPluginId === plugin.id}
                   >
-                    {upgradingPluginId === plugin.id ? "Updating..." : `Update to ${update.latestVersion}`}
+                    {upgradingPluginId === plugin.id ? "Backing up & updating..." : `Update to ${update.latestVersion}`}
                   </button>
                 {/if}
                 <button
@@ -454,7 +454,7 @@
                   disabled={installingPluginId === plugin.id || loadingManifestPluginId === plugin.id}
                 >
                   {#if installingPluginId === plugin.id}
-                    Installing...
+                    Backing up & installing...
                   {:else if loadingManifestPluginId === plugin.id}
                     Loading...
                   {:else}
@@ -540,7 +540,7 @@
             disabled={installingPluginId === selectedPlugin.id || loadingManifestPluginId === selectedPlugin.id}
           >
             {#if installingPluginId === selectedPlugin.id}
-              Installing...
+              Backing up & installing...
             {:else if loadingManifestPluginId === selectedPlugin.id}
               Loading...
             {:else}
@@ -649,6 +649,10 @@
             <p class="no-permissions">No special permissions required.</p>
           {/if}
         </div>
+
+        <p class="backup-note">A local backup of your data is created automatically before installing.
+          <button class="backup-link" onclick={() => registry.executeCommand("core:settings:storage")}>Manage backups</button>
+        </p>
       </div>
       <div class="sub-modal-actions">
         <button class="btn secondary" onclick={cancelInstall}>Cancel</button>
@@ -657,7 +661,7 @@
           onclick={() => executeInstallPlugin(installConfirmation!.plugin)}
           disabled={installingPluginId === installConfirmation.plugin.id}
         >
-          {installingPluginId === installConfirmation.plugin.id ? "Installing..." : "Install"}
+          {installingPluginId === installConfirmation.plugin.id ? "Backing up & installing..." : "Install"}
         </button>
       </div>
     </div>
@@ -1119,5 +1123,25 @@
     font-size: 12px;
     color: var(--text-muted);
     margin: 0;
+  }
+
+  .backup-note {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin: var(--spacing-sm) 0 0 0;
+  }
+
+  .backup-link {
+    background: none;
+    border: none;
+    color: var(--accent-primary);
+    font-size: inherit;
+    text-decoration: underline;
+    cursor: pointer;
+    padding: 0;
+  }
+
+  .backup-link:hover {
+    opacity: 0.8;
   }
 </style>

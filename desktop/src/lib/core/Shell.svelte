@@ -184,6 +184,16 @@
     });
 
     registry.registerCommand({
+      id: "core:settings:storage",
+      name: "Open Storage Settings",
+      category: "Core",
+      execute: () => {
+        settingsInitialSection = "storage";
+        settingsModalOpen = true;
+      },
+    });
+
+    registry.registerCommand({
       id: "core:checkForUpdates",
       name: "Check for Updates",
       category: "Core",
