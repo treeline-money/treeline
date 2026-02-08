@@ -131,7 +131,6 @@
     try {
       const resultStr = await invoke<string>("fetch_plugin_manifest", { url: repo });
       const result = JSON.parse(resultStr);
-      if (!result.success) return null;
       const perms = result.manifest?.permissions;
       return { read: perms?.read, write: perms?.write };
     } catch (e) {
