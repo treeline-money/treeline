@@ -39,6 +39,7 @@
 
 
   // Selection & navigation
+  let viewEl = $state<HTMLDivElement | null>(null);
   let selectedAccountId = $state<string | null>(null);
   let cursorIndex = $state(0);
   let openMenuId = $state<string | null>(null);
@@ -389,6 +390,11 @@
   // ============================================================================
 
   function handleKeyDown(e: KeyboardEvent) {
+    // Only handle if this view is focused (not another tab)
+    if (!viewEl?.contains(document.activeElement) && document.activeElement !== document.body) {
+      return;
+    }
+
     // Don't handle if in input/modal
     if (
       e.target instanceof HTMLInputElement ||
@@ -476,7 +482,7 @@
 
 <svelte:window onkeydown={handleKeyDown} />
 
-<div class="accounts-view">
+<div class="accounts-view" bind:this={viewEl}>
   <!-- Header -->
   <header class="view-header">
     <h1>Accounts</h1>
