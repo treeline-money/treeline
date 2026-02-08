@@ -184,6 +184,57 @@ class PluginRegistry {
     return new Map(this._pluginPermissions);
   }
 
+  /**
+   * Unregister everything a plugin has registered.
+   * Removes sidebar items, views, commands, status bar items, and closes open tabs.
+   */
+  unregisterPlugin(pluginId: string) {
+    // Find all views owned by this plugin
+    const pluginViewIds = new Set<string>();
+    for (const [viewId, ownerPluginId] of this._viewToPlugin.entries()) {
+      if (ownerPluginId === pluginId) {
+        pluginViewIds.add(viewId);
+      }
+    }
+
+    // Close tabs for plugin views
+    const tabsToClose = this._tabs.filter((t) => pluginViewIds.has(t.viewId));
+    for (const tab of tabsToClose) {
+      this.closeTab(tab.id);
+    }
+
+    // Remove views
+    for (const viewId of pluginViewIds) {
+      this._views.delete(viewId);
+      this._viewToPlugin.delete(viewId);
+    }
+
+    // Remove sidebar items that reference plugin views
+    this._sidebarItems = this._sidebarItems.filter(
+      (item) => !pluginViewIds.has(item.viewId)
+    );
+
+    // Remove commands by convention: pluginId:*
+    for (const commandId of this._commands.keys()) {
+      if (commandId.startsWith(`${pluginId}:`)) {
+        this._commands.delete(commandId);
+      }
+    }
+
+    // Remove status bar items by convention: pluginId:*
+    this._statusBarItems = this._statusBarItems.filter(
+      (item) => !item.id.startsWith(`${pluginId}:`)
+    );
+
+    // Clear permissions
+    this._pluginPermissions.delete(pluginId);
+
+    // Remove from loaded plugins map
+    this.plugins.delete(pluginId);
+
+    this.notify();
+  }
+
   registerCommand(command: Command) {
     this._commands.set(command.id, command);
     this.notify();

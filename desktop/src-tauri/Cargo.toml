@@ -32,6 +32,8 @@ hex = "0.4"
 sqlparser = "0.60"
 csv = "1.3"
 rust_decimal = "1.37"
+notify = "7"
+notify-debouncer-mini = "0.5"
 
 # Treeline core library - direct integration (replaces CLI subprocess calls)
 treeline-core = { path = "../../core" }

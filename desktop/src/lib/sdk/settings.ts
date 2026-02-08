@@ -27,6 +27,7 @@ export interface AppSettings {
   currency?: string;
   lastSeenVersion?: string | null;
   developerMode?: boolean; // Enable DevTools for plugin development
+  pluginHotReload?: boolean; // Auto-reload external plugins on file change
 }
 
 /**

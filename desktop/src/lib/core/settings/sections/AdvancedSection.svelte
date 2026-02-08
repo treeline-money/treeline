@@ -4,10 +4,12 @@
 
   interface Props {
     developerMode: boolean;
+    pluginHotReload: boolean;
     onDeveloperModeChange: (enabled: boolean) => void;
+    onPluginHotReloadChange: (enabled: boolean) => void;
   }
 
-  let { developerMode, onDeveloperModeChange }: Props = $props();
+  let { developerMode, pluginHotReload, onDeveloperModeChange, onPluginHotReloadChange }: Props = $props();
 </script>
 
 <section class="section">
@@ -35,6 +37,30 @@
       <div class="dev-mode-active">
         <Icon name="check-circle" size={14} />
         <span>DevTools are available. Right-click and select "Inspect" or use the keyboard shortcut.</span>
+      </div>
+
+      <div class="sub-setting">
+        <h4 class="group-title">Plugin Hot-Reload</h4>
+        <p class="group-desc">
+          Automatically reload external plugins when their files change.
+          Watches <code>~/.treeline/plugins/</code> for changes to <code>index.js</code> and <code>manifest.json</code>.
+        </p>
+
+        <label class="checkbox-setting">
+          <input
+            type="checkbox"
+            checked={pluginHotReload}
+            onchange={(e) => onPluginHotReloadChange(e.currentTarget.checked)}
+          />
+          <span>Enable Plugin Hot-Reload</span>
+        </label>
+
+        {#if pluginHotReload}
+          <div class="dev-mode-active">
+            <Icon name="check-circle" size={14} />
+            <span>Watching for plugin file changes. Plugins will reload automatically on save.</span>
+          </div>
+        {/if}
       </div>
     {/if}
   </div>
@@ -67,5 +93,20 @@
   .dev-mode-active :global(svg) {
     color: #22c55e;
     flex-shrink: 0;
+  }
+
+  .sub-setting {
+    margin-top: var(--spacing-md);
+    padding-top: var(--spacing-md);
+    border-top: 1px solid var(--border-primary);
+  }
+
+  code {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    padding: 1px 4px;
+    background: var(--bg-tertiary);
+    border-radius: 3px;
+    color: var(--text-secondary);
   }
 </style>

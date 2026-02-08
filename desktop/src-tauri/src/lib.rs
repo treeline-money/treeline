@@ -1,4 +1,5 @@
 use duckdb::Connection;
+use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::fs;
@@ -7,6 +8,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Mutex,
 };
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_updater::UpdaterExt;
 
@@ -137,6 +139,20 @@ impl Default for LoggingState {
     fn default() -> Self {
         Self {
             logger: Mutex::new(None),
+        }
+    }
+}
+
+/// App state holding the file watcher for plugin hot-reload
+pub struct PluginWatcherState {
+    /// The debounced file watcher handle (dropping it stops the watcher)
+    watcher: Mutex<Option<notify_debouncer_mini::Debouncer<notify::RecommendedWatcher>>>,
+}
+
+impl Default for PluginWatcherState {
+    fn default() -> Self {
+        Self {
+            watcher: Mutex::new(None),
         }
     }
 }
@@ -2013,6 +2029,78 @@ fn discover_plugins() -> Result<Vec<ExternalPlugin>, String> {
     Ok(plugins)
 }
 
+/// Start watching the plugins directory for file changes (hot-reload).
+/// Emits "plugin-file-changed" events with the plugin ID when index.js or manifest.json change.
+#[tauri::command]
+fn watch_plugins_dir(
+    app: AppHandle,
+    watcher_state: State<'_, PluginWatcherState>,
+) -> Result<(), String> {
+    let treeline_dir = get_treeline_dir()?;
+    let plugins_dir = treeline_dir.join("plugins");
+
+    if !plugins_dir.exists() {
+        fs::create_dir_all(&plugins_dir)
+            .map_err(|e| format!("Failed to create plugins directory: {}", e))?;
+    }
+
+    let plugins_dir_clone = plugins_dir.clone();
+    let debouncer = new_debouncer(Duration::from_millis(500), move |res: Result<Vec<notify_debouncer_mini::DebouncedEvent>, notify::Error>| {
+        match res {
+            Ok(events) => {
+                for event in events {
+                    if event.kind != DebouncedEventKind::Any {
+                        continue;
+                    }
+                    let path = &event.path;
+                    // Only react to index.js or manifest.json changes
+                    if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
+                        if filename != "index.js" && filename != "manifest.json" {
+                            continue;
+                        }
+                    } else {
+                        continue;
+                    }
+
+                    // Extract plugin ID from path: plugins_dir/<plugin-id>/filename
+                    if let Ok(relative) = path.strip_prefix(&plugins_dir_clone) {
+                        if let Some(plugin_id) = relative.iter().next().and_then(|c| c.to_str()) {
+                            let _ = app.emit("plugin-file-changed", plugin_id.to_string());
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Plugin watcher error: {:?}", e);
+            }
+        }
+    })
+    .map_err(|e| format!("Failed to create file watcher: {}", e))?;
+
+    let mut watcher_lock = watcher_state.watcher.lock().unwrap();
+
+    // Use the watcher from the debouncer to add the watch path
+    let debouncer = {
+        let mut d = debouncer;
+        d.watcher()
+            .watch(&plugins_dir, notify::RecursiveMode::Recursive)
+            .map_err(|e| format!("Failed to watch plugins directory: {}", e))?;
+        d
+    };
+
+    *watcher_lock = Some(debouncer);
+    Ok(())
+}
+
+/// Stop watching the plugins directory.
+#[tauri::command]
+fn unwatch_plugins_dir(watcher_state: State<'_, PluginWatcherState>) -> Result<(), String> {
+    let mut watcher_lock = watcher_state.watcher.lock().unwrap();
+    // Dropping the debouncer stops the watcher
+    *watcher_lock = None;
+    Ok(())
+}
+
 /// Delete an account and all associated data (transactions, balance snapshots)
 /// This is a cascading delete - all transactions and snapshots for the account are removed
 #[tauri::command]
@@ -3059,6 +3147,7 @@ pub fn run() {
         .manage(AppUpdateState::default())
         .manage(TreelineContextState::default())
         .manage(LoggingState::default())
+        .manage(PluginWatcherState::default())
         .setup(|app| {
             let window = app.get_webview_window("main").unwrap();
             let devtools_state = app.state::<DevtoolsState>();
@@ -3190,6 +3279,9 @@ pub fn run() {
             list_themes,
             // Developer tools
             set_devtools,
+            // Plugin hot-reload
+            watch_plugins_dir,
+            unwatch_plugins_dir,
             // Migrations
             run_migrations,
             // Account management
