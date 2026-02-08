@@ -525,4 +525,4 @@ internal_transfer_tags: [transfer, savings, investment]
 
 ## Privacy Note
 
-All data is local (`~/.treeline/treeline.duckdb`). The skill only reads from this database — it does not upload, transmit, or exfiltrate any data. Never share transaction descriptions or account details outside the conversation unless explicitly asked.
+All data is local (`~/.treeline/treeline.duckdb`). Never share transaction descriptions or account details outside the conversation unless explicitly asked.
