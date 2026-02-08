@@ -63,42 +63,33 @@ Demo data is separate from real data.
 
 ### Connecting Real Data
 
-**SimpleFIN** ($1.50/month, US & Canada)
-1. Sign up at [beta-bridge.simplefin.org](https://beta-bridge.simplefin.org/)
-2. Connect bank accounts and create a setup token
-3. Run `tl setup simplefin <setup-token>`
-4. Run `tl sync`
+Users set up bank connections **before** using this skill, via the Treeline desktop app or `tl setup --help`. Supported sources:
 
-**Lunch Flow** (~$3/month, global: US, Canada, Brazil, EU, UK, Asia)
-1. Sign up at [lunchflow.app](https://www.lunchflow.app/?atp=treeline)
-2. Connect bank accounts and create an API destination
-3. Run `tl setup lunchflow <api-key>`
-4. Run `tl sync`
+- **SimpleFIN** ($1.50/month, US & Canada) — [beta-bridge.simplefin.org](https://beta-bridge.simplefin.org/)
+- **Lunch Flow** (~$3/month, global) — [lunchflow.app](https://www.lunchflow.app/?atp=treeline)
+- **CSV Import** (free) — Export from bank website, then `tl import`
 
-**CSV Import** (free, CLI or desktop app)
-1. Export transactions as CSV from bank website
-2. Find the account to import into: `tl status --json` (grab the account name or UUID)
-3. Preview: `tl import export.csv --account "Checking" --dry-run`
-4. Import: `tl import export.csv --account "Checking"`
-
-Auto-detection handles most CSVs. If columns don't match, specify them:
-```bash
-tl import export.csv --account "Checking" \
-  --date-column "Trans Date" \
-  --amount-column "Amount" \
-  --description-column "Memo"
-```
-
-For European formats: `--number-format eu` (1.234,56) or `--number-format eu_space` (1 234,56).
-For credit cards where charges are positive: `--flip-signs`.
-For CSVs with separate debit/credit columns: `--debit-column "Debit" --credit-column "Credit"`.
-For CSVs with bank letterhead rows before the header: `--skip-rows 3`.
+After setup, run `tl sync` to pull transactions. See the [Treeline docs](https://treeline.money/docs) for full setup instructions.
 
 ---
 
 ## What is Treeline?
 
 [Treeline Money](https://treeline.money) is a local-first personal finance app. All your data stays on your device in a local DuckDB database. No cloud accounts, no subscriptions required (sync services are optional), full SQL access to your financial data.
+
+---
+
+## Security
+
+**Local-only data access.** This skill reads from a local DuckDB database on the user's machine (`~/.treeline/treeline.duckdb`). No data leaves the device through the skill itself.
+
+**Read-only database access.** The `tl query` command opens the database in read-only mode. Mutations use dedicated CLI commands (`tl tag`, `tl import`) that validate input and prevent arbitrary writes.
+
+**Open-source CLI.** The `tl` binary is built from the public [treeline-money/treeline](https://github.com/treeline-money/treeline) repository. Release artifacts are produced by GitHub Actions CI from tagged commits.
+
+**No network calls.** The skill does not make network requests. Bank sync (`tl sync`) is a user-initiated action that connects to services the user has explicitly configured.
+
+**No credential handling.** Bank connection setup (API keys, tokens) is done by the user outside of this skill, via the desktop app or CLI setup commands. This skill does not receive, store, or transmit credentials.
 
 ---
 
@@ -154,9 +145,8 @@ The `tl` CLI can do more than just queries:
 tl status              # Quick account summary with balances
 tl status --json       # Same, but JSON output
 
-tl query "SQL" --json  # Run any SQL query (read-only by default)
+tl query "SQL" --json  # Run any SQL query (read-only)
 tl sql "SQL" --json    # Same as tl query (alias)
-tl query "SQL" --allow-writes  # Enable write operations (INSERT, UPDATE, DELETE)
 
 tl sync                # Sync accounts/transactions from bank integrations
 tl sync --dry-run      # Preview what would sync
@@ -177,7 +167,7 @@ tl tag "groceries" --ids ID1,ID2  # Apply tags to transactions
 tl demo on|off         # Toggle demo mode (sample data)
 ```
 
-> **Note:** `tl query` and `tl sql` are identical — use whichever you prefer. The database is opened read-only by default. Use `--allow-writes` to enable write operations.
+> **Note:** `tl query` and `tl sql` are identical — use whichever you prefer. The database is opened read-only.
 
 **Use `tl status` for quick balance checks** — it's faster than a SQL query.
 
@@ -546,4 +536,4 @@ internal_transfer_tags: [transfer, savings, investment]
 
 ## Privacy Note
 
-All data is local (`~/.treeline/treeline.duckdb`). Never share transaction descriptions or account details outside the conversation unless explicitly asked.
+All data is local (`~/.treeline/treeline.duckdb`). The skill only reads from this database — it does not upload, transmit, or exfiltrate any data. Never share transaction descriptions or account details outside the conversation unless explicitly asked.
