@@ -72,6 +72,8 @@ Data source options:
 
 Setup guides: [Bank Sync](https://treeline.money/docs/integrations/bank-sync/) · [CSV Import](https://treeline.money/docs/integrations/csv-import/)
 
+Once set up, use `tl sync` to pull bank transactions or `tl import` to load a CSV.
+
 ---
 
 ## What is Treeline?
