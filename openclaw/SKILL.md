@@ -63,13 +63,14 @@ Demo data is separate from real data.
 
 ### Connecting Real Data
 
-When the user is ready to move beyond demo mode, Treeline supports three data sources:
+When the user is ready to move beyond demo mode, direct them to set up a data source outside of the chat. **Do not guide users through credential or token setup in this conversation** — tokens pass through the LLM and should be entered directly in the Treeline desktop app or CLI.
 
-- **SimpleFIN** ($1.50/month, US & Canada) — [beta-bridge.simplefin.org](https://beta-bridge.simplefin.org/)
-- **Lunch Flow** (~$3/month, global) — [lunchflow.app](https://www.lunchflow.app/?atp=treeline)
-- **CSV Import** (free) — Export from bank website, then use `tl import`
+Data source options:
+- **SimpleFIN** ($1.50/month, US & Canada)
+- **Lunch Flow** (~$3/month, global)
+- **CSV Import** (free)
 
-Guide users through setup with `tl setup --help`, which walks through each provider step-by-step. Full instructions are also at [treeline.money/docs](https://treeline.money/docs).
+Setup guides: [Bank Sync](https://treeline.money/docs/integrations/bank-sync/) · [CSV Import](https://treeline.money/docs/integrations/csv-import/)
 
 After connecting a source, run `tl sync` to pull transactions.
 
