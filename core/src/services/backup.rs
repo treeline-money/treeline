@@ -119,30 +119,6 @@ impl BackupService {
             }
         }
 
-        // Add plugin state files if they exist
-        let plugins_dir = self.treeline_dir.join("plugins");
-        if plugins_dir.exists() {
-            if let Ok(entries) = fs::read_dir(&plugins_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if !path.is_dir() {
-                        continue;
-                    }
-                    let state_path = path.join("state.json");
-                    if state_path.exists() {
-                        if let Some(plugin_id) = path.file_name().and_then(|n| n.to_str()) {
-                            let zip_path = format!("plugins/{}/state.json", plugin_id);
-                            zip.start_file(&zip_path, options)?;
-                            let mut sf = File::open(&state_path)?;
-                            buffer.clear();
-                            sf.read_to_end(&mut buffer)?;
-                            zip.write_all(&buffer)?;
-                        }
-                    }
-                }
-            }
-        }
-
         zip.finish()?;
 
         let metadata = fs::metadata(&backup_path)?;
@@ -278,11 +254,6 @@ impl BackupService {
                     }
                     self.treeline_dir.join(&name)
                 };
-
-                // Ensure parent directory exists (needed for plugin state files)
-                if let Some(parent) = target_path.parent() {
-                    fs::create_dir_all(parent)?;
-                }
 
                 let mut outfile = File::create(&target_path)?;
                 std::io::copy(&mut file, &mut outfile)?;
