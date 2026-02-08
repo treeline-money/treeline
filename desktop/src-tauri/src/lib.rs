@@ -1104,6 +1104,9 @@ async fn uninstall_plugin(plugin_id: String) -> Result<String, String> {
 }
 
 /// Upgrade a plugin to latest version using treeline-core
+///
+/// The frontend creates a database backup via createBackup() before
+/// calling this command, protecting against breaking schema migrations.
 #[tauri::command]
 async fn upgrade_plugin(plugin_id: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
