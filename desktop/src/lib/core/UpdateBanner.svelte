@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { Icon } from "../shared";
+  import { registry } from "../sdk";
   import {
     subscribeToUpdates,
     downloadAndInstall,
@@ -58,6 +59,10 @@
     dismissUpdate();
   }
 
+  function openBackupSettings() {
+    registry.executeCommand("core:settings:storage");
+  }
+
   // Determine what state we're in
   let showBanner = $derived(updateState.available || updateState.isDownloading);
   let isDownloadComplete = $derived(updateState.downloadProgress === 100 && !updateState.isDownloading);
@@ -73,12 +78,14 @@
         <strong>Update ready!</strong> — Restart to apply v{updateState.version}
       {:else if isInstalling}
         <strong>Backing up & updating...</strong>
-        <span class="backup-note">Your data is being safely backed up</span>
+        <span class="backup-note">Creating a local backup of your data</span>
       {:else if updateState.isDownloading}
         <strong>Downloading update...</strong> — {updateState.downloadProgress}%
       {:else}
         <strong>Update available!</strong> — Treeline v{updateState.version} is ready
-        <span class="backup-note">Your data is automatically backed up before updating</span>
+        <span class="backup-note">A local backup is created automatically before updating.
+          <button class="backup-link" onclick={openBackupSettings}>Manage backups</button>
+        </span>
       {/if}
     </span>
     <div class="update-actions">
@@ -139,6 +146,21 @@
     font-size: 0.75rem;
     opacity: 0.85;
     margin-left: 0.25rem;
+  }
+
+  .backup-link {
+    background: none;
+    border: none;
+    color: inherit;
+    font-size: inherit;
+    text-decoration: underline;
+    cursor: pointer;
+    padding: 0;
+    opacity: 0.9;
+  }
+
+  .backup-link:hover {
+    opacity: 1;
   }
 
   .update-actions {
