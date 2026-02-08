@@ -642,57 +642,6 @@ impl PluginService {
         }
     }
 
-    /// Back up a plugin's files before upgrade
-    ///
-    /// Copies manifest.json, index.js, and state.json (if present) to a
-    /// timestamped backup directory under `~/.treeline/plugins/.backups/{plugin_id}/`.
-    /// Returns the backup directory path on success.
-    pub fn backup_plugin_files(&self, plugin_id: &str) -> Result<PathBuf> {
-        let plugin_dir = self.plugins_dir.join(plugin_id);
-        if !plugin_dir.exists() {
-            anyhow::bail!("Plugin directory not found: {}", plugin_id);
-        }
-
-        let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
-        let backups_root = self.plugins_dir.join(".backups").join(plugin_id);
-        let backup_dir = backups_root.join(timestamp.to_string());
-        fs::create_dir_all(&backup_dir)?;
-
-        // Copy all relevant plugin files
-        for filename in &["manifest.json", "index.js", "state.json"] {
-            let src = plugin_dir.join(filename);
-            if src.exists() {
-                fs::copy(&src, backup_dir.join(filename))?;
-            }
-        }
-
-        // Retain only the 5 most recent backups for this plugin
-        self.apply_plugin_backup_retention(&backups_root, 5)?;
-
-        Ok(backup_dir)
-    }
-
-    /// Keep only the N most recent backup directories for a plugin
-    fn apply_plugin_backup_retention(&self, backups_root: &Path, max: usize) -> Result<()> {
-        if !backups_root.exists() {
-            return Ok(());
-        }
-
-        let mut entries: Vec<_> = fs::read_dir(backups_root)?
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().is_dir())
-            .collect();
-
-        // Sort by name descending (timestamps sort lexicographically)
-        entries.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
-
-        for old in entries.into_iter().skip(max) {
-            let _ = fs::remove_dir_all(old.path());
-        }
-
-        Ok(())
-    }
-
     /// Upgrade plugin to latest version
     pub fn upgrade_plugin(&self, plugin_id: &str) -> Result<PluginResult> {
         let plugin_dir = self.plugins_dir.join(plugin_id);
@@ -714,15 +663,6 @@ impl PluginService {
                 error: Some(format!("Plugin '{}' has no source URL. Cannot upgrade plugins installed from local directories.", plugin_id)),
                 ..Default::default()
             });
-        }
-
-        // Back up current plugin files before overwriting
-        if let Err(e) = self.backup_plugin_files(plugin_id) {
-            eprintln!(
-                "Warning: Failed to back up plugin files for '{}': {}",
-                plugin_id, e
-            );
-            // Continue with upgrade even if file backup fails
         }
 
         // Reinstall from source
