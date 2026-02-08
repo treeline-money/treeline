@@ -650,7 +650,9 @@
           {/if}
         </div>
 
-        <p class="backup-note">A local backup of your data is created automatically before installing.</p>
+        <p class="backup-note">A local backup of your data is created automatically before installing.
+          <button class="backup-link" onclick={() => registry.executeCommand("core:settings:storage")}>Manage backups</button>
+        </p>
       </div>
       <div class="sub-modal-actions">
         <button class="btn secondary" onclick={cancelInstall}>Cancel</button>
@@ -1127,5 +1129,19 @@
     font-size: 11px;
     color: var(--text-muted);
     margin: var(--spacing-sm) 0 0 0;
+  }
+
+  .backup-link {
+    background: none;
+    border: none;
+    color: var(--accent-primary);
+    font-size: inherit;
+    text-decoration: underline;
+    cursor: pointer;
+    padding: 0;
+  }
+
+  .backup-link:hover {
+    opacity: 0.8;
   }
 </style>
