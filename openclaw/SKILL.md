@@ -63,7 +63,7 @@ Demo data is separate from real data.
 
 ### Connecting Real Data
 
-When the user is ready to move beyond demo mode, direct them to set up a data source outside of the chat. **Do not guide users through credential or token setup in this conversation** — tokens pass through the LLM and should be entered directly in the Treeline desktop app or CLI.
+When the user is ready to move beyond demo mode, direct them to set up a data source with the guides linked below.
 
 Data source options:
 - **SimpleFIN** ($1.50/month, US & Canada)
