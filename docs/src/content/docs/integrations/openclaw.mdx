@@ -11,17 +11,27 @@ This integration sends financial data through external services (chat platforms 
 The existence of a Treeline integration does not mean we've audited or endorsed the security practices of third-party services. You are responsible for evaluating whether these tools meet your security requirements.
 :::
 
-## Requirements
-
-- [Treeline CLI](/cli/) installed and configured
-- Financial data already in Treeline (via import or bank sync)
-- OpenClaw installed on the same machine
-
 ## Getting Started
 
-For installation and setup instructions, see the [OpenClaw documentation](https://openclaw.ai).
-
 The Treeline skill is available on ClawHub: [zack-schrag/treeline-money](https://www.clawhub.ai/zack-schrag/treeline-money)
+
+You don't need existing financial data to try it out. The skill installs the Treeline CLI automatically, and demo mode gives you sample data to explore right away:
+
+1. Install [OpenClaw](https://openclaw.ai) if you haven't already
+2. Add the Treeline skill from ClawHub
+3. Ask the agent to enable demo mode — it'll run `tl demo on` and you can start querying immediately
+
+Try questions like "What's my net worth?", "How much did I spend on groceries?", or "Am I over budget?"
+
+## Connecting Your Real Data
+
+When you're ready to use your own financial data, connect a data source using the Treeline desktop app or CLI:
+
+- **Bank Sync** — Automatic transaction sync from your bank. See the [Bank Sync guide](/integrations/bank-sync/) to set up SimpleFIN (US & Canada, $1.50/month) or Lunch Flow (global, ~$3/month).
+- **CSV Import** — Free, works with any bank. See the [CSV Import guide](/integrations/csv-import/).
+- **Desktop App** — Download from [treeline.money/download](https://treeline.money/download) for a visual way to import data and manage settings.
+
+Once your data is in Treeline, the skill will start querying it automatically.
 
 ## Privacy Considerations
 
