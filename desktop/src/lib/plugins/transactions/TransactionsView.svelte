@@ -1145,8 +1145,11 @@
     }
     // Clear selection after rule is created
     deselectAll();
-    // Refresh transactions to show updated tags
+    // Refresh transactions and global stats to show updated tags
     await loadTransactions();
+    await loadGlobalStats();
+    // Notify sidebar badge of the change
+    registry.emit("data:refresh");
   }
 
   function openRulesModal() {

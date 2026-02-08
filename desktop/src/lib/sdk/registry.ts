@@ -137,9 +137,13 @@ class PluginRegistry {
    * @param count The badge count (0 or undefined to hide badge)
    */
   updateSidebarBadge(itemId: string, count: number | undefined) {
-    const item = this._sidebarItems.find((i) => i.id === itemId);
-    if (item) {
-      item.badge = count && count > 0 ? count : undefined;
+    const index = this._sidebarItems.findIndex((i) => i.id === itemId);
+    if (index !== -1) {
+      // Create a new object so Svelte's keyed #each detects the change
+      this._sidebarItems[index] = {
+        ...this._sidebarItems[index],
+        badge: count && count > 0 ? count : undefined,
+      };
       this.notify();
     }
   }
