@@ -365,17 +365,6 @@ jobs:
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Update OpenClaw skill version
-        if: steps.openclaw_check.outputs.changed == 'true'
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-
-          # Update skill version to match release version
-          sed -i "s/^version: .*/version: $VERSION/" openclaw/SKILL.md
-
-          echo "Updated OpenClaw skill to version $VERSION"
-          grep "^version:" openclaw/SKILL.md
-
       - name: Publish OpenClaw skill to ClawHub
         if: steps.openclaw_check.outputs.changed == 'true'
         continue-on-error: true

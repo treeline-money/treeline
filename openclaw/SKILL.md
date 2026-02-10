@@ -1,10 +1,9 @@
 ---
 name: treeline
 description: Chat with your finances from Treeline Money. Query balances, spending, budgets, and transactions.
-version: 0.0.6
 user-invocable: true
 homepage: https://treeline.money
-metadata: {"clawdbot":{"emoji":"🌲","requires":{"bins":["tl"]},"install":[{"id":"tl-mac","kind":"download","url":"https://github.com/treeline-money/treeline/releases/latest/download/tl-macos-arm64","bins":["tl"],"label":"Install Treeline CLI (macOS)","os":["darwin"]},{"id":"tl-linux","kind":"download","url":"https://github.com/treeline-money/treeline/releases/latest/download/tl-linux-x64","bins":["tl"],"label":"Install Treeline CLI (Linux)","os":["linux"]},{"id":"tl-win","kind":"download","url":"https://github.com/treeline-money/treeline/releases/latest/download/tl-windows-x64.exe","bins":["tl.exe"],"label":"Install Treeline CLI (Windows)","os":["win32"]}]}}
+metadata: {"openclaw":{"emoji":"🌲","requires":{"bins":["tl"]},"install":[{"id":"tl-mac","kind":"download","url":"https://github.com/treeline-money/treeline/releases/latest/download/tl-macos-arm64","bins":["tl"],"label":"Install Treeline CLI (macOS)","os":["darwin"]},{"id":"tl-linux","kind":"download","url":"https://github.com/treeline-money/treeline/releases/latest/download/tl-linux-x64","bins":["tl"],"label":"Install Treeline CLI (Linux)","os":["linux"]},{"id":"tl-win","kind":"download","url":"https://github.com/treeline-money/treeline/releases/latest/download/tl-windows-x64.exe","bins":["tl.exe"],"label":"Install Treeline CLI (Windows)","os":["win32"]}]}}
 ---
 
 # Treeline Money
