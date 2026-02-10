@@ -131,7 +131,7 @@ These commands are read-only and safe to run autonomously:
 tl status              # Quick account summary with balances
 tl status --json       # Same, but JSON output
 
-tl query "SQL" --json  # Run any SQL query (read-only, database opened in read-only mode)
+tl query "SQL" --json  # Run any SQL query (database opened in read-only mode)
 tl sql "SQL" --json    # Same as tl query (alias)
 
 tl backup list         # List available backups
@@ -139,7 +139,7 @@ tl doctor              # Check database health
 tl demo status         # Check if demo mode is on/off
 ```
 
-> **Note:** `tl query` and `tl sql` open the database in read-only mode. They cannot modify data.
+> **Note:** `tl query` and `tl sql` open the database in read-only mode by default. They cannot modify data unless `--allow-writes` is passed (see write commands below).
 
 **Use `tl status` for quick balance checks** — it's faster than a SQL query.
 
@@ -148,6 +148,9 @@ tl demo status         # Check if demo mode is on/off
 These commands modify local data. **Always ask the user for confirmation before running them**, unless the user has explicitly allowed them in `PERMISSIONS.md` (see [Agent Permissions](#agent-permissions)).
 
 ```bash
+tl query "SQL" --allow-writes --json  # Run a SQL query with write access
+tl sql "SQL" --allow-writes --json    # Same (alias)
+
 tl sync                # Sync accounts/transactions from bank integrations
 tl sync --dry-run      # Preview what would sync (read-only, safe to run)
 
