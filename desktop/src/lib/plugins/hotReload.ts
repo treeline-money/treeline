@@ -12,29 +12,7 @@ import { registry } from "../sdk/registry";
 import { themeManager } from "../sdk/theme";
 import { getDisabledPlugins } from "../sdk/settings";
 import type { Plugin, PluginContext } from "../sdk/types";
-
-interface ExternalPluginInfo {
-  manifest: {
-    id: string;
-    name: string;
-    version: string;
-    description: string;
-    author: string;
-    main: string;
-    permissions?: {
-      tables?: {
-        read?: string[];
-        write?: string[];
-        create?: string[];
-      };
-      read?: string[];
-      write?: string[];
-      create?: string[];
-      schemaName?: string;
-    };
-  };
-  path: string;
-}
+import type { ExternalPluginInfo } from "./types";
 
 // Active plugin instances for deactivation during reload
 const activePlugins = new Map<string, Plugin>();
@@ -145,6 +123,11 @@ async function reloadPlugin(pluginId: string): Promise<void> {
   }
 
   const plugin: Plugin = module.plugin;
+
+  // NOTE: Migrations are intentionally skipped during hot-reload. Running them on every
+  // file save would be destructive — a half-typed migration would execute and be recorded
+  // as completed, with no rollback mechanism. Developers should restart the app to run
+  // new migrations.
 
   // 5. Register permissions from the fresh manifest
   const permissions = pluginInfo.manifest.permissions ?? {};

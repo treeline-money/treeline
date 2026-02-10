@@ -10,6 +10,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { registry, themeManager, getDisabledPlugins, getAppSetting, executeQuery, executeQueryWithParams } from "../sdk";
 import type { Plugin, PluginContext, PluginMigration } from "../sdk/types";
 import { trackActivePlugin, startHotReload } from "./hotReload";
+import type { ExternalPluginInfo, LoadedExternalPlugin } from "./types";
 
 // Import core plugins
 import { plugin as queryPlugin } from "./query";
@@ -112,35 +113,6 @@ async function runPluginMigrations(
     console.error(`Failed to run migrations for plugin ${pluginId}:`, error);
     throw error;
   }
-}
-
-interface ExternalPluginInfo {
-  manifest: {
-    id: string;
-    name: string;
-    version: string;
-    description: string;
-    author: string;
-    main: string;
-    permissions?: {
-      tables?: {
-        read?: string[];
-        write?: string[];
-        create?: string[];
-      };
-      // Direct format (alternative to tables.read/write)
-      read?: string[];
-      write?: string[];
-      create?: string[];
-      schemaName?: string;
-    };
-  };
-  path: string;
-}
-
-interface LoadedExternalPlugin {
-  plugin: Plugin;
-  discoveredManifest: ExternalPluginInfo["manifest"];
 }
 
 /**
