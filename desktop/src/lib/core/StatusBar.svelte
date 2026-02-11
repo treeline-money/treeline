@@ -40,13 +40,23 @@
   <div class="statusbar-left">
     <StatusBarActivity />
     {#each leftItems as item (item.id)}
-      <item.component />
+      <svelte:boundary>
+        <item.component />
+        {#snippet failed(_error)}
+          <span class="statusbar-item statusbar-item-error" title={_error.message}>--</span>
+        {/snippet}
+      </svelte:boundary>
     {/each}
   </div>
 
   <div class="statusbar-right">
     {#each rightItems as item (item.id)}
-      <item.component />
+      <svelte:boundary>
+        <item.component />
+        {#snippet failed(_error)}
+          <span class="statusbar-item statusbar-item-error" title={_error.message}>--</span>
+        {/snippet}
+      </svelte:boundary>
     {/each}
 
     <!-- Built-in theme toggle -->
@@ -119,5 +129,10 @@
   :global(.statusbar-item:hover) {
     background: var(--bg-hover);
     color: var(--text-primary);
+  }
+
+  .statusbar-item-error {
+    color: var(--text-tertiary, var(--text-secondary));
+    opacity: 0.5;
   }
 </style>

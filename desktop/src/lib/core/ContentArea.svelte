@@ -2,6 +2,7 @@
   import { registry, modKey, logger } from "../sdk";
   import { createPluginSDK } from "../sdk/public";
   import type { Tab, ViewDefinition } from "../sdk";
+  import PluginErrorFallback from "./PluginErrorFallback.svelte";
 
   let tabs = $state<Tab[]>(registry.tabs);
   let activeTabId = $state<string | null>(registry.activeTab?.id ?? null);
@@ -10,6 +11,9 @@
   // Track mount containers and cleanup functions for external plugins
   let mountContainers = $state<Record<string, HTMLDivElement | null>>({});
   let cleanupFunctions: Record<string, (() => void) | null> = {};
+
+  // Track mount errors for external plugins
+  let mountErrors: Record<string, Error> = $state({});
 
   // Track previous active tab to detect changes
   let prevActiveTabId: string | null = null;
@@ -41,6 +45,12 @@
     return registry.getView(tab.viewId) ?? null;
   }
 
+  // Get plugin name for a tab (used in error messages)
+  function getPluginName(tab: Tab): string | undefined {
+    const view = getView(tab);
+    return view?.name;
+  }
+
   // Track which mount function each tab was mounted with (for hot-reload detection)
   let mountedWith: Record<string, Function | null> = {};
 
@@ -49,8 +59,11 @@
     const view = getView(tab);
     if (!view?.mount || !container) return;
 
-    // Already mounted with the same mount function — skip
+    // Already mounted with the same mount function and no error — skip
     if (cleanupFunctions[tab.id] && mountedWith[tab.id] === view.mount) return;
+
+    // If there's a pending mount error for this tab, don't remount automatically
+    if (mountErrors[tab.id]) return;
 
     // Store the container ref so the hot-reload effect can find it
     mountContainers[tab.id] = container;
@@ -74,8 +87,31 @@
       sdk,
     };
 
-    cleanupFunctions[tab.id] = view.mount(container, props);
-    mountedWith[tab.id] = view.mount;
+    try {
+      cleanupFunctions[tab.id] = view.mount(container, props);
+      mountedWith[tab.id] = view.mount;
+    } catch (error) {
+      console.error(`Plugin mount failed for view "${tab.viewId}":`, error);
+      mountErrors[tab.id] = error instanceof Error ? error : new Error(String(error));
+    }
+  }
+
+  // Retry mounting an external plugin after a mount error
+  function retryMount(tab: Tab) {
+    delete mountErrors[tab.id];
+    // Cleanup if partially mounted
+    if (cleanupFunctions[tab.id]) {
+      try { cleanupFunctions[tab.id]!(); } catch (_) { /* ignore */ }
+      delete cleanupFunctions[tab.id];
+    }
+    delete mountedWith[tab.id];
+    delete mountContainers[tab.id];
+  }
+
+  // Handle errors from svelte:boundary for core plugin components
+  function handleComponentError(error: unknown, tab: Tab) {
+    const pluginName = getPluginName(tab) ?? tab.viewId;
+    console.error(`Plugin component error in "${pluginName}":`, error);
   }
 
   // Re-mount plugin tabs when their view definition changes (hot-reload)
@@ -102,6 +138,13 @@
         delete cleanupFunctions[tabId];
         delete mountContainers[tabId];
         delete mountedWith[tabId];
+      }
+    }
+
+    // Clean up mount errors for closed tabs
+    for (const tabId of Object.keys(mountErrors)) {
+      if (!currentTabIds.has(tabId)) {
+        delete mountErrors[tabId];
       }
     }
   });
@@ -136,13 +179,26 @@
           {#if view.component}
             <!-- Core plugin with Svelte component -->
             {@const Component = view.component}
-            <Component {...tab.props} />
+            <svelte:boundary onerror={(error) => handleComponentError(error, tab)}>
+              <Component {...tab.props} />
+              {#snippet failed(error, reset)}
+                <PluginErrorFallback error={error} pluginName={getPluginName(tab)} {reset} />
+              {/snippet}
+            </svelte:boundary>
           {:else if view.mount}
             <!-- External plugin with mount function -->
-            <div
-              class="plugin-mount-container"
-              use:mountAction={{ tab, handler: handleMountContainer }}
-            ></div>
+            {#if mountErrors[tab.id]}
+              <PluginErrorFallback
+                error={mountErrors[tab.id]}
+                pluginName={getPluginName(tab)}
+                reset={() => retryMount(tab)}
+              />
+            {:else}
+              <div
+                class="plugin-mount-container"
+                use:mountAction={{ tab, handler: handleMountContainer }}
+              ></div>
+            {/if}
           {/if}
         </div>
       {/if}
