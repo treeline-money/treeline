@@ -157,6 +157,9 @@ jobs:
           - os: macos-latest
             target-triple: aarch64-apple-darwin
             artifact-name: desktop-macos-arm64
+          - os: macos-15-intel
+            target-triple: x86_64-apple-darwin
+            artifact-name: desktop-macos-x64
           - os: windows-latest
             target-triple: x86_64-pc-windows-msvc
             artifact-name: desktop-windows-x64
@@ -397,6 +400,9 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
             artifact-name: cli-macos-arm64
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            artifact-name: cli-macos-x64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact-name: cli-windows-x64
