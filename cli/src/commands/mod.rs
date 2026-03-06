@@ -9,6 +9,7 @@ pub mod import;
 pub mod logs;
 pub mod plugin;
 pub mod query;
+pub mod skill;
 pub mod setup;
 pub mod status;
 pub mod sync;

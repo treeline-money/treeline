@@ -137,6 +137,10 @@ tl sql "SQL" --json    # Same as tl query (alias)
 tl backup list         # List available backups
 tl doctor              # Check database health
 tl demo status         # Check if demo mode is on/off
+
+tl skill list          # List installed skills
+tl skill list --json   # Same, but JSON output
+tl skill show NAME     # Show details of an installed skill
 ```
 
 > **Note:** `tl query` and `tl sql` open the database in read-only mode by default. They cannot modify data unless `--allow-writes` is passed (see write commands below).
@@ -166,6 +170,9 @@ tl compact             # Compact database (reclaim space, optimize)
 tl tag "groceries" --ids ID1,ID2  # Apply tags to transactions
 
 tl demo on|off         # Toggle demo mode (sample data)
+
+tl skill add PATH     # Install a skill from a local directory or SKILL.md file
+tl skill remove NAME  # Remove an installed skill
 ```
 
 > **Tip:** `--dry-run` variants are read-only and safe to run without confirmation. Use them to preview before asking the user to confirm the actual operation.
@@ -554,6 +561,33 @@ internal_transfer_tags: [transfer, savings, investment]
 - Briefly mention updates for small observations
 - Ask before recording significant assumptions
 - Periodically validate against live data (accounts may close, tags may change)
+
+---
+
+## Local Skills
+
+Treeline supports locally installed skills — reusable financial perspectives, queries, and workflows that agents can discover and execute.
+
+Skills are stored in `~/.treeline/skills/` as directories containing a `SKILL.md` file (following the standard skill format). Each skill defines financial logic — queries, categorization rules, calculations — that any agent can use.
+
+### Discovering Skills
+
+Before answering finance questions, check if the user has relevant installed skills:
+
+```bash
+tl skill list --json
+```
+
+If a skill matches the user's question, load it with `tl skill show <name> --json` and follow its instructions.
+
+### Creating Skills
+
+When you help a user build a useful financial query or workflow, offer to save it as a skill:
+
+1. Create a directory with a `SKILL.md` file following the standard format
+2. Install it with `tl skill add <path>`
+
+Skills should focus on **financial logic** — how to query, categorize, or interpret Treeline data. Leave presentation and delivery (email, Excel, charts) to the agent.
 
 ---
 

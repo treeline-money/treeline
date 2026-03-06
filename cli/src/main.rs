@@ -10,8 +10,8 @@ mod commands;
 mod output;
 
 use commands::{
-    backup, compact, demo, doctor, encrypt, import, logs, plugin, query, setup, status, sync, tag,
-    update,
+    backup, compact, demo, doctor, encrypt, import, logs, plugin, query, setup, skill, status,
+    sync, tag, update,
 };
 
 /// Treeline - personal finance in your terminal
@@ -201,6 +201,12 @@ enum Commands {
         command: plugin::PluginCommands,
     },
 
+    /// Manage locally installed skills
+    Skill {
+        #[command(subcommand)]
+        command: skill::SkillCommands,
+    },
+
     /// View and manage application logs
     Logs {
         #[command(subcommand)]
@@ -316,6 +322,7 @@ fn run(cli: Cli) -> Result<()> {
         Commands::Demo { command } => demo::run(command),
         Commands::Setup { command } => setup::run(command),
         Commands::Plugin { command } => plugin::run(command),
+        Commands::Skill { command } => skill::run(command),
         Commands::Logs { command } => logs::run(command),
         Commands::Update { yes, check } => update::run(yes, check),
     }
