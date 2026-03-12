@@ -26,9 +26,9 @@ Open **Settings > Developer > Edit Config** and add:
 
 Restart Claude Desktop. You should see Treeline listed in the tools menu.
 
-### ChatGPT Desktop
+### ChatGPT
 
-ChatGPT Desktop supports MCP servers through [mcp.run](https://mcp.run). See the mcp.run documentation for how to expose a local STDIO server.
+ChatGPT supports MCP via [remote HTTP servers](https://developers.openai.com/api/docs/mcp/) only — it does not support local STDIO servers directly. To use Treeline with ChatGPT, you would need to host the MCP server behind an HTTP endpoint, which conflicts with Treeline's local-first design. This may be supported in the future.
 
 ### Other MCP clients
 
