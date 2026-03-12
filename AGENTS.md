@@ -197,6 +197,17 @@ The CLI (`tl`) provides command-line access to core functionality:
 
 **CLI commands are thin wrappers.** Each command handles argument parsing, output formatting, and logging. All business logic belongs in core services. CLI commands must never call `ctx.repository` directly — always go through a service.
 
+### MCP Server
+
+The MCP server (`tl mcp`, implemented in `cli/src/commands/mcp.rs`) exposes CLI functionality as tools for AI agents via the Model Context Protocol. It is a STDIO JSON-RPC server that calls the same core services as CLI commands.
+
+**Keep CLI and MCP in sync.** When adding or changing a CLI command that operates on user data, you must also update the MCP server:
+1. Add or update the tool definition in `tool_definitions()` in `mcp.rs`
+2. Add the tool execution handler in `execute_tool()`
+3. Implement the tool function that calls the appropriate core service
+
+Not every CLI command needs an MCP tool (e.g., `update`, `encrypt`, `setup` are CLI-only). But any command that reads or modifies financial data (queries, sync, tags, import, etc.) should have an MCP equivalent so AI agents can perform the same operations.
+
 ## Logging
 
 Both CLI and desktop app log to `~/.treeline/logs.duckdb`.

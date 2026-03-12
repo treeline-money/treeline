@@ -218,15 +218,14 @@ enum Commands {
     },
 
     /// Start MCP (Model Context Protocol) server on STDIO
-    #[command(name = "mcp-serve")]
-    McpServe,
+    Mcp,
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
     // Check if this is a command that shouldn't show update notifications
-    let is_update_command = matches!(cli.command, Commands::Update { .. } | Commands::McpServe);
+    let is_update_command = matches!(cli.command, Commands::Update { .. } | Commands::Mcp);
 
     let result = run(cli);
 
@@ -322,6 +321,6 @@ fn run(cli: Cli) -> Result<()> {
         Commands::Plugin { command } => plugin::run(command),
         Commands::Logs { command } => logs::run(command),
         Commands::Update { yes, check } => update::run(yes, check),
-        Commands::McpServe => mcp::run(),
+        Commands::Mcp => mcp::run(),
     }
 }
