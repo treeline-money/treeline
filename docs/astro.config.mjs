@@ -51,6 +51,7 @@ export default defineConfig({
 				{
 					label: 'Integrations',
 					items: [
+						{ label: 'MCP Server', slug: 'integrations/mcp' },
 						{ label: 'Bank Sync', slug: 'integrations/bank-sync' },
 						{ label: 'CSV Import', slug: 'integrations/csv-import' },
 						{ label: 'OpenClaw', slug: 'integrations/openclaw' },

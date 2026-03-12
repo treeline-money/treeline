@@ -1,0 +1,73 @@
+---
+title: MCP Server
+description: Use Treeline from Claude Desktop, ChatGPT, Cursor, and other AI agents.
+---
+
+Treeline includes a built-in [MCP](https://modelcontextprotocol.io/) (Model Context Protocol) server. This lets AI agents query your finances, sync accounts, tag transactions, and more — directly from tools like Claude Desktop, ChatGPT Desktop, Claude Code, and Cursor.
+
+Your data stays local. The MCP server runs on your machine and reads from your local Treeline database.
+
+## Setup
+
+### Claude Desktop
+
+Open **Settings > Developer > Edit Config** and add:
+
+```json
+{
+  "mcpServers": {
+    "treeline": {
+      "command": "tl",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+Restart Claude Desktop. You should see Treeline listed in the tools menu.
+
+### Claude Code
+
+```bash
+claude mcp add treeline tl mcp
+```
+
+### Cursor
+
+Open **Settings > MCP** and add a new server with command `tl mcp`.
+
+### Other MCP clients
+
+Any client that supports the MCP STDIO transport can connect. Point it at `tl mcp` as the command.
+
+## Available Tools
+
+Once connected, the agent has access to these tools:
+
+| Tool | Description |
+|------|-------------|
+| `status` | Account balances, transaction counts, and connected integrations |
+| `query` | Execute a read-only SQL query against your financial database |
+| `query_write` | Execute a SQL query with write access (INSERT, UPDATE, DELETE) |
+| `sync` | Pull latest transactions from connected bank integrations |
+| `tag` | Apply tags to transactions |
+| `doctor` | Run database health checks |
+| `demo` | Enable, disable, or check demo mode |
+
+## Usage
+
+You don't need to mention Treeline or MCP by name. Just ask questions naturally:
+
+- "What's my net worth?"
+- "How much did I spend on groceries last month?"
+- "Show me my largest transactions this week"
+- "Tag all Starbucks transactions as coffee"
+- "Sync my bank accounts"
+
+The agent will choose the appropriate Treeline tool based on your question.
+
+## Privacy
+
+The MCP server runs locally and reads directly from your Treeline database on disk. No financial data is sent to any server by the MCP server itself.
+
+However, the AI agent you're using (Claude, ChatGPT, etc.) will see the query results in order to answer your questions. This is the same as pasting query results into a chat — the LLM provider sees the data you ask about, but not your full database.
