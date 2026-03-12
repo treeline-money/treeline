@@ -1,9 +1,9 @@
 ---
 title: MCP Server
-description: Use Treeline from Claude Desktop, ChatGPT, Cursor, and other AI agents.
+description: Use Treeline from Claude Desktop, ChatGPT, and other AI agents.
 ---
 
-Treeline includes a built-in [MCP](https://modelcontextprotocol.io/) (Model Context Protocol) server. This lets AI agents query your finances, sync accounts, tag transactions, and more — directly from tools like Claude Desktop, ChatGPT Desktop, Claude Code, and Cursor.
+Treeline includes a built-in [MCP](https://modelcontextprotocol.io/) (Model Context Protocol) server. This lets AI agents query your finances, sync accounts, tag transactions, and more — directly from tools like Claude Desktop and ChatGPT Desktop.
 
 Your data stays local. The MCP server runs on your machine and reads from your local Treeline database.
 
@@ -26,19 +26,19 @@ Open **Settings > Developer > Edit Config** and add:
 
 Restart Claude Desktop. You should see Treeline listed in the tools menu.
 
-### Claude Code
+### ChatGPT Desktop
+
+ChatGPT Desktop supports MCP servers through [mcp.run](https://mcp.run). See the mcp.run documentation for how to expose a local STDIO server.
+
+### Other MCP clients
+
+Claude Code, Gemini CLI, Cursor, and any other client that supports the MCP STDIO transport can connect. Point it at `tl mcp` as the command.
+
+For example, in Claude Code:
 
 ```bash
 claude mcp add treeline tl mcp
 ```
-
-### Cursor
-
-Open **Settings > MCP** and add a new server with command `tl mcp`.
-
-### Other MCP clients
-
-Any client that supports the MCP STDIO transport can connect. Point it at `tl mcp` as the command.
 
 ## Available Tools
 
