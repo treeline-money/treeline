@@ -10,8 +10,8 @@ mod commands;
 mod output;
 
 use commands::{
-    backup, compact, demo, doctor, encrypt, import, logs, plugin, query, setup, status, sync, tag,
-    update,
+    backup, compact, demo, doctor, encrypt, import, logs, mcp, plugin, query, setup, status, sync,
+    tag, update,
 };
 
 /// Treeline - personal finance in your terminal
@@ -216,13 +216,17 @@ enum Commands {
         #[arg(long)]
         check: bool,
     },
+
+    /// Start MCP (Model Context Protocol) server on STDIO
+    #[command(name = "mcp-serve")]
+    McpServe,
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
-    // Check if this is the update command (skip update notification for it)
-    let is_update_command = matches!(cli.command, Commands::Update { .. });
+    // Check if this is a command that shouldn't show update notifications
+    let is_update_command = matches!(cli.command, Commands::Update { .. } | Commands::McpServe);
 
     let result = run(cli);
 
@@ -318,5 +322,6 @@ fn run(cli: Cli) -> Result<()> {
         Commands::Plugin { command } => plugin::run(command),
         Commands::Logs { command } => logs::run(command),
         Commands::Update { yes, check } => update::run(yes, check),
+        Commands::McpServe => mcp::run(),
     }
 }

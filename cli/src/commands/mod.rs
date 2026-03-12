@@ -7,6 +7,7 @@ pub mod doctor;
 pub mod encrypt;
 pub mod import;
 pub mod logs;
+pub mod mcp;
 pub mod plugin;
 pub mod query;
 pub mod setup;

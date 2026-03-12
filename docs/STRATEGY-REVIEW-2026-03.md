@@ -160,16 +160,46 @@ Package the MCP server + `tl` binary as a `.mcpb` extension for one-click instal
 
 ---
 
-## What NOT to Build
+## Layer 4: Personal Finance Skills (P1 — the personalization layer)
 
-### Custom skill management (`tl skills`)
+User-owned skills that encode **personal financial knowledge and workflows**. These are not generic "how to use Treeline" — they're personalized playbooks that evolve over time.
 
-The strategy doc mentioned a `tl skills` CLI for managing user skills. This is unnecessary — the Agent Skills standard already handles discovery and management across all platforms. Each platform has its own skill directory convention. Adding a Treeline-specific skill CLI would:
-- Duplicate functionality that platforms already provide
-- Create a non-standard interface users must learn
-- Add maintenance burden with no cross-platform benefit
+**Examples:**
 
-### Remote/hosted MCP server (for now)
+| Skill | What it encodes |
+|-------|----------------|
+| **Short-term rental taxes** | Which accounts/tags are rental income vs expenses, depreciation rules, how to pull Schedule E numbers |
+| **Safe-to-save** | Personal cash flow model — income timing, upcoming bills, minimum buffer, which accounts to check |
+| **Transaction tagging** | Personal tag taxonomy, rules for ambiguous merchants, when to auto-tag vs ask the user |
+
+**How they differ from CONTEXT.md:**
+
+The OpenClaw SKILL.md already has a CONTEXT.md pattern for storing user knowledge. Personal skills are different:
+- **CONTEXT.md** = facts about the user's setup (account names, tag conventions)
+- **Skills** = composable *workflows* with decision logic ("if uncertain about this merchant, ask me")
+- Skills can reference CONTEXT.md but encode *how to think* about financial questions, not just *what exists*
+
+**Where they live:** `~/.treeline/skills/` — managed by Treeline, injected into agent context alongside the base SKILL.md.
+
+**Why `tl skills` makes sense here:** Unlike platform-level skill distribution (which each platform handles), these are Treeline-specific knowledge documents tied to the user's financial data. They need to:
+- Be portable across agent platforms (user switches from Claude to ChatGPT, skills follow)
+- Live alongside the financial data they reference
+- Be managed through the same interface as other Treeline config
+
+**Possible commands:**
+- `tl skills list` — show installed personal skills
+- `tl skills show <name>` — display a skill's content
+- `tl skills create <name>` — scaffold a new personal skill
+- `tl skills edit <name>` — open in editor
+- `tl skills inject` — output all skills as context (for piping to agents)
+
+**MCP integration:** The MCP server exposes a `list_skills` resource that returns available personal skills. When an agent starts a conversation, it reads the relevant skill(s) to understand the user's personalized workflows.
+
+---
+
+## What NOT to Build (For Now)
+
+### Remote/hosted MCP server
 
 A hosted MCP server would enable Claude web/mobile and ChatGPT web access. But it requires:
 - Server infrastructure
@@ -188,15 +218,16 @@ The old "Custom GPT with Actions" pattern is being superseded by MCP. Building a
 ## Sequencing
 
 ```
-Month 1:  MCP Server (shell-out) + Skill adaptation
+Month 1:  MCP Server (native Rust, `tl mcp-serve`) + Skill adaptation
           → Treeline works in Claude Desktop, Claude Code, ChatGPT Desktop
 
-Month 2:  Desktop Extension (.mcpb)
+Month 2:  Personal skills system (`tl skills`) + Desktop Extension (.mcpb)
+          → Users can create personalized finance workflows
           → One-click install in Claude Desktop
 
 Month 3:  Evaluate adoption, consider:
-          → Native Rust MCP server (if performance matters)
           → Remote MCP server (if mobile/web demand exists)
+          → Skill sharing / templates
           → Plugin marketplace integrations
 ```
 
@@ -204,7 +235,7 @@ Month 3:  Evaluate adoption, consider:
 
 ## Architecture Fit
 
-The MCP server fits cleanly into Treeline's hexagonal architecture:
+The MCP server fits cleanly into Treeline's hexagonal architecture as `tl mcp-serve` — a native Rust implementation that calls the service layer directly (same as Tauri):
 
 ```
                     ┌─────────────────────┐
@@ -213,18 +244,18 @@ The MCP server fits cleanly into Treeline's hexagonal architecture:
                     │   ChatGPT, etc.)     │
                     └─────────┬───────────┘
                               │ JSON-RPC / STDIO
-                    ┌─────────▼───────────┐
-                    │    MCP Server        │  ← New adapter
-                    │  (thin adapter)      │
-                    └─────────┬───────────┘
-                              │ subprocess / library call
-                    ┌─────────▼───────────┐
-                    │    CLI / Core        │  ← Existing
-                    │  (services layer)    │
-                    └─────────────────────┘
+               ┌──────────────▼──────────────┐
+               │     tl mcp-serve             │
+               │  (MCP adapter in CLI binary) │  ← New adapter
+               └──────────────┬──────────────┘
+                              │ direct library calls
+               ┌──────────────▼──────────────┐
+               │     treeline-core            │  ← Existing
+               │  (services layer)            │
+               └─────────────────────────────┘
 ```
 
-The MCP server is just another adapter in the hexagonal architecture — same as the CLI, same as the Tauri desktop app. It calls services, never the repository directly.
+Same binary, same release cycle, no subprocess overhead. The MCP server is just another adapter in the hexagonal architecture — same as the CLI commands, same as the Tauri desktop app.
 
 ---
 
@@ -245,8 +276,9 @@ The MCP server is just another adapter in the hexagonal architecture — same as
 Treeline is well-positioned for the AI agent era. The OpenClaw SKILL.md is already one of the best finance skills available, and the CLI provides a clean interface for tool execution. The missing piece is the MCP server — a thin adapter (~300 lines) that would instantly make Treeline accessible from every major AI platform.
 
 The recommended sequence is:
-1. **MCP server** (shell-out, wraps CLI) — universal tool access
+1. **MCP server** (`tl mcp-serve`, native Rust) — universal tool access
 2. **Skill adaptation** — universal knowledge distribution
-3. **Desktop Extension** — one-click install for Claude Desktop
+3. **Personal skills** (`tl skills`) — user-owned financial playbooks
+4. **Desktop Extension** — one-click install for Claude Desktop
 
-This approach maximizes reach with minimal engineering effort, stays true to Treeline's local-first principle, and builds on the existing CLI investment rather than creating parallel interfaces.
+The MCP server is implemented as a native Rust subcommand calling the service layer directly — same binary, same architecture, no subprocess overhead. Personal skills give users composable financial workflows that travel with their data across agent platforms.
