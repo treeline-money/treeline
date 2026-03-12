@@ -1,15 +1,15 @@
 ---
 title: MCP Server
-description: Use Treeline from Claude Desktop, ChatGPT, and other AI agents.
+description: Use Treeline from Claude Desktop, Claude Code, and other AI agents.
 ---
 
-Treeline includes a built-in [MCP](https://modelcontextprotocol.io/) (Model Context Protocol) server. This lets AI agents query your finances, sync accounts, tag transactions, and more — directly from tools like Claude Desktop and ChatGPT Desktop.
+Treeline includes a built-in [MCP](https://modelcontextprotocol.io/) (Model Context Protocol) server. This lets AI agents query your finances, sync accounts, tag transactions, and more.
 
 Your data stays local. The MCP server runs on your machine and reads from your local Treeline database.
 
 ## Setup
 
-### Claude Desktop
+### Claude Desktop (Chat & Cowork)
 
 Open **Settings > Developer > Edit Config** and add:
 
@@ -26,19 +26,23 @@ Open **Settings > Developer > Edit Config** and add:
 
 Restart Claude Desktop. You should see Treeline listed in the tools menu.
 
-### ChatGPT
+This single config enables Treeline in both **Chat** and **Cowork** mode. When you start a Cowork session, Claude can use Treeline tools to research your finances, build reports, and answer multi-step questions autonomously.
 
-ChatGPT supports MCP via [remote HTTP servers](https://developers.openai.com/api/docs/mcp/) only — it does not support local STDIO servers directly. To use Treeline with ChatGPT, you would need to host the MCP server behind an HTTP endpoint, which conflicts with Treeline's local-first design. This may be supported in the future.
+### Claude Code
+
+```bash
+claude mcp add treeline -- tl mcp
+```
+
+This makes Treeline tools available in your Claude Code sessions.
 
 ### Other MCP clients
 
-Claude Code, Gemini CLI, Cursor, and any other client that supports the MCP STDIO transport can connect. Point it at `tl mcp` as the command.
+Gemini CLI, Cursor, and any other client that supports the MCP STDIO transport can connect. Point it at `tl mcp` as the command.
 
-For example, in Claude Code:
-
-```bash
-claude mcp add treeline tl mcp
-```
+:::note[ChatGPT]
+ChatGPT only supports [remote HTTP MCP servers](https://developers.openai.com/api/docs/mcp/) — not local STDIO. Since Treeline is local-first, it isn't compatible with ChatGPT's MCP implementation today.
+:::
 
 ## Available Tools
 
@@ -70,4 +74,4 @@ The agent will choose the appropriate Treeline tool based on your question.
 
 The MCP server runs locally and reads directly from your Treeline database on disk. No financial data is sent to any server by the MCP server itself.
 
-However, the AI agent you're using (Claude, ChatGPT, etc.) will see the query results in order to answer your questions. This is the same as pasting query results into a chat — the LLM provider sees the data you ask about, but not your full database.
+However, the AI agent you're using (Claude, etc.) will see the query results in order to answer your questions. This is the same as pasting query results into a chat — the LLM provider sees the data you ask about, but not your full database.
