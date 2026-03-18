@@ -43,6 +43,8 @@
 
   // Track which mount function each tab was mounted with (for hot-reload detection)
   let mountedWith: Record<string, Function | null> = {};
+  // Track Svelte style tag IDs injected by each plugin tab (for cleanup on hot-reload)
+  let pluginStyleIds: Record<string, string[]> = {};
 
   // Handle mounting external plugins when their container becomes available
   function handleMountContainer(tab: Tab, container: HTMLDivElement | null) {
@@ -59,6 +61,13 @@
     if (cleanupFunctions[tab.id]) {
       cleanupFunctions[tab.id]!();
       container.innerHTML = "";
+      // Remove Svelte-injected <style> tags that this plugin added.
+      // Svelte's append_styles() skips insertion if a <style> with the same id exists,
+      // and the id is filename-based (not content-based), so stale styles block updates.
+      for (const id of pluginStyleIds[tab.id] ?? []) {
+        document.head.querySelector(`style#${id}`)?.remove();
+      }
+      delete pluginStyleIds[tab.id];
     }
 
     // Get plugin ID and permissions for this view
@@ -74,8 +83,16 @@
       sdk,
     };
 
+    // Snapshot existing style tags, mount, then diff to find plugin's injected styles
+    const stylesBefore = new Set(
+      Array.from(document.head.querySelectorAll('style[id^="svelte-"]')).map((el) => el.id)
+    );
     cleanupFunctions[tab.id] = view.mount(container, props);
     mountedWith[tab.id] = view.mount;
+    const stylesAfter = document.head.querySelectorAll('style[id^="svelte-"]');
+    pluginStyleIds[tab.id] = Array.from(stylesAfter)
+      .map((el) => el.id)
+      .filter((id) => !stylesBefore.has(id));
   }
 
   // Re-mount plugin tabs when their view definition changes (hot-reload)
@@ -102,6 +119,7 @@
         delete cleanupFunctions[tabId];
         delete mountContainers[tabId];
         delete mountedWith[tabId];
+        delete pluginStyleIds[tabId];
       }
     }
   });
