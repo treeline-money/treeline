@@ -22,16 +22,16 @@ use treeline_core::services::{DemoService, EncryptionService, KeychainService};
 
 #[derive(Deserialize)]
 #[allow(dead_code)]
-struct JsonRpcRequest {
-    jsonrpc: String,
-    id: Option<Value>,
-    method: String,
+pub struct JsonRpcRequest {
+    pub jsonrpc: String,
+    pub id: Option<Value>,
+    pub method: String,
     #[serde(default)]
-    params: Option<Value>,
+    pub params: Option<Value>,
 }
 
 #[derive(Serialize)]
-struct JsonRpcResponse {
+pub struct JsonRpcResponse {
     jsonrpc: String,
     id: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -49,7 +49,7 @@ struct JsonRpcError {
 }
 
 impl JsonRpcResponse {
-    fn success(id: Value, result: Value) -> Self {
+    pub fn success(id: Value, result: Value) -> Self {
         Self {
             jsonrpc: "2.0".to_string(),
             id,
@@ -58,7 +58,7 @@ impl JsonRpcResponse {
         }
     }
 
-    fn error(id: Value, code: i64, message: String) -> Self {
+    pub fn error(id: Value, code: i64, message: String) -> Self {
         Self {
             jsonrpc: "2.0".to_string(),
             id,
@@ -670,7 +670,7 @@ fn tool_demo(action: &str) -> Result<Value, String> {
 // MCP protocol handler
 // =============================================================================
 
-fn handle_request(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
+pub fn handle_request(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
     let id = match &req.id {
         Some(id) => id.clone(),
         None => return None, // Notification — no response needed

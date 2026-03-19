@@ -1,8 +1,8 @@
 //! Serve command - expose Treeline as an HTTP hub
 //!
 //! Starts an HTTP server that serves two audiences:
-//! 1. Full peers - push/pull database files for sync
-//! 2. Thin clients - JSON-RPC API for querying/mutating data
+//! 1. Full peers - push/pull sync bundles
+//! 2. Thin clients - MCP over HTTP (Streamable HTTP transport)
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -10,12 +10,13 @@ use std::sync::Arc;
 use anyhow::Result;
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, Method, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::Json;
-use serde_json::{json, Value};
+use serde_json::json;
 use tokio::sync::RwLock;
+use tower_http::cors::{Any, CorsLayer};
 
 use treeline_core::services::hub::HubService;
 
@@ -41,10 +42,7 @@ pub fn run(host: &str, port: u16) -> Result<()> {
 
     // Create hub service — no database required at startup.
     // The database arrives via the first push.
-    let hub_service = HubService::new(
-        treeline_dir.clone(),
-        "treeline.duckdb".to_string(),
-    );
+    let hub_service = HubService::new(treeline_dir.clone(), "treeline.duckdb".to_string());
 
     let has_db = hub_service.has_database();
 
@@ -66,15 +64,27 @@ pub fn run(host: &str, port: u16) -> Result<()> {
     eprintln!("Link a client with:");
     eprintln!("  tl hub link http://{} --token {}", addr, token);
 
+    // CORS layer for MCP clients (ChatGPT, browser-based clients)
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
+        .allow_headers(Any)
+        .expose_headers([axum::http::header::HeaderName::from_static(
+            "mcp-session-id",
+        )]);
+
     // Build and run the server
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         let app = axum::Router::new()
             .route("/health", get(health))
-            .route("/api/push", post(handle_push).layer(DefaultBodyLimit::max(500 * 1024 * 1024))) // 500MB
+            .route(
+                "/api/push",
+                post(handle_push).layer(DefaultBodyLimit::max(500 * 1024 * 1024)),
+            )
             .route("/api/pull", get(handle_pull))
-            .route("/api/tools", get(handle_tools_list))
-            .route("/api/tools/call", post(handle_tools_call))
+            .route("/mcp", post(handle_mcp).get(handle_mcp_get).delete(handle_mcp_delete))
+            .layer(cors)
             .with_state(state);
 
         let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -100,7 +110,6 @@ async fn handle_push(
         return e;
     }
 
-    // Acquire write lock
     let _lock = state.db_lock.write().await;
 
     match state.hub_service.accept_push(&body) {
@@ -115,9 +124,7 @@ async fn handle_push(
             .into_response(),
         Err(e) => (
             StatusCode::BAD_REQUEST,
-            Json(json!({
-                "error": e.to_string(),
-            })),
+            Json(json!({ "error": e.to_string() })),
         )
             .into_response(),
     }
@@ -131,7 +138,6 @@ async fn handle_pull(
         return e;
     }
 
-    // Acquire read lock
     let _lock = state.db_lock.read().await;
 
     match state.hub_service.get_bundle_for_pull() {
@@ -146,81 +152,89 @@ async fn handle_pull(
             .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({
-                "error": e.to_string(),
-            })),
+            Json(json!({ "error": e.to_string() })),
         )
             .into_response(),
     }
 }
 
 // ============================================================================
-// Thin Client API
+// MCP over HTTP (Streamable HTTP transport)
 // ============================================================================
 
-async fn handle_tools_list(
+/// POST /mcp — main MCP protocol endpoint
+async fn handle_mcp(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    body: Bytes,
 ) -> impl IntoResponse {
     if let Err(e) = check_auth(&state.treeline_dir, &headers) {
         return e;
     }
 
-    let tools = mcp::tool_definitions();
-    (StatusCode::OK, Json(tools)).into_response()
-}
-
-#[derive(serde::Deserialize)]
-struct ToolCallRequest {
-    name: String,
-    #[serde(default)]
-    arguments: Value,
-}
-
-async fn handle_tools_call(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Json(req): Json<ToolCallRequest>,
-) -> impl IntoResponse {
-    if let Err(e) = check_auth(&state.treeline_dir, &headers) {
-        return e;
-    }
-
-    // Check that a database exists before trying to run tools
+    // Check that a database exists before trying to handle MCP requests
     if !state.hub_service.has_database() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "No database on hub yet. Push a database first."})),
-        )
-            .into_response();
+        let resp = mcp::JsonRpcResponse::error(
+            serde_json::Value::Null,
+            -32000,
+            "No database on hub yet. Push a database first.".to_string(),
+        );
+        return (StatusCode::BAD_REQUEST, Json(resp)).into_response();
     }
 
-    // Acquire read lock for queries, write lock for mutations
-    let is_write = matches!(
-        req.name.as_str(),
-        "query_write" | "sync" | "tag" | "demo" | "skills_write"
-    );
+    // Parse the JSON-RPC request
+    let req: mcp::JsonRpcRequest = match serde_json::from_slice(&body) {
+        Ok(req) => req,
+        Err(e) => {
+            let resp = mcp::JsonRpcResponse::error(
+                serde_json::Value::Null,
+                -32700,
+                format!("Parse error: {}", e),
+            );
+            return (StatusCode::BAD_REQUEST, Json(resp)).into_response();
+        }
+    };
 
-    if is_write {
+    // Determine if this is a write operation
+    let is_write = if req.method == "tools/call" {
+        req.params
+            .as_ref()
+            .and_then(|p| p.get("name"))
+            .and_then(|n| n.as_str())
+            .map(|name| {
+                matches!(name, "query_write" | "sync" | "tag" | "demo" | "skills_write")
+            })
+            .unwrap_or(false)
+    } else {
+        false
+    };
+
+    // Acquire appropriate lock
+    let response = if is_write {
         let _lock = state.db_lock.write().await;
-        execute_and_respond(&req.name, &req.arguments)
+        mcp::handle_request(&req)
     } else {
         let _lock = state.db_lock.read().await;
-        execute_and_respond(&req.name, &req.arguments)
+        mcp::handle_request(&req)
+    };
+
+    match response {
+        Some(resp) => (StatusCode::OK, Json(resp)).into_response(),
+        None => StatusCode::ACCEPTED.into_response(), // Notification — no response
     }
 }
 
-fn execute_and_respond(name: &str, arguments: &Value) -> axum::response::Response {
-    match mcp::execute_tool(name, arguments) {
-        Ok(result) => (StatusCode::OK, Json(result)).into_response(),
-        Err(err) => (
-            StatusCode::BAD_REQUEST,
-            Json(json!({
-                "error": err,
-            })),
-        )
-            .into_response(),
-    }
+/// GET /mcp — SSE endpoint (not implemented yet, returns 405)
+async fn handle_mcp_get() -> impl IntoResponse {
+    (
+        StatusCode::METHOD_NOT_ALLOWED,
+        Json(json!({ "error": "SSE transport not supported. Use POST." })),
+    )
+}
+
+/// DELETE /mcp — session cleanup (no-op for stateless server)
+async fn handle_mcp_delete() -> impl IntoResponse {
+    StatusCode::OK
 }
 
 // ============================================================================
