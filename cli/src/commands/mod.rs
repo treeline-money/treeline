@@ -99,19 +99,6 @@ pub fn get_context() -> Result<TreelineContext> {
         } else {
             None
         }
-    } else if std::env::var("TL_NON_INTERACTIVE").is_ok() {
-        // Non-interactive mode (tl serve): no keychain, no prompt
-        let config = treeline_core::config::Config::load(&treeline_dir).unwrap_or_default();
-        let db_filename = if config.demo_mode { "demo.duckdb" } else { "treeline.duckdb" };
-        let db_path = treeline_dir.join(db_filename);
-
-        let encryption_service = EncryptionService::new(treeline_dir.clone(), db_path);
-        if encryption_service.is_encrypted().unwrap_or(false) {
-            anyhow::bail!(
-                "Database is encrypted. Set TL_DB_KEY or TL_DB_PASSWORD to enable queries."
-            );
-        }
-        None
     } else {
         // Priority 3+: Check if DB is encrypted, then try keychain / prompt
         let config = treeline_core::config::Config::load(&treeline_dir).unwrap_or_default();

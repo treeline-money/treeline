@@ -55,22 +55,6 @@ pub fn run(host: &str, port: u16) -> Result<()> {
     let treeline_dir = get_treeline_dir();
     std::fs::create_dir_all(&treeline_dir)?;
 
-    // Mark this process as non-interactive so get_context() skips
-    // keychain and prompt-based key resolution.
-    std::env::set_var("TL_NON_INTERACTIVE", "1");
-
-    // Validate that the context can be created non-interactively.
-    // This ensures tl serve never prompts for keychain access or passwords.
-    // If the database exists, we verify we can open it. If not, we skip
-    // (the database will arrive via push).
-    let db_path = treeline_dir.join("treeline.duckdb");
-    if db_path.exists() {
-        match super::get_context_non_interactive() {
-            Ok(_) => eprintln!("Database loaded successfully."),
-            Err(e) => eprintln!("Warning: Cannot open database for queries: {}", e),
-        }
-    }
-
     let token = HubService::load_or_create_token(&treeline_dir)?;
     let hub_service = HubService::new(treeline_dir.clone(), "treeline.duckdb".to_string());
     let has_db = hub_service.has_database();

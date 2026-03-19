@@ -623,13 +623,19 @@ fn tool_encryption_status() -> Result<Value, String> {
 
     let mut status = encryption_service.get_status().map_err(|e| e.to_string())?;
 
-    let keychain_available = KeychainService::is_available();
-    status.keychain_available = Some(keychain_available);
-
+    // Only probe keychain if the database is actually encrypted.
+    // Keychain probing triggers macOS system prompts, so avoid it when unnecessary.
     if status.encrypted {
+        let keychain_available = KeychainService::is_available();
+        status.keychain_available = Some(keychain_available);
+
         let has_env_key =
             std::env::var("TL_DB_KEY").is_ok() || std::env::var("TL_DB_PASSWORD").is_ok();
-        let has_keychain_key = KeychainService::get_key().unwrap_or(None).is_some();
+        let has_keychain_key = if keychain_available {
+            KeychainService::get_key().unwrap_or(None).is_some()
+        } else {
+            false
+        };
         status.locked = Some(!has_env_key && !has_keychain_key);
     } else {
         status.locked = Some(false);
