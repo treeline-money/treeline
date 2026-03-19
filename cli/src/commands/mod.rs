@@ -99,6 +99,19 @@ pub fn get_context() -> Result<TreelineContext> {
         } else {
             None
         }
+    } else if std::env::var("TL_NON_INTERACTIVE").is_ok() {
+        // Non-interactive mode (tl serve): no keychain, no prompt
+        let config = treeline_core::config::Config::load(&treeline_dir).unwrap_or_default();
+        let db_filename = if config.demo_mode { "demo.duckdb" } else { "treeline.duckdb" };
+        let db_path = treeline_dir.join(db_filename);
+
+        let encryption_service = EncryptionService::new(treeline_dir.clone(), db_path);
+        if encryption_service.is_encrypted().unwrap_or(false) {
+            anyhow::bail!(
+                "Database is encrypted. Set TL_DB_KEY or TL_DB_PASSWORD to enable queries."
+            );
+        }
+        None
     } else {
         // Priority 3+: Check if DB is encrypted, then try keychain / prompt
         let config = treeline_core::config::Config::load(&treeline_dir).unwrap_or_default();
@@ -130,6 +143,56 @@ pub fn get_context() -> Result<TreelineContext> {
         } else {
             None
         }
+    };
+
+    TreelineContext::new(&treeline_dir, encryption_key.as_deref())
+        .context("Failed to initialize treeline context")
+}
+
+/// Get or create treeline context in non-interactive mode.
+///
+/// Only uses environment variables for encryption key resolution.
+/// No keychain access, no interactive prompts. Suitable for servers.
+///
+/// Key resolution:
+/// 1. TL_DB_KEY env var (pre-derived hex key)
+/// 2. TL_DB_PASSWORD env var (password, needs Argon2 derivation)
+/// 3. If encrypted and no key available, returns error
+/// 4. If not encrypted, proceeds without a key
+pub fn get_context_non_interactive() -> Result<TreelineContext> {
+    let treeline_dir = get_treeline_dir();
+
+    std::fs::create_dir_all(&treeline_dir)
+        .with_context(|| format!("Failed to create treeline directory: {:?}", treeline_dir))?;
+
+    let encryption_key = if let Ok(key) = std::env::var("TL_DB_KEY") {
+        Some(key)
+    } else if let Ok(password) = std::env::var("TL_DB_PASSWORD") {
+        let config = treeline_core::config::Config::load(&treeline_dir).unwrap_or_default();
+        let db_filename = if config.demo_mode { "demo.duckdb" } else { "treeline.duckdb" };
+        let db_path = treeline_dir.join(db_filename);
+
+        let encryption_service = EncryptionService::new(treeline_dir.clone(), db_path);
+        if encryption_service.is_encrypted().unwrap_or(false) {
+            match encryption_service.derive_key_for_connection(&password) {
+                Ok(key) => Some(key),
+                Err(e) => return Err(e).context("Failed to derive encryption key from password"),
+            }
+        } else {
+            None
+        }
+    } else {
+        let config = treeline_core::config::Config::load(&treeline_dir).unwrap_or_default();
+        let db_filename = if config.demo_mode { "demo.duckdb" } else { "treeline.duckdb" };
+        let db_path = treeline_dir.join(db_filename);
+
+        let encryption_service = EncryptionService::new(treeline_dir.clone(), db_path);
+        if encryption_service.is_encrypted().unwrap_or(false) {
+            anyhow::bail!(
+                "Database is encrypted. Set TL_DB_KEY or TL_DB_PASSWORD to enable queries."
+            );
+        }
+        None
     };
 
     TreelineContext::new(&treeline_dir, encryption_key.as_deref())

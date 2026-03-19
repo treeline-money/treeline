@@ -55,6 +55,22 @@ pub fn run(host: &str, port: u16) -> Result<()> {
     let treeline_dir = get_treeline_dir();
     std::fs::create_dir_all(&treeline_dir)?;
 
+    // Mark this process as non-interactive so get_context() skips
+    // keychain and prompt-based key resolution.
+    std::env::set_var("TL_NON_INTERACTIVE", "1");
+
+    // Validate that the context can be created non-interactively.
+    // This ensures tl serve never prompts for keychain access or passwords.
+    // If the database exists, we verify we can open it. If not, we skip
+    // (the database will arrive via push).
+    let db_path = treeline_dir.join("treeline.duckdb");
+    if db_path.exists() {
+        match super::get_context_non_interactive() {
+            Ok(_) => eprintln!("Database loaded successfully."),
+            Err(e) => eprintln!("Warning: Cannot open database for queries: {}", e),
+        }
+    }
+
     let token = HubService::load_or_create_token(&treeline_dir)?;
     let hub_service = HubService::new(treeline_dir.clone(), "treeline.duckdb".to_string());
     let has_db = hub_service.has_database();
@@ -104,6 +120,14 @@ pub fn run(host: &str, port: u16) -> Result<()> {
                     .delete(handle_mcp_delete),
             )
             // OAuth 2.1 endpoints
+            .route(
+                "/.well-known/oauth-protected-resource",
+                get(handle_oauth_protected_resource),
+            )
+            .route(
+                "/.well-known/oauth-protected-resource/mcp",
+                get(handle_oauth_protected_resource),
+            )
             .route(
                 "/.well-known/oauth-authorization-server",
                 get(handle_oauth_metadata),
@@ -247,15 +271,28 @@ async fn handle_mcp(
     }
 }
 
-async fn handle_mcp_get() -> impl IntoResponse {
-    (
-        StatusCode::METHOD_NOT_ALLOWED,
-        Json(json!({ "error": "SSE transport not supported. Use POST." })),
-    )
+async fn handle_mcp_get(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    eprintln!("[mcp GET] Accept={:?} Auth={:?}",
+        headers.get("accept"), headers.get("authorization").map(|_| "present"));
+    if let Err(e) = check_auth(&state.treeline_dir, &headers) {
+        return e;
+    }
+    // Acknowledge the connection. Full SSE streaming not implemented yet.
+    StatusCode::OK.into_response()
 }
 
-async fn handle_mcp_delete() -> impl IntoResponse {
-    StatusCode::OK
+async fn handle_mcp_delete(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    eprintln!("[mcp DELETE]");
+    if let Err(e) = check_auth(&state.treeline_dir, &headers) {
+        return e;
+    }
+    StatusCode::OK.into_response()
 }
 
 // ============================================================================
@@ -265,9 +302,21 @@ async fn handle_mcp_delete() -> impl IntoResponse {
 // is the user proving they possess the hub token.
 // ============================================================================
 
+/// GET /.well-known/oauth-protected-resource — RFC 9728
+/// Tells the client where the authorization server is.
+async fn handle_oauth_protected_resource(headers: HeaderMap) -> impl IntoResponse {
+    let base = base_url_from_headers(&headers);
+    eprintln!("[oauth/protected-resource] base_url={}", base);
+    Json(json!({
+        "resource": format!("{}/mcp", base),
+        "authorization_servers": [base],
+    }))
+}
+
 /// GET /.well-known/oauth-authorization-server
 async fn handle_oauth_metadata(headers: HeaderMap) -> impl IntoResponse {
     let base = base_url_from_headers(&headers);
+    eprintln!("[oauth/metadata] base_url={}", base);
     Json(json!({
         "issuer": base,
         "authorization_endpoint": format!("{}/authorize", base),
@@ -285,6 +334,7 @@ async fn handle_oauth_register(
     State(state): State<Arc<AppState>>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
+    eprintln!("[oauth/register] body={}", body);
     let redirect_uris = body
         .get("redirect_uris")
         .and_then(|v| v.as_array())
@@ -336,6 +386,11 @@ async fn handle_oauth_authorize(
     let code_challenge = params.code_challenge.unwrap_or_default();
     let code_challenge_method = params.code_challenge_method.unwrap_or_default();
 
+    eprintln!("[oauth/authorize] redirect_uri={} state={} code_challenge={} code_challenge_method={}",
+        redirect_uri, client_state,
+        if code_challenge.is_empty() { "(none)" } else { &code_challenge },
+        if code_challenge_method.is_empty() { "(none)" } else { &code_challenge_method });
+
     Html(format!(
         r#"<!DOCTYPE html>
 <html>
@@ -384,6 +439,9 @@ async fn handle_oauth_authorize_submit(
     State(state): State<Arc<AppState>>,
     axum::Form(form): axum::Form<AuthorizeForm>,
 ) -> impl IntoResponse {
+    eprintln!("[oauth/authorize POST] redirect_uri={} state={} code_challenge={:?}",
+        form.redirect_uri, form.state, form.code_challenge);
+
     // Validate the hub token
     let valid = HubService::validate_token(&state.treeline_dir, &form.hub_token)
         .unwrap_or(false);
@@ -436,7 +494,8 @@ async fn handle_oauth_authorize_submit(
         form.redirect_uri, separator, code, form.state
     );
 
-    Redirect::temporary(&redirect_url).into_response()
+    // Use 302 Found (not 307) per OAuth spec
+    (StatusCode::FOUND, [(axum::http::header::LOCATION, redirect_url)]).into_response()
 }
 
 /// POST /token — Exchange auth code for access token
@@ -453,8 +512,39 @@ struct TokenRequest {
 
 async fn handle_oauth_token(
     State(state): State<Arc<AppState>>,
-    axum::Form(form): axum::Form<TokenRequest>,
+    headers: HeaderMap,
+    body: Bytes,
 ) -> impl IntoResponse {
+    eprintln!("[oauth/token] Content-Type: {:?}", headers.get("content-type"));
+    eprintln!("[oauth/token] Body: {}", String::from_utf8_lossy(&body));
+
+    // Parse as form-urlencoded (OAuth 2.1 spec) or JSON (some clients)
+    let form: TokenRequest = if headers
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.contains("application/json"))
+        .unwrap_or(false)
+    {
+        match serde_json::from_slice(&body) {
+            Ok(f) => f,
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": "invalid_request", "error_description": format!("Invalid JSON: {}", e)})),
+                ).into_response();
+            }
+        }
+    } else {
+        match serde_urlencoded::from_bytes(&body) {
+            Ok(f) => f,
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": "invalid_request", "error_description": format!("Invalid form data: {}", e)})),
+                ).into_response();
+            }
+        }
+    };
     if form.grant_type != "authorization_code" {
         return (
             StatusCode::BAD_REQUEST,
