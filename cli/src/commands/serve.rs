@@ -37,8 +37,6 @@ struct AppState {
     auth_codes: Mutex<HashMap<String, AuthCodeEntry>>,
     /// OAuth state: registered clients (client_id -> client info)
     oauth_clients: Mutex<HashMap<String, OAuthClient>>,
-    /// The base URL for constructing OAuth endpoints
-    base_url: String,
 }
 
 struct AuthCodeEntry {
@@ -62,7 +60,6 @@ pub fn run(host: &str, port: u16) -> Result<()> {
     let has_db = hub_service.has_database();
 
     let addr: SocketAddr = format!("{}:{}", host, port).parse()?;
-    let base_url = format!("http://{}", addr);
 
     let state = Arc::new(AppState {
         hub_service,
@@ -70,7 +67,6 @@ pub fn run(host: &str, port: u16) -> Result<()> {
         db_lock: RwLock::new(()),
         auth_codes: Mutex::new(HashMap::new()),
         oauth_clients: Mutex::new(HashMap::new()),
-        base_url,
     });
 
     eprintln!("Treeline hub starting on http://{}", addr);
@@ -270,12 +266,13 @@ async fn handle_mcp_delete() -> impl IntoResponse {
 // ============================================================================
 
 /// GET /.well-known/oauth-authorization-server
-async fn handle_oauth_metadata(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn handle_oauth_metadata(headers: HeaderMap) -> impl IntoResponse {
+    let base = base_url_from_headers(&headers);
     Json(json!({
-        "issuer": state.base_url,
-        "authorization_endpoint": format!("{}/authorize", state.base_url),
-        "token_endpoint": format!("{}/token", state.base_url),
-        "registration_endpoint": format!("{}/register", state.base_url),
+        "issuer": base,
+        "authorization_endpoint": format!("{}/authorize", base),
+        "token_endpoint": format!("{}/token", base),
+        "registration_endpoint": format!("{}/register", base),
         "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code"],
         "token_endpoint_auth_methods_supported": ["none"],
@@ -585,6 +582,24 @@ fn check_auth(
 // ============================================================================
 // Helpers
 // ============================================================================
+
+/// Derive the public base URL from request headers.
+/// Respects X-Forwarded-Host/X-Forwarded-Proto (set by reverse proxies like ngrok/Caddy)
+/// and falls back to the Host header.
+fn base_url_from_headers(headers: &HeaderMap) -> String {
+    let proto = headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("http");
+
+    let host = headers
+        .get("x-forwarded-host")
+        .or_else(|| headers.get("host"))
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("localhost");
+
+    format!("{}://{}", proto, host)
+}
 
 fn generate_random_id() -> String {
     use rand::Rng;
