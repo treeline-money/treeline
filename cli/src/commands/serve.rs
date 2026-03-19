@@ -3,19 +3,22 @@
 //! Starts an HTTP server that serves two audiences:
 //! 1. Full peers - push/pull sync bundles
 //! 2. Thin clients - MCP over HTTP (Streamable HTTP transport)
+//!
+//! Includes OAuth 2.1 endpoints for MCP client authentication.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::Result;
 use axum::body::Bytes;
-use axum::extract::{DefaultBodyLimit, State};
+use axum::extract::{DefaultBodyLimit, Query, State};
 use axum::http::{HeaderMap, Method, StatusCode};
-use axum::response::IntoResponse;
+use axum::response::{Html, IntoResponse, Redirect};
 use axum::routing::{get, post};
 use axum::Json;
 use serde_json::json;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tower_http::cors::{Any, CorsLayer};
 
 use treeline_core::services::hub::HubService;
@@ -29,31 +32,47 @@ struct AppState {
     treeline_dir: std::path::PathBuf,
     /// RwLock to allow concurrent reads (pulls, queries) but exclusive writes (pushes)
     db_lock: RwLock<()>,
+    /// OAuth state: pending auth codes (code -> redirect_uri)
+    /// Codes expire after use (single-use).
+    auth_codes: Mutex<HashMap<String, AuthCodeEntry>>,
+    /// OAuth state: registered clients (client_id -> client info)
+    oauth_clients: Mutex<HashMap<String, OAuthClient>>,
+    /// The base URL for constructing OAuth endpoints
+    base_url: String,
+}
+
+struct AuthCodeEntry {
+    redirect_uri: String,
+    code_challenge: Option<String>,
+    _created_at: std::time::Instant,
+}
+
+#[allow(dead_code)]
+struct OAuthClient {
+    client_id: String,
+    redirect_uris: Vec<String>,
 }
 
 pub fn run(host: &str, port: u16) -> Result<()> {
     let treeline_dir = get_treeline_dir();
-
-    // Ensure directory exists
     std::fs::create_dir_all(&treeline_dir)?;
 
-    // Load or create auth token
     let token = HubService::load_or_create_token(&treeline_dir)?;
-
-    // Create hub service — no database required at startup.
-    // The database arrives via the first push.
     let hub_service = HubService::new(treeline_dir.clone(), "treeline.duckdb".to_string());
-
     let has_db = hub_service.has_database();
+
+    let addr: SocketAddr = format!("{}:{}", host, port).parse()?;
+    let base_url = format!("http://{}", addr);
 
     let state = Arc::new(AppState {
         hub_service,
         treeline_dir: treeline_dir.clone(),
         db_lock: RwLock::new(()),
+        auth_codes: Mutex::new(HashMap::new()),
+        oauth_clients: Mutex::new(HashMap::new()),
+        base_url,
     });
 
-    // Print server info
-    let addr: SocketAddr = format!("{}:{}", host, port).parse()?;
     eprintln!("Treeline hub starting on http://{}", addr);
     eprintln!("Auth token: {}", token);
     if !has_db {
@@ -64,7 +83,6 @@ pub fn run(host: &str, port: u16) -> Result<()> {
     eprintln!("Link a client with:");
     eprintln!("  tl hub link http://{} --token {}", addr, token);
 
-    // CORS layer for MCP clients (ChatGPT, browser-based clients)
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
@@ -73,17 +91,31 @@ pub fn run(host: &str, port: u16) -> Result<()> {
             "mcp-session-id",
         )]);
 
-    // Build and run the server
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         let app = axum::Router::new()
+            // Core endpoints
             .route("/health", get(health))
             .route(
                 "/api/push",
                 post(handle_push).layer(DefaultBodyLimit::max(500 * 1024 * 1024)),
             )
             .route("/api/pull", get(handle_pull))
-            .route("/mcp", post(handle_mcp).get(handle_mcp_get).delete(handle_mcp_delete))
+            .route(
+                "/mcp",
+                post(handle_mcp)
+                    .get(handle_mcp_get)
+                    .delete(handle_mcp_delete),
+            )
+            // OAuth 2.1 endpoints
+            .route(
+                "/.well-known/oauth-authorization-server",
+                get(handle_oauth_metadata),
+            )
+            .route("/register", post(handle_oauth_register))
+            .route("/authorize", get(handle_oauth_authorize))
+            .route("/authorize", post(handle_oauth_authorize_submit))
+            .route("/token", post(handle_oauth_token))
             .layer(cors)
             .with_state(state);
 
@@ -94,7 +126,7 @@ pub fn run(host: &str, port: u16) -> Result<()> {
 }
 
 // ============================================================================
-// Handlers
+// Core Handlers
 // ============================================================================
 
 async fn health() -> &'static str {
@@ -159,10 +191,9 @@ async fn handle_pull(
 }
 
 // ============================================================================
-// MCP over HTTP (Streamable HTTP transport)
+// MCP over HTTP
 // ============================================================================
 
-/// POST /mcp — main MCP protocol endpoint
 async fn handle_mcp(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -172,7 +203,6 @@ async fn handle_mcp(
         return e;
     }
 
-    // Check that a database exists before trying to handle MCP requests
     if !state.hub_service.has_database() {
         let resp = mcp::JsonRpcResponse::error(
             serde_json::Value::Null,
@@ -182,7 +212,6 @@ async fn handle_mcp(
         return (StatusCode::BAD_REQUEST, Json(resp)).into_response();
     }
 
-    // Parse the JSON-RPC request
     let req: mcp::JsonRpcRequest = match serde_json::from_slice(&body) {
         Ok(req) => req,
         Err(e) => {
@@ -195,7 +224,6 @@ async fn handle_mcp(
         }
     };
 
-    // Determine if this is a write operation
     let is_write = if req.method == "tools/call" {
         req.params
             .as_ref()
@@ -209,7 +237,6 @@ async fn handle_mcp(
         false
     };
 
-    // Acquire appropriate lock
     let response = if is_write {
         let _lock = state.db_lock.write().await;
         mcp::handle_request(&req)
@@ -220,11 +247,10 @@ async fn handle_mcp(
 
     match response {
         Some(resp) => (StatusCode::OK, Json(resp)).into_response(),
-        None => StatusCode::ACCEPTED.into_response(), // Notification — no response
+        None => StatusCode::ACCEPTED.into_response(),
     }
 }
 
-/// GET /mcp — SSE endpoint (not implemented yet, returns 405)
 async fn handle_mcp_get() -> impl IntoResponse {
     (
         StatusCode::METHOD_NOT_ALLOWED,
@@ -232,13 +258,302 @@ async fn handle_mcp_get() -> impl IntoResponse {
     )
 }
 
-/// DELETE /mcp — session cleanup (no-op for stateless server)
 async fn handle_mcp_delete() -> impl IntoResponse {
     StatusCode::OK
 }
 
 // ============================================================================
-// Auth
+// OAuth 2.1 — Self-hosted flow
+//
+// The hub is its own OAuth authorization server. The "authorization"
+// is the user proving they possess the hub token.
+// ============================================================================
+
+/// GET /.well-known/oauth-authorization-server
+async fn handle_oauth_metadata(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    Json(json!({
+        "issuer": state.base_url,
+        "authorization_endpoint": format!("{}/authorize", state.base_url),
+        "token_endpoint": format!("{}/token", state.base_url),
+        "registration_endpoint": format!("{}/register", state.base_url),
+        "response_types_supported": ["code"],
+        "grant_types_supported": ["authorization_code"],
+        "token_endpoint_auth_methods_supported": ["none"],
+        "code_challenge_methods_supported": ["S256"],
+    }))
+}
+
+/// POST /register — Dynamic client registration (RFC 7591)
+async fn handle_oauth_register(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let redirect_uris = body
+        .get("redirect_uris")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let client_id = generate_random_id();
+
+    let mut clients = state.oauth_clients.lock().await;
+    clients.insert(
+        client_id.clone(),
+        OAuthClient {
+            client_id: client_id.clone(),
+            redirect_uris: redirect_uris.clone(),
+        },
+    );
+
+    (
+        StatusCode::CREATED,
+        Json(json!({
+            "client_id": client_id,
+            "redirect_uris": redirect_uris,
+            "token_endpoint_auth_method": "none",
+        })),
+    )
+}
+
+/// Query params for GET /authorize
+#[derive(serde::Deserialize)]
+struct AuthorizeParams {
+    response_type: Option<String>,
+    client_id: Option<String>,
+    redirect_uri: Option<String>,
+    state: Option<String>,
+    code_challenge: Option<String>,
+    code_challenge_method: Option<String>,
+}
+
+/// GET /authorize — Show the authorization page
+async fn handle_oauth_authorize(
+    Query(params): Query<AuthorizeParams>,
+) -> impl IntoResponse {
+    let redirect_uri = params.redirect_uri.unwrap_or_default();
+    let client_state = params.state.unwrap_or_default();
+    let code_challenge = params.code_challenge.unwrap_or_default();
+    let code_challenge_method = params.code_challenge_method.unwrap_or_default();
+
+    Html(format!(
+        r#"<!DOCTYPE html>
+<html>
+<head>
+    <title>Treeline — Authorize</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body {{ font-family: -apple-system, system-ui, sans-serif; max-width: 400px; margin: 80px auto; padding: 0 20px; color: #1a1a1a; }}
+        h1 {{ font-size: 1.4em; margin-bottom: 0.5em; }}
+        p {{ color: #666; line-height: 1.5; }}
+        input[type=text] {{ width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 16px; box-sizing: border-box; font-family: monospace; }}
+        button {{ width: 100%; padding: 12px; background: #1a1a1a; color: white; border: none; border-radius: 6px; font-size: 16px; cursor: pointer; margin-top: 12px; }}
+        button:hover {{ background: #333; }}
+        .error {{ color: #dc2626; display: none; margin-top: 8px; }}
+    </style>
+</head>
+<body>
+    <h1>Connect to Treeline</h1>
+    <p>An application wants to access your Treeline hub. Enter your hub token to authorize.</p>
+    <form method="POST" action="/authorize">
+        <input type="hidden" name="redirect_uri" value="{redirect_uri}">
+        <input type="hidden" name="state" value="{client_state}">
+        <input type="hidden" name="code_challenge" value="{code_challenge}">
+        <input type="hidden" name="code_challenge_method" value="{code_challenge_method}">
+        <input type="text" name="hub_token" placeholder="Paste your hub token" autofocus required>
+        <button type="submit">Authorize</button>
+    </form>
+</body>
+</html>"#
+    ))
+}
+
+/// Form data from the authorize page
+#[derive(serde::Deserialize)]
+struct AuthorizeForm {
+    hub_token: String,
+    redirect_uri: String,
+    state: String,
+    code_challenge: Option<String>,
+    #[allow(dead_code)]
+    code_challenge_method: Option<String>,
+}
+
+/// POST /authorize — Validate token and redirect with auth code
+async fn handle_oauth_authorize_submit(
+    State(state): State<Arc<AppState>>,
+    axum::Form(form): axum::Form<AuthorizeForm>,
+) -> impl IntoResponse {
+    // Validate the hub token
+    let valid = HubService::validate_token(&state.treeline_dir, &form.hub_token)
+        .unwrap_or(false);
+
+    if !valid {
+        return Html(
+            r#"<!DOCTYPE html>
+<html>
+<head>
+    <title>Treeline — Authorization Failed</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { font-family: -apple-system, system-ui, sans-serif; max-width: 400px; margin: 80px auto; padding: 0 20px; }
+        h1 { font-size: 1.4em; color: #dc2626; }
+        a { color: #1a1a1a; }
+    </style>
+</head>
+<body>
+    <h1>Invalid token</h1>
+    <p>The hub token you entered is incorrect. Check the output of <code>tl serve</code> for the correct token.</p>
+    <p><a href="javascript:history.back()">Try again</a></p>
+</body>
+</html>"#
+                .to_string(),
+        )
+            .into_response();
+    }
+
+    // Generate a single-use auth code
+    let code = generate_random_id();
+
+    let mut codes = state.auth_codes.lock().await;
+    codes.insert(
+        code.clone(),
+        AuthCodeEntry {
+            redirect_uri: form.redirect_uri.clone(),
+            code_challenge: form.code_challenge,
+            _created_at: std::time::Instant::now(),
+        },
+    );
+
+    // Redirect back to the client with the auth code
+    let separator = if form.redirect_uri.contains('?') {
+        "&"
+    } else {
+        "?"
+    };
+    let redirect_url = format!(
+        "{}{}code={}&state={}",
+        form.redirect_uri, separator, code, form.state
+    );
+
+    Redirect::temporary(&redirect_url).into_response()
+}
+
+/// POST /token — Exchange auth code for access token
+#[derive(serde::Deserialize)]
+struct TokenRequest {
+    grant_type: String,
+    code: Option<String>,
+    code_verifier: Option<String>,
+    #[allow(dead_code)]
+    redirect_uri: Option<String>,
+    #[allow(dead_code)]
+    client_id: Option<String>,
+}
+
+async fn handle_oauth_token(
+    State(state): State<Arc<AppState>>,
+    axum::Form(form): axum::Form<TokenRequest>,
+) -> impl IntoResponse {
+    if form.grant_type != "authorization_code" {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "unsupported_grant_type",
+                "error_description": "Only authorization_code is supported",
+            })),
+        )
+            .into_response();
+    }
+
+    let code = match &form.code {
+        Some(c) => c.clone(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "invalid_request",
+                    "error_description": "Missing code parameter",
+                })),
+            )
+                .into_response()
+        }
+    };
+
+    // Look up and consume the auth code (single-use)
+    let entry = {
+        let mut codes = state.auth_codes.lock().await;
+        codes.remove(&code)
+    };
+
+    let entry = match entry {
+        Some(e) => e,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "invalid_grant",
+                    "error_description": "Invalid or expired authorization code",
+                })),
+            )
+                .into_response()
+        }
+    };
+
+    // Validate PKCE code_verifier if a code_challenge was provided
+    if let Some(challenge) = &entry.code_challenge {
+        let verifier = match &form.code_verifier {
+            Some(v) => v,
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error": "invalid_request",
+                        "error_description": "Missing code_verifier",
+                    })),
+                )
+                    .into_response()
+            }
+        };
+
+        // S256: BASE64URL(SHA256(code_verifier)) == code_challenge
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(verifier.as_bytes());
+        let hash = hasher.finalize();
+        let computed = base64_url_encode(&hash);
+
+        if computed != *challenge {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "invalid_grant",
+                    "error_description": "PKCE verification failed",
+                })),
+            )
+                .into_response();
+        }
+    }
+
+    // Issue the hub token as the access token
+    let hub_token = HubService::load_or_create_token(&state.treeline_dir)
+        .unwrap_or_default();
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "access_token": hub_token,
+            "token_type": "Bearer",
+        })),
+    )
+        .into_response()
+}
+
+// ============================================================================
+// Auth check (Bearer token)
 // ============================================================================
 
 fn check_auth(
@@ -265,4 +580,20 @@ fn check_auth(
                 .into_response()),
         },
     }
+}
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+fn generate_random_id() -> String {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    let bytes: Vec<u8> = (0..32).map(|_| rng.gen()).collect();
+    hex::encode(bytes)
+}
+
+fn base64_url_encode(data: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(data)
 }
