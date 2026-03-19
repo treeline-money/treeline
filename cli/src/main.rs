@@ -10,8 +10,8 @@ mod commands;
 mod output;
 
 use commands::{
-    backup, compact, demo, doctor, encrypt, import, logs, mcp, plugin, query, schema, setup,
-    skills, status, sync, tag, update,
+    backup, compact, demo, doctor, encrypt, hub, import, logs, mcp, plugin, query, schema, serve,
+    setup, skills, status, sync, tag, update,
 };
 
 /// Treeline - personal finance in your terminal
@@ -237,13 +237,32 @@ enum Commands {
 
     /// Start MCP (Model Context Protocol) server on STDIO
     Mcp,
+
+    /// Manage hub connection for remote sync
+    Hub {
+        #[command(subcommand)]
+        command: hub::HubCommands,
+    },
+
+    /// Start the hub server (HTTP API for sync and queries)
+    Serve {
+        /// Host to bind to
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        /// Port to bind to
+        #[arg(long, default_value = "4242")]
+        port: u16,
+    },
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
     // Check if this is a command that shouldn't show update notifications
-    let is_update_command = matches!(cli.command, Commands::Update { .. } | Commands::Mcp);
+    let is_update_command = matches!(
+        cli.command,
+        Commands::Update { .. } | Commands::Mcp | Commands::Serve { .. }
+    );
 
     let result = run(cli);
 
@@ -346,5 +365,7 @@ fn run(cli: Cli) -> Result<()> {
         Commands::Logs { command } => logs::run(command),
         Commands::Update { yes, check } => update::run(yes, check),
         Commands::Mcp => mcp::run(),
+        Commands::Hub { command } => hub::run(command),
+        Commands::Serve { host, port } => serve::run(&host, port),
     }
 }

@@ -110,7 +110,7 @@ fn build_instructions() -> String {
 // MCP tool definitions
 // =============================================================================
 
-fn tool_definitions() -> Value {
+pub fn tool_definitions() -> Value {
     json!({
         "tools": [
             {
@@ -382,7 +382,7 @@ fn tool_definitions() -> Value {
 // =============================================================================
 
 /// Execute a tool call and return the result as MCP content
-fn execute_tool(name: &str, args: &Value) -> Result<Value, String> {
+pub fn execute_tool(name: &str, args: &Value) -> Result<Value, String> {
     match name {
         "status" => tool_status(),
         "query" => {

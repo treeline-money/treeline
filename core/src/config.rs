@@ -47,6 +47,50 @@ struct ImportProfilesContainer {
     account_mappings: HashMap<String, String>,
 }
 
+/// Hub configuration for remote sync
+///
+/// Stored in hub.json (device-specific, never synced).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HubConfig {
+    pub url: String,
+    pub token: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_push: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_pull: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl HubConfig {
+    /// Load hub config from treeline directory
+    pub fn load(treeline_dir: &Path) -> Result<Option<Self>> {
+        let path = treeline_dir.join("hub.json");
+        if !path.exists() {
+            return Ok(None);
+        }
+        let content = std::fs::read_to_string(&path)?;
+        let config: Self = serde_json::from_str(&content)?;
+        Ok(Some(config))
+    }
+
+    /// Save hub config to treeline directory
+    pub fn save(&self, treeline_dir: &Path) -> Result<()> {
+        let path = treeline_dir.join("hub.json");
+        let content = serde_json::to_string_pretty(self)?;
+        std::fs::write(&path, content)?;
+        Ok(())
+    }
+
+    /// Remove hub config from treeline directory
+    pub fn remove(treeline_dir: &Path) -> Result<()> {
+        let path = treeline_dir.join("hub.json");
+        if path.exists() {
+            std::fs::remove_file(&path)?;
+        }
+        Ok(())
+    }
+}
+
 /// Treeline configuration (simplified view of settings)
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -181,5 +225,100 @@ impl Default for ColumnMappings {
             debit: None,
             balance: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_hub_config_none_by_default() {
+        let temp_dir = TempDir::new().unwrap();
+        let hub = HubConfig::load(temp_dir.path()).unwrap();
+        assert!(hub.is_none());
+    }
+
+    #[test]
+    fn test_hub_config_save_and_load() {
+        let temp_dir = TempDir::new().unwrap();
+
+        let hub = HubConfig {
+            url: "http://localhost:4242".to_string(),
+            token: "abc123".to_string(),
+            last_push: None,
+            last_pull: None,
+        };
+        hub.save(temp_dir.path()).unwrap();
+
+        let loaded = HubConfig::load(temp_dir.path()).unwrap().unwrap();
+        assert_eq!(loaded.url, "http://localhost:4242");
+        assert_eq!(loaded.token, "abc123");
+        assert!(loaded.last_push.is_none());
+        assert!(loaded.last_pull.is_none());
+    }
+
+    #[test]
+    fn test_hub_config_save_with_timestamps() {
+        let temp_dir = TempDir::new().unwrap();
+
+        let now = chrono::Utc::now();
+        let hub = HubConfig {
+            url: "http://localhost:4242".to_string(),
+            token: "abc123".to_string(),
+            last_push: Some(now),
+            last_pull: Some(now),
+        };
+        hub.save(temp_dir.path()).unwrap();
+
+        let loaded = HubConfig::load(temp_dir.path()).unwrap().unwrap();
+        assert!(loaded.last_push.is_some());
+        assert!(loaded.last_pull.is_some());
+    }
+
+    #[test]
+    fn test_hub_config_remove() {
+        let temp_dir = TempDir::new().unwrap();
+
+        let hub = HubConfig {
+            url: "http://localhost:4242".to_string(),
+            token: "abc123".to_string(),
+            last_push: None,
+            last_pull: None,
+        };
+        hub.save(temp_dir.path()).unwrap();
+        assert!(HubConfig::load(temp_dir.path()).unwrap().is_some());
+
+        HubConfig::remove(temp_dir.path()).unwrap();
+        assert!(HubConfig::load(temp_dir.path()).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_hub_config_independent_of_settings() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Write settings.json
+        let settings = r#"{"app":{"demoMode":true},"plugins":{"foo":"bar"}}"#;
+        std::fs::write(temp_dir.path().join("settings.json"), settings).unwrap();
+
+        // Save hub config separately
+        let hub = HubConfig {
+            url: "http://localhost:4242".to_string(),
+            token: "abc123".to_string(),
+            last_push: None,
+            last_pull: None,
+        };
+        hub.save(temp_dir.path()).unwrap();
+
+        // settings.json should be untouched
+        let content =
+            std::fs::read_to_string(temp_dir.path().join("settings.json")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(v["app"]["demoMode"], true);
+        assert!(v.get("hub").is_none());
+
+        // hub.json should exist separately
+        assert!(temp_dir.path().join("hub.json").exists());
     }
 }

@@ -70,5 +70,9 @@ atty = "0.2"
 # Directories
 dirs = "5.0"
 
+# HTTP server
+axum = "0.8"
+tower-http = { version = "0.6", features = ["cors"] }
+
 # Internal crates
 treeline-core = { path = "core" }

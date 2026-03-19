@@ -101,6 +101,11 @@ impl DuckDbRepository {
         Ok(repo)
     }
 
+    /// Get the encryption key (if any) used by this repository
+    pub fn encryption_key(&self) -> Option<&str> {
+        self.encryption_key.as_deref()
+    }
+
     /// Acquire the filesystem lock for database access.
     ///
     /// This prevents concurrent access from multiple processes (app, CLI, etc.).
