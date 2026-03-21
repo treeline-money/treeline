@@ -1,7 +1,6 @@
 target/
 desktop/
 docs/
-template/
 node_modules/
 .git/
 .github/
