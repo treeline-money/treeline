@@ -224,10 +224,18 @@ fn run_push(json: bool, force: bool) -> Result<()> {
         }
 
         // Three-way diff: ancestor (base) vs local vs hub
+        // All three databases share the same encryption key
         let local_db_path = treeline_dir.join("treeline.duckdb");
-        let ancestor_config = DatabaseConfig::new(base_db_path.to_string_lossy());
-        let local_config = DatabaseConfig::new(local_db_path.to_string_lossy());
-        let hub_config = DatabaseConfig::new(hub_db_path.to_string_lossy());
+        let encryption_key = ctx.repository.encryption_key().map(|s| s.to_string());
+
+        let mut ancestor_config = DatabaseConfig::new(base_db_path.to_string_lossy());
+        let mut local_config = DatabaseConfig::new(local_db_path.to_string_lossy());
+        let mut hub_config = DatabaseConfig::new(hub_db_path.to_string_lossy());
+        if let Some(ref key) = encryption_key {
+            ancestor_config = ancestor_config.with_key(key);
+            local_config = local_config.with_key(key);
+            hub_config = hub_config.with_key(key);
+        }
 
         let diff3_report = diffy_duck::diff3(
             &ancestor_config, &local_config, &hub_config, &DiffOptions::default(),
@@ -278,7 +286,10 @@ fn run_push(json: bool, force: bool) -> Result<()> {
             let merge_db_path = merge_temp.path().join("merged.duckdb");
             std::fs::copy(&base_db_path, &merge_db_path)?;
 
-            let merge_ancestor = DatabaseConfig::new(merge_db_path.to_string_lossy());
+            let mut merge_ancestor = DatabaseConfig::new(merge_db_path.to_string_lossy());
+            if let Some(ref key) = encryption_key {
+                merge_ancestor = merge_ancestor.with_key(key);
+            }
 
             diffy_duck::merge3(
                 &merge_ancestor, &local_config, &hub_config, &Merge3Strategy::FailOnConflict,
