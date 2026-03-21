@@ -64,15 +64,36 @@
   // Derived
   // ============================================================================
 
-  let assetAccounts = $derived(
-    accounts.filter((a) => a.classification === "asset")
-  );
+  // Group all accounts by institution (assets and liabilities together)
+  let accountsByInstitution = $derived.by(() => {
+    const groups = new Map<string, AccountWithStats[]>();
+    for (const account of accounts) {
+      const inst = account.institution_name || "Other";
+      if (!groups.has(inst)) {
+        groups.set(inst, []);
+      }
+      groups.get(inst)!.push(account);
+    }
+    // Sort institution groups alphabetically, with "Other" last
+    // Within each group, assets first then liabilities
+    return [...groups.entries()]
+      .sort((a, b) => {
+        if (a[0] === "Other") return 1;
+        if (b[0] === "Other") return -1;
+        return a[0].localeCompare(b[0]);
+      })
+      .map(([inst, accts]) => [inst, accts.sort((a, b) => {
+        if (a.classification !== b.classification) {
+          return a.classification === "asset" ? -1 : 1;
+        }
+        return a.name.localeCompare(b.name);
+      })] as [string, AccountWithStats[]]);
+  });
 
-  let liabilityAccounts = $derived(
-    accounts.filter((a) => a.classification === "liability")
+  // Flat list preserving grouped order for keyboard navigation
+  let allAccountsList = $derived(
+    accountsByInstitution.flatMap(([, accts]) => accts)
   );
-
-  let allAccountsList = $derived([...assetAccounts, ...liabilityAccounts]);
 
   let selectedAccount = $derived(
     accounts.find((a) => a.account_id === selectedAccountId) || null
@@ -531,11 +552,14 @@
     <div class="main-content">
       <!-- Account List -->
       <div class="account-list">
-        {#if assetAccounts.length > 0}
-          <div class="section">
-            <div class="section-header">ASSETS</div>
-            {#each assetAccounts as account, i}
-              {@const globalIndex = i}
+        {#each accountsByInstitution as [institution, institutionAccounts]}
+          <div class="institution-group">
+            <div class="institution-header">
+              <span class="institution-name">{institution}</span>
+            </div>
+            {#each institutionAccounts as account}
+              {@const globalIndex = allAccountsList.findIndex(a => a.account_id === account.account_id)}
+              {@const isLiability = account.classification === "liability"}
               <button
                 class="row"
                 class:selected={selectedAccountId === account.account_id}
@@ -544,12 +568,15 @@
               >
                 <div class="row-info">
                   <span class="row-name">{getDisplayName(account)}</span>
-                  {#if getSubtitle(account)}
-                    <span class="row-subtitle">{getSubtitle(account)}</span>
-                  {/if}
+                  <span class="row-subtitle">
+                    {#if getSubtitle(account)}{getSubtitle(account)}{/if}
+                    {#if isLiability}
+                      {#if getSubtitle(account)} · {/if}<span class="classification-label">liability</span>
+                    {/if}
+                  </span>
                 </div>
                 {#if account.balance !== null}
-                  <span class="row-balance">{formatUserCurrency(account.balance)}</span>
+                  <span class="row-balance" class:negative={isLiability}>{formatUserCurrency(isLiability ? Math.abs(account.balance) : account.balance)}</span>
                 {:else}
                   <span class="row-balance no-balance">—</span>
                 {/if}
@@ -562,40 +589,7 @@
               </button>
             {/each}
           </div>
-        {/if}
-
-        {#if liabilityAccounts.length > 0}
-          <div class="section">
-            <div class="section-header">LIABILITIES</div>
-            {#each liabilityAccounts as account, i}
-              {@const globalIndex = assetAccounts.length + i}
-              <button
-                class="row"
-                class:selected={selectedAccountId === account.account_id}
-                class:cursor={cursorIndex === globalIndex}
-                onclick={() => handleSelectAccount(account.account_id)}
-              >
-                <div class="row-info">
-                  <span class="row-name">{getDisplayName(account)}</span>
-                  {#if getSubtitle(account)}
-                    <span class="row-subtitle">{getSubtitle(account)}</span>
-                  {/if}
-                </div>
-                {#if account.balance !== null}
-                  <span class="row-balance negative">{formatUserCurrency(Math.abs(account.balance))}</span>
-                {:else}
-                  <span class="row-balance no-balance">—</span>
-                {/if}
-                <RowMenu
-                  items={getRowMenuItems(account)}
-                  isOpen={openMenuId === account.account_id}
-                  onToggle={() => { openMenuId = openMenuId === account.account_id ? null : account.account_id; }}
-                  onClose={() => { openMenuId = null; }}
-                />
-              </button>
-            {/each}
-          </div>
-        {/if}
+        {/each}
       </div>
 
       <!-- Detail Panel -->
@@ -932,6 +926,23 @@
     letter-spacing: 0.5px;
   }
 
+  .institution-group {
+    margin-bottom: 2px;
+  }
+
+  .institution-header {
+    padding: var(--spacing-xs) var(--spacing-lg);
+    padding-top: var(--spacing-sm);
+  }
+
+  .institution-name {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+  }
+
   .row {
     width: 100%;
     display: flex;
@@ -982,12 +993,23 @@
     text-overflow: ellipsis;
   }
 
+  .classification-label {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    color: var(--accent-danger, #ef4444);
+    background: rgba(239, 68, 68, 0.1);
+  }
+
   .row-balance {
     font-size: 13px;
     font-weight: 500;
     font-family: var(--font-mono);
     color: var(--text-primary);
     white-space: nowrap;
+    flex-shrink: 0;
   }
 
   .row-balance.negative {
