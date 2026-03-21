@@ -49,6 +49,16 @@ pub enum HubCommands {
         #[arg(long)]
         json: bool,
     },
+
+    /// Watch for local changes and auto-sync with the hub
+    Watch {
+        /// Seconds to wait after last change before pushing (default: 5)
+        #[arg(long, default_value = "5")]
+        debounce: u64,
+        /// Seconds between hub poll checks for incoming changes (default: 15)
+        #[arg(long, default_value = "15")]
+        poll: u64,
+    },
 }
 
 pub fn run(command: HubCommands) -> Result<()> {
@@ -58,6 +68,7 @@ pub fn run(command: HubCommands) -> Result<()> {
         HubCommands::Push { json, force } => run_push(json, force),
         HubCommands::Pull { json } => run_pull(json),
         HubCommands::Status { json } => run_status(json),
+        HubCommands::Watch { debounce, poll } => run_watch(debounce, poll),
     }
 }
 
@@ -544,4 +555,123 @@ fn save_base_snapshot(treeline_dir: &std::path::Path) -> Result<()> {
             .context("Failed to save base snapshot")?;
     }
     Ok(())
+}
+
+/// Watch for local database changes and auto-sync with the hub.
+///
+/// Uses file mtime to detect changes. Debounces rapid edits.
+/// Also polls the hub for incoming changes.
+fn run_watch(debounce_secs: u64, poll_secs: u64) -> Result<()> {
+    let treeline_dir = get_treeline_dir();
+
+    let hub = HubConfig::load(&treeline_dir)?.ok_or_else(|| {
+        anyhow::anyhow!("Not linked to a hub. Run 'tl hub link <url> --token <token>' first.")
+    })?;
+
+    eprintln!("Watching for changes (debounce: {}s, poll: {}s)", debounce_secs, poll_secs);
+    eprintln!("Hub: {}", hub.url);
+    eprintln!("Press Ctrl+C to stop.");
+
+    let db_path = treeline_dir.join("treeline.duckdb");
+    let debounce = std::time::Duration::from_secs(debounce_secs);
+    let poll_interval = std::time::Duration::from_secs(poll_secs);
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .unwrap_or_default();
+
+    let mut last_mtime = db_path
+        .metadata()
+        .and_then(|m| m.modified())
+        .ok();
+    let mut last_poll = std::time::Instant::now();
+
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+
+        // Check for local changes via mtime
+        let current_mtime = db_path
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok();
+
+        if current_mtime != last_mtime {
+            // File changed — debounce
+            last_mtime = current_mtime;
+            eprintln!("[watch] Change detected, waiting {}s...", debounce_secs);
+
+            // Keep checking until stable
+            loop {
+                std::thread::sleep(debounce);
+                let new_mtime = db_path
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .ok();
+                if new_mtime == last_mtime {
+                    break; // Stable — ready to push
+                }
+                last_mtime = new_mtime;
+            }
+
+            // Check if the file actually differs from our base
+            let hub_config = HubConfig::load(&treeline_dir)?.unwrap();
+            if let Some(ref base_hash) = hub_config.base_hash {
+                if let Ok(current_hash) = treeline_core::services::compute_file_hash(&db_path) {
+                    if &current_hash == base_hash {
+                        continue; // No actual content change
+                    }
+                }
+            }
+
+            eprintln!("[watch] Pushing...");
+            match run_push(false, false) {
+                Ok(()) => {}
+                Err(e) => eprintln!("[watch] Push failed: {}", e),
+            }
+            last_poll = std::time::Instant::now();
+            continue;
+        }
+
+        // Poll hub for incoming changes
+        if last_poll.elapsed() >= poll_interval {
+            last_poll = std::time::Instant::now();
+
+            let hub_config = match HubConfig::load(&treeline_dir)? {
+                Some(h) => h,
+                None => continue,
+            };
+
+            // Get hub hash
+            let hub_hash = client
+                .get(format!("{}/api/hash", hub_config.url))
+                .header("Authorization", format!("Bearer {}", hub_config.token))
+                .timeout(std::time::Duration::from_secs(5))
+                .send()
+                .ok()
+                .filter(|r| r.status().is_success())
+                .and_then(|r| r.json::<serde_json::Value>().ok())
+                .and_then(|b| b["hash"].as_str().map(|s| s.to_string()));
+
+            let needs_pull = match (hub_hash.as_deref(), hub_config.base_hash.as_deref()) {
+                (Some(hub), Some(base)) => hub != base,
+                (Some(_), None) => true,
+                _ => false,
+            };
+
+            if needs_pull {
+                eprintln!("[watch] Hub changed, pulling...");
+                match run_pull(false) {
+                    Ok(()) => {
+                        // Update our mtime tracking so we don't re-push what we just pulled
+                        last_mtime = db_path
+                            .metadata()
+                            .and_then(|m| m.modified())
+                            .ok();
+                    }
+                    Err(e) => eprintln!("[watch] Pull failed: {}", e),
+                }
+            }
+        }
+    }
 }

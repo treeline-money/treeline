@@ -158,25 +158,6 @@ impl Default for PluginWatcherState {
     }
 }
 
-/// App state for hub sync — holds a broadcast sender that write commands
-/// use to signal "the database changed." A background task listens and
-/// handles push/pull.
-pub struct HubSyncState {
-    sender: tokio::sync::broadcast::Sender<()>,
-}
-
-impl HubSyncState {
-    fn new() -> Self {
-        let (sender, _) = tokio::sync::broadcast::channel(16);
-        Self { sender }
-    }
-
-    /// Signal that a local database write occurred.
-    pub fn notify_write(&self) {
-        let _ = self.sender.send(());
-    }
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 struct PluginManifest {
     id: String,
@@ -302,7 +283,6 @@ async fn execute_query(
     readonly: Option<bool>, // Kept for API compatibility, but no longer used
     encryption_state: State<'_, EncryptionState>,
     context_state: State<'_, TreelineContextState>,
-    hub_sync: State<'_, HubSyncState>,
 ) -> Result<String, String> {
     let _ = readonly; // Suppress unused warning - treeline-core handles read/write internally
 
@@ -316,7 +296,7 @@ async fn execute_query(
     };
     // Mutex guard dropped here - UI thread is free
 
-    let result = tauri::async_runtime::spawn_blocking(move || {
+    tauri::async_runtime::spawn_blocking(move || {
         let query_service = treeline_core::services::QueryService::new(repository);
         let result = query_service
             .execute_sql(&query)
@@ -324,10 +304,7 @@ async fn execute_query(
         serde_json::to_string(&result).map_err(|e| format!("Failed to serialize result: {}", e))
     })
     .await
-    .map_err(|e| format!("Task failed: {}", e))??;
-
-    hub_sync.notify_write();
-    Ok(result)
+    .map_err(|e| format!("Task failed: {}", e))?
 }
 
 /// Execute a parameterized SQL query using treeline-core - SAFE from SQL injection
@@ -342,7 +319,6 @@ async fn execute_query_with_params(
     plugin_context: Option<PluginContext>,
     encryption_state: State<'_, EncryptionState>,
     context_state: State<'_, TreelineContextState>,
-    hub_sync: State<'_, HubSyncState>,
 ) -> Result<String, String> {
     let _ = readonly; // Suppress unused warning - treeline-core handles read/write internally
 
@@ -361,7 +337,7 @@ async fn execute_query_with_params(
     };
     // Mutex guard dropped here - UI thread is free
 
-    let result = tauri::async_runtime::spawn_blocking(move || {
+    tauri::async_runtime::spawn_blocking(move || {
         let query_service = treeline_core::services::QueryService::new(repository);
         let result = query_service
             .execute_sql_with_params(&query, &params)
@@ -369,10 +345,7 @@ async fn execute_query_with_params(
         serde_json::to_string(&result).map_err(|e| format!("Failed to serialize result: {}", e))
     })
     .await
-    .map_err(|e| format!("Task failed: {}", e))??;
-
-    hub_sync.notify_write();
-    Ok(result)
+    .map_err(|e| format!("Task failed: {}", e))?
 }
 
 #[tauri::command]
@@ -969,7 +942,6 @@ async fn run_sync(
     encryption_state: State<'_, EncryptionState>,
     context_state: State<'_, TreelineContextState>,
     logging_state: State<'_, LoggingState>,
-    hub_sync: State<'_, HubSyncState>,
 ) -> Result<String, String> {
     let key = get_encryption_key(&encryption_state)?;
     let dry_run = dry_run.unwrap_or(false);
@@ -1070,10 +1042,6 @@ async fn run_sync(
                 }
             }
         }
-    }
-
-    if !dry_run {
-        hub_sync.notify_write();
     }
 
     Ok(result)
@@ -1346,7 +1314,6 @@ async fn import_csv_execute(
     number_format: Option<String>,
     encryption_state: State<'_, EncryptionState>,
     context_state: State<'_, TreelineContextState>,
-    hub_sync: State<'_, HubSyncState>,
 ) -> Result<String, String> {
     let key = get_encryption_key(&encryption_state)?;
 
@@ -1398,7 +1365,6 @@ async fn import_csv_execute(
     .await
     .map_err(|e| format!("Task failed: {}", e))??;
 
-    hub_sync.notify_write();
     Ok(result)
 }
 
@@ -2211,7 +2177,6 @@ fn delete_account(
     account_id: String,
     encryption_state: State<EncryptionState>,
     context_state: State<TreelineContextState>,
-    hub_sync: State<HubSyncState>,
 ) -> Result<(), String> {
     let key = get_encryption_key(&encryption_state)?;
     let ctx_guard = get_or_create_context(&context_state, key)?;
@@ -2219,10 +2184,7 @@ fn delete_account(
 
     ctx.repository
         .delete_account(&account_id)
-        .map_err(|e| format!("Failed to delete account: {}", e))?;
-
-    hub_sync.notify_write();
-    Ok(())
+        .map_err(|e| format!("Failed to delete account: {}", e))
 }
 
 /// Run database migrations using treeline-core
@@ -3238,137 +3200,6 @@ mod tests {
     }
 }
 
-/// Background hub sync: push if local changed, pull if hub changed.
-/// Called by the background sync task.
-fn hub_sync_poll(had_local_write: bool) {
-    let treeline_dir = match get_treeline_dir() {
-        Ok(d) => d,
-        Err(_) => return,
-    };
-
-    let hub = match treeline_core::config::HubConfig::load(&treeline_dir) {
-        Ok(Some(h)) => h,
-        _ => return, // No hub linked
-    };
-
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(120))
-        .build()
-        .unwrap_or_default();
-
-    if had_local_write {
-        // Push local changes
-        let db_path = treeline_dir.join("treeline.duckdb");
-        if !db_path.exists() {
-            return;
-        }
-
-        // Check if file actually changed from base
-        if let Some(ref base_hash) = hub.base_hash {
-            if let Ok(current_hash) = treeline_core::services::compute_file_hash(&db_path) {
-                if &current_hash == base_hash {
-                    return; // No actual changes
-                }
-            }
-        }
-
-        let bundle = match treeline_core::services::SyncBundle::create(&treeline_dir) {
-            Ok(b) => b,
-            Err(_) => return,
-        };
-
-        let mut push_url = format!("{}/api/push", hub.url);
-        if let Some(ref base_hash) = hub.base_hash {
-            push_url = format!("{}?base_hash={}", push_url, base_hash);
-        }
-
-        let resp = client
-            .post(&push_url)
-            .header("Authorization", format!("Bearer {}", hub.token))
-            .header("Content-Type", "application/octet-stream")
-            .body(bundle)
-            .send();
-
-        if let Ok(resp) = resp {
-            if resp.status().is_success() {
-                if let Ok(body) = resp.json::<serde_json::Value>() {
-                    let new_hash = body["hash"].as_str().map(|s| s.to_string());
-                    if let Ok(Some(mut hub)) =
-                        treeline_core::config::HubConfig::load(&treeline_dir)
-                    {
-                        hub.last_push = Some(chrono::Utc::now());
-                        hub.base_hash = new_hash;
-                        let _ = hub.save(&treeline_dir);
-                    }
-                    let base_path = treeline_dir.join(".treeline.base.duckdb");
-                    let _ = std::fs::copy(&db_path, &base_path);
-                }
-            }
-            // On conflict, do nothing — user will resolve manually via CLI
-        }
-    } else {
-        // Check hub for incoming changes
-        let resp = client
-            .get(format!("{}/api/hash", hub.url))
-            .header("Authorization", format!("Bearer {}", hub.token))
-            .timeout(Duration::from_secs(5))
-            .send();
-
-        let hub_hash = resp
-            .ok()
-            .filter(|r| r.status().is_success())
-            .and_then(|r| r.json::<serde_json::Value>().ok())
-            .and_then(|b| b["hash"].as_str().map(|s| s.to_string()));
-
-        let needs_pull = match (hub_hash.as_deref(), hub.base_hash.as_deref()) {
-            (Some(hub_h), Some(base_h)) => hub_h != base_h,
-            (Some(_), None) => true,
-            _ => false,
-        };
-
-        if !needs_pull {
-            return;
-        }
-
-        let resp = client
-            .get(format!("{}/api/pull", hub.url))
-            .header("Authorization", format!("Bearer {}", hub.token))
-            .send();
-
-        if let Ok(resp) = resp {
-            if resp.status().is_success() {
-                if let Ok(bytes) = resp.bytes() {
-                    // Backup before replacing
-                    let db_path = treeline_dir.join("treeline.duckdb");
-                    if db_path.exists() {
-                        let backup_service = treeline_core::services::BackupService::new(
-                            treeline_dir.clone(),
-                            "treeline.duckdb".to_string(),
-                        );
-                        let _ = backup_service.create(Some(20));
-                    }
-
-                    if treeline_core::services::SyncBundle::extract(&bytes, &treeline_dir).is_ok()
-                    {
-                        let base_path = treeline_dir.join(".treeline.base.duckdb");
-                        let _ = std::fs::copy(&db_path, &base_path);
-
-                        let new_hash =
-                            treeline_core::services::compute_file_hash(&db_path).ok();
-                        if let Ok(Some(mut hub)) =
-                            treeline_core::config::HubConfig::load(&treeline_dir)
-                        {
-                            hub.last_pull = Some(chrono::Utc::now());
-                            hub.base_hash = new_hash;
-                            let _ = hub.save(&treeline_dir);
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // On Linux, set WEBKIT_DISABLE_COMPOSITING_MODE to avoid EGL initialization failures
@@ -3389,7 +3220,6 @@ pub fn run() {
         .manage(TreelineContextState::default())
         .manage(LoggingState::default())
         .manage(PluginWatcherState::default())
-        .manage(HubSyncState::new())
         .setup(|app| {
             let window = app.get_webview_window("main").unwrap();
             let devtools_state = app.state::<DevtoolsState>();
@@ -3495,34 +3325,6 @@ pub fn run() {
                     }
                 }
             }
-
-            // Spawn hub sync background task
-            let sync_state = app.state::<HubSyncState>();
-            let mut sync_rx = sync_state.sender.subscribe();
-            tauri::async_runtime::spawn(async move {
-                let debounce = Duration::from_secs(3);
-                let poll_interval = Duration::from_secs(15);
-
-                loop {
-                    // Wait for either a write notification or the poll interval
-                    let got_write = tokio::select! {
-                        result = sync_rx.recv() => result.is_ok(),
-                        _ = tokio::time::sleep(poll_interval) => false,
-                    };
-
-                    if got_write {
-                        // Debounce: drain any additional writes that arrive quickly
-                        tokio::time::sleep(debounce).await;
-                        while sync_rx.try_recv().is_ok() {}
-                    }
-
-                    // Run sync in a blocking thread (file I/O + HTTP)
-                    let _ = tauri::async_runtime::spawn_blocking(move || {
-                        hub_sync_poll(got_write);
-                    })
-                    .await;
-                }
-            });
 
             Ok(())
         })

@@ -1192,17 +1192,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "diffy-duck"
-version = "0.1.0"
-dependencies = [
- "duckdb",
- "indexmap 2.13.0",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5960,7 +5949,6 @@ dependencies = [
  "notify",
  "notify-debouncer-mini",
  "psm",
- "reqwest",
  "rust_decimal",
  "serde",
  "serde_json",
@@ -5973,7 +5961,6 @@ dependencies = [
  "tauri-plugin-shell",
  "tauri-plugin-updater",
  "tempfile",
- "tokio",
  "treeline-core",
 ]
 
@@ -5987,7 +5974,6 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "csv",
- "diffy-duck",
  "duckdb",
  "fs2",
  "hex",
