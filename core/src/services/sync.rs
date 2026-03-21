@@ -118,6 +118,7 @@ impl SyncService {
                 provider_warnings: vec![],
                 error: None,
                 auto_tag_failures: vec![],
+                discovered_accounts: vec![],
             });
         }
 
@@ -185,6 +186,32 @@ impl SyncService {
 
         // Check accountSettings for disabled flag on each account
         let account_settings = settings.get("accountSettings").and_then(|v| v.as_object());
+
+        // Collect discovered accounts for dry-run/setup UI (before any filtering)
+        let discovered_accounts: Vec<DiscoveredAccount> = if dry_run {
+            accounts_result
+                .accounts
+                .iter()
+                .map(|account| {
+                    let provider_id = match name {
+                        "simplefin" => account.sf_id.clone(),
+                        "lunchflow" => account.lf_id.clone(),
+                        "demo" => Some(account.name.clone()),
+                        _ => None,
+                    }
+                    .unwrap_or_default();
+                    DiscoveredAccount {
+                        provider_id,
+                        name: account.name.clone(),
+                        institution_name: account.institution_name.clone(),
+                        balance: account.balance.map(|b| b.to_string()),
+                        currency: Some(account.currency.clone()),
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
 
         // Process accounts
         let mut accounts_synced = 0i64;
@@ -281,6 +308,27 @@ impl SyncService {
                 .cloned()
                 .collect();
 
+            // Skip transaction fetch entirely if no accounts need transactions
+            if ext_account_ids.is_empty() {
+                return Ok(IntegrationSyncResult {
+                    integration: name.to_string(),
+                    accounts_synced,
+                    transactions_synced: 0,
+                    transaction_stats: TransactionStats {
+                        discovered: 0,
+                        new: 0,
+                        skipped: 0,
+                    },
+                    sync_type: sync_type.to_string(),
+                    start_date: start_date.format("%Y-%m-%d").to_string(),
+                    end_date: end_date.format("%Y-%m-%d").to_string(),
+                    provider_warnings,
+                    error: None,
+                    auto_tag_failures: vec![],
+                    discovered_accounts,
+                });
+            }
+
             let txs_result =
                 provider.get_transactions(start_date, end_date, &ext_account_ids, settings)?;
             provider_warnings.extend(txs_result.warnings);
@@ -312,6 +360,7 @@ impl SyncService {
             provider_warnings,
             error: None,
             auto_tag_failures,
+            discovered_accounts,
         })
     }
 
@@ -495,6 +544,18 @@ pub struct IntegrationSyncResult {
     /// Auto-tag rules that failed (if any)
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub auto_tag_failures: Vec<crate::services::tag::RuleFailure>,
+    /// Accounts discovered during sync (populated on dry runs for setup UI)
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub discovered_accounts: Vec<DiscoveredAccount>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DiscoveredAccount {
+    pub provider_id: String,
+    pub name: String,
+    pub institution_name: Option<String>,
+    pub balance: Option<String>,
+    pub currency: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

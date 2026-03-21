@@ -264,6 +264,14 @@ export async function writePluginState<T>(pluginId: string, state: T): Promise<v
 // Sync
 // ============================================================================
 
+export interface DiscoveredAccount {
+  provider_id: string;
+  name: string;
+  institution_name?: string;
+  balance?: string;
+  currency?: string;
+}
+
 export interface SyncResult {
   results: Array<{
     integration: string;
@@ -276,6 +284,7 @@ export interface SyncResult {
     };
     provider_warnings?: string[];
     error?: string;
+    discovered_accounts?: DiscoveredAccount[];
   }>;
 }
 

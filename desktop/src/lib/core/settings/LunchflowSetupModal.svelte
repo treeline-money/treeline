@@ -117,14 +117,14 @@
                       class:active={account.sync_mode === "disabled"}
                       onclick={() => { if (account.sync_mode !== "disabled") onSetAccountSyncMode(account.lunchflow_id, "disabled"); }}
                     >
-                      Disabled
+                      Skip
                     </button>
                   </div>
                 </div>
               {/each}
             </div>
             <p class="setup-accounts-hint">
-              "Balances + Txns" syncs balances and 90 days of transactions. "Balances only" skips transactions. "Disabled" skips the account entirely.
+              "Balances + Txns" syncs balances and 90 days of transactions. "Balances only" skips transactions. "Skip" excludes the account from syncing.
             </p>
           {:else}
             <div class="setup-accounts-intro">

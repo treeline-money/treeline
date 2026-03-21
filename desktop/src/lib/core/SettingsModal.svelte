@@ -130,6 +130,11 @@
   let connectionCheckSuccess = $state<boolean | null>(null);
   let simplefinSettings = $state<Record<string, unknown>>({});
 
+  // Lunchflow connection check state
+  let lunchflowConnectionWarnings = $state<string[]>([]);
+  let isCheckingLunchflowConnection = $state(false);
+  let lunchflowConnectionCheckSuccess = $state<boolean | null>(null);
+
   // SimpleFIN setup modal state
   let showSetupModal = $state(false);
   let setupToken = $state("");
@@ -578,6 +583,32 @@
     }
   }
 
+  async function handleCheckLunchflowConnection() {
+    isCheckingLunchflowConnection = true;
+    lunchflowConnectionWarnings = [];
+    lunchflowConnectionCheckSuccess = null;
+    try {
+      // Use balancesOnly sync to discover new accounts without pulling transactions
+      const result = await runSync({ balancesOnly: true });
+      const lfResult = result.results.find((r) => r.integration === "lunchflow");
+      if (lfResult?.provider_warnings) {
+        lunchflowConnectionWarnings = lfResult.provider_warnings;
+      }
+      if (lfResult?.error) {
+        lunchflowConnectionWarnings = [lfResult.error];
+      }
+      lunchflowConnectionCheckSuccess = lunchflowConnectionWarnings.length === 0;
+
+      // Reload accounts to pick up any newly discovered ones
+      await loadLunchflowAccounts();
+    } catch (e) {
+      lunchflowConnectionWarnings = [e instanceof Error ? e.message : String(e)];
+      lunchflowConnectionCheckSuccess = false;
+    } finally {
+      isCheckingLunchflowConnection = false;
+    }
+  }
+
   async function handleSetSyncMode(account: SimplefinAccount, mode: AccountSyncMode) {
     try {
       await updateIntegrationAccountSetting("simplefin", account.simplefin_id, mode);
@@ -690,23 +721,16 @@
       setupSuccess = true;
 
       try {
-        await runSync({ balancesOnly: true });
-        const result = await executeQuery(
-          `SELECT
-             sf_id as simplefin_id,
-             name,
-             institution_name,
-             balance
-           FROM sys_accounts
-           WHERE sf_id IS NOT NULL
-           ORDER BY institution_name, name`
-        );
+        // Dry run to discover accounts without saving to DB
+        const syncResult = await runSync({ dryRun: true, balancesOnly: true });
+        const sfResult = syncResult.results.find((r) => r.integration === "simplefin");
+        const accounts = sfResult?.discovered_accounts || [];
 
-        setupAccounts = result.rows.map((row) => ({
-          simplefin_id: row[0] as string,
-          name: row[1] as string,
-          institution_name: row[2] as string | null,
-          balance: row[3] as string | null,
+        setupAccounts = accounts.map((acc) => ({
+          simplefin_id: acc.provider_id,
+          name: acc.name,
+          institution_name: acc.institution_name || null,
+          balance: acc.balance || null,
           sync_mode: "full" as AccountSyncMode,
         }));
       } catch (e) {
@@ -776,25 +800,17 @@
       lunchflowSetupSuccess = true;
 
       try {
-        await runSync({ balancesOnly: true });
-        const result = await executeQuery(
-          `SELECT
-             lf_id as lunchflow_id,
-             name,
-             institution_name,
-             balance,
-             currency
-           FROM sys_accounts
-           WHERE lf_id IS NOT NULL
-           ORDER BY institution_name, name`
-        );
+        // Dry run to discover accounts without saving to DB
+        const syncResult = await runSync({ dryRun: true, balancesOnly: true });
+        const lfResult = syncResult.results.find((r) => r.integration === "lunchflow");
+        const accounts = lfResult?.discovered_accounts || [];
 
-        lunchflowSetupAccounts = result.rows.map((row) => ({
-          lunchflow_id: row[0] as string,
-          name: row[1] as string,
-          institution_name: row[2] as string | null,
-          balance: row[3] as string | null,
-          currency: row[4] as string | null,
+        lunchflowSetupAccounts = accounts.map((acc) => ({
+          lunchflow_id: acc.provider_id,
+          name: acc.name,
+          institution_name: acc.institution_name || null,
+          balance: acc.balance || null,
+          currency: acc.currency || null,
           sync_mode: "full" as AccountSyncMode,
         }));
       } catch (e) {
@@ -946,8 +962,12 @@
                 {connectionWarnings}
                 {isCheckingConnection}
                 {connectionCheckSuccess}
+                {lunchflowConnectionWarnings}
+                {isCheckingLunchflowConnection}
+                {lunchflowConnectionCheckSuccess}
                 onExitDemoMode={handleExitDemoMode}
                 onCheckConnection={handleCheckConnection}
+                onCheckLunchflowConnection={handleCheckLunchflowConnection}
                 onSetSyncMode={handleSetSyncMode}
                 onSetLunchflowSyncMode={handleSetLunchflowSyncMode}
                 onOpenSetupModal={openSetupModal}

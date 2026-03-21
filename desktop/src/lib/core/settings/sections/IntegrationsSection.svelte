@@ -43,8 +43,12 @@
     connectionWarnings: string[];
     isCheckingConnection: boolean;
     connectionCheckSuccess: boolean | null;
+    lunchflowConnectionWarnings: string[];
+    isCheckingLunchflowConnection: boolean;
+    lunchflowConnectionCheckSuccess: boolean | null;
     onExitDemoMode: () => void;
     onCheckConnection: () => void;
+    onCheckLunchflowConnection: () => void;
     onSetSyncMode: (account: SimplefinAccount, mode: AccountSyncMode) => void;
     onSetLunchflowSyncMode: (account: LunchflowAccount, mode: AccountSyncMode) => void;
     onOpenSetupModal: () => void;
@@ -68,8 +72,12 @@
     connectionWarnings,
     isCheckingConnection,
     connectionCheckSuccess,
+    lunchflowConnectionWarnings = [],
+    isCheckingLunchflowConnection = false,
+    lunchflowConnectionCheckSuccess = null,
     onExitDemoMode,
     onCheckConnection,
+    onCheckLunchflowConnection,
     onSetSyncMode,
     onSetLunchflowSyncMode,
     onOpenSetupModal,
@@ -211,22 +219,21 @@
             <div class="accounts-header">
               <span class="accounts-title">Linked Accounts ({simplefinAccounts.length})</span>
               {#if !simplefinPaused}
-                <button
-                  class="btn secondary small"
-                  onclick={onCheckConnection}
-                  disabled={isCheckingConnection}
-                >
-                  {#if isCheckingConnection}
-                    Checking...
-                  {:else}
+                {#if isCheckingConnection}
+                  <span class="checking-text">Checking...</span>
+                {:else}
+                  <button
+                    class="btn secondary small"
+                    onclick={onCheckConnection}
+                  >
                     Check Connection
-                  {/if}
-                </button>
+                  </button>
+                {/if}
               {/if}
             </div>
             <div class="sync-settings-help">
               <Icon name="info" size={14} />
-              <span class="help-text">Choose what to sync for each account. "Disabled" skips the account entirely during sync.</span>
+              <span class="help-text">Choose what to sync for each account. "Skip" excludes the account from syncing.</span>
             </div>
             {#each [...accountsByInstitution] as [institution, accounts]}
               {@const hasWarning = connectionWarnings.some(w => w.includes(institution))}
@@ -273,7 +280,7 @@
                           class:active={account.sync_mode === "disabled"}
                           onclick={() => { if (account.sync_mode !== "disabled") onSetSyncMode(account, "disabled"); }}
                         >
-                          Disabled
+                          Skip
                         </button>
                       </div>
                     </div>
@@ -346,7 +353,7 @@
 
     <!-- Lunch Flow Integration Card -->
     <div class="integration-card">
-      <span class="badge experimental corner">Experimental</span>
+      <span class="badge experimental" style="margin-bottom: 4px;">Experimental</span>
       <div class="integration-header">
         <div class="integration-info">
           <div class="integration-title-row">
@@ -379,6 +386,11 @@
             <span class="status-dot"></span>
             <span>Paused</span>
           </div>
+        {:else if lunchflowConnectionCheckSuccess === false}
+          <div class="integration-status warning">
+            <span class="status-dot"></span>
+            <span>Connection Issue</span>
+          </div>
         {:else}
           <div class="integration-status connected">
             <span class="status-dot"></span>
@@ -390,15 +402,38 @@
           <div class="linked-accounts" class:dimmed={lunchflowPaused}>
             <div class="accounts-header">
               <span class="accounts-title">Linked Accounts ({lunchflowAccounts.length})</span>
+              {#if !lunchflowPaused}
+                {#if isCheckingLunchflowConnection}
+                  <span class="checking-text">Checking...</span>
+                {:else}
+                  <button
+                    class="btn secondary small"
+                    onclick={onCheckLunchflowConnection}
+                  >
+                    Check Connection
+                  </button>
+                {/if}
+              {/if}
             </div>
             <div class="sync-settings-help">
               <Icon name="info" size={14} />
-              <span class="help-text">Choose what to sync for each account. "Disabled" skips the account entirely during sync.</span>
+              <span class="help-text">Choose what to sync for each account. "Skip" excludes the account from syncing.</span>
             </div>
             {#each [...lunchflowAccountsByInstitution] as [institution, accounts]}
-              <div class="institution-group">
+              {@const hasWarning = lunchflowConnectionWarnings.some(w => w.includes(institution))}
+              {@const isCheckedOk = lunchflowConnectionCheckSuccess !== null && !hasWarning}
+              <div class="institution-group" class:has-warning={hasWarning} class:checked-ok={isCheckedOk}>
                 <div class="institution-header">
                   <span class="institution-name">{institution}</span>
+                  {#if isCheckingLunchflowConnection}
+                    <span class="institution-status checking">...</span>
+                  {:else if lunchflowConnectionCheckSuccess !== null}
+                    {#if hasWarning}
+                      <span class="institution-status warning">!</span>
+                    {:else}
+                      <Icon name="check" size={12} class="status-ok" />
+                    {/if}
+                  {/if}
                 </div>
                 <div class="institution-accounts">
                   {#each accounts as account}
@@ -432,7 +467,7 @@
                           class:active={account.sync_mode === "disabled"}
                           onclick={() => { if (account.sync_mode !== "disabled") onSetLunchflowSyncMode(account, "disabled"); }}
                         >
-                          Disabled
+                          Skip
                         </button>
                       </div>
                     </div>
@@ -440,6 +475,17 @@
                 </div>
               </div>
             {/each}
+
+            {#if lunchflowConnectionWarnings.length > 0}
+              <div class="connection-warnings">
+                {#each lunchflowConnectionWarnings as warning}
+                  <div class="warning-item">
+                    <span class="warning-icon">!</span>
+                    <span class="warning-text">{warning}</span>
+                  </div>
+                {/each}
+              </div>
+            {/if}
           </div>
         {:else if isSyncing}
           <div class="syncing-accounts">
@@ -678,7 +724,18 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
+    gap: var(--spacing-sm);
     margin-bottom: var(--spacing-sm);
+  }
+
+  .accounts-header .btn {
+    flex-shrink: 0;
+  }
+
+  .checking-text {
+    font-size: 11px;
+    color: var(--text-muted);
+    flex-shrink: 0;
   }
 
   .accounts-title {
