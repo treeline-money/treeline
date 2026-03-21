@@ -59,6 +59,10 @@ pub struct HubConfig {
     pub last_push: Option<chrono::DateTime<chrono::Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_pull: Option<chrono::DateTime<chrono::Utc>>,
+    /// SHA-256 hash of the database at last sync point.
+    /// Used for conflict detection — "what version am I based on?"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_hash: Option<String>,
 }
 
 impl HubConfig {
@@ -249,6 +253,7 @@ mod tests {
             token: "abc123".to_string(),
             last_push: None,
             last_pull: None,
+            base_hash: None,
         };
         hub.save(temp_dir.path()).unwrap();
 
@@ -269,6 +274,7 @@ mod tests {
             token: "abc123".to_string(),
             last_push: Some(now),
             last_pull: Some(now),
+            base_hash: None,
         };
         hub.save(temp_dir.path()).unwrap();
 
@@ -286,6 +292,7 @@ mod tests {
             token: "abc123".to_string(),
             last_push: None,
             last_pull: None,
+            base_hash: None,
         };
         hub.save(temp_dir.path()).unwrap();
         assert!(HubConfig::load(temp_dir.path()).unwrap().is_some());
@@ -308,6 +315,7 @@ mod tests {
             token: "abc123".to_string(),
             last_push: None,
             last_pull: None,
+            base_hash: None,
         };
         hub.save(temp_dir.path()).unwrap();
 

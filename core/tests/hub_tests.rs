@@ -91,6 +91,7 @@ fn test_hub_config_separate_from_settings() {
         token: "abc123".to_string(),
         last_push: None,
         last_pull: None,
+        base_hash: None,
     };
     hub.save(temp_dir.path()).unwrap();
 
@@ -234,14 +235,20 @@ fn test_first_push_to_empty_hub() {
     let hub_dir = TempDir::new().unwrap();
     let hub_service = create_hub_service(&hub_dir);
 
-    // Create a source with a database
     let source_dir = TempDir::new().unwrap();
     let _repo = create_test_repo(&source_dir);
     let bundle = SyncBundle::create(source_dir.path()).unwrap();
 
-    let result = hub_service.accept_push(&bundle).unwrap();
-    assert!(result.bytes_received > 0);
-    assert!(result.backup_name.is_none()); // No backup on first push
+    // First push — no base_hash
+    let result = hub_service.accept_push(&bundle, None).unwrap();
+    match result {
+        treeline_core::services::PushOutcome::Accepted { backup_name, bytes_received, new_hash } => {
+            assert!(bytes_received > 0);
+            assert!(backup_name.is_none()); // No backup on first push
+            assert!(!new_hash.is_empty());
+        }
+        _ => panic!("Expected Accepted, got conflict"),
+    }
     assert!(hub_service.has_database());
 }
 
@@ -255,11 +262,94 @@ fn test_push_creates_backup_on_existing_hub() {
     let _repo = create_test_repo(&source_dir);
     let bundle = SyncBundle::create(source_dir.path()).unwrap();
 
-    let result = hub_service.accept_push(&bundle).unwrap();
-    assert!(result.backup_name.is_some());
+    let result = hub_service.accept_push(&bundle, None).unwrap();
+    match result {
+        treeline_core::services::PushOutcome::Accepted { backup_name, .. } => {
+            assert!(backup_name.is_some());
+        }
+        _ => panic!("Expected Accepted"),
+    }
 
     let backups_dir = hub_dir.path().join("backups");
     assert!(backups_dir.exists());
+}
+
+#[test]
+fn test_push_accepted_when_hash_matches() {
+    let hub_dir = TempDir::new().unwrap();
+    let hub_service = create_hub_service(&hub_dir);
+
+    // First push to establish a hash
+    let source_dir = TempDir::new().unwrap();
+    let _repo = create_test_repo(&source_dir);
+    let bundle = SyncBundle::create(source_dir.path()).unwrap();
+    let first_hash = match hub_service.accept_push(&bundle, None).unwrap() {
+        treeline_core::services::PushOutcome::Accepted { new_hash, .. } => new_hash,
+        _ => panic!("Expected Accepted"),
+    };
+
+    // Second push with matching base_hash
+    let bundle2 = SyncBundle::create(source_dir.path()).unwrap();
+    let result = hub_service.accept_push(&bundle2, Some(&first_hash)).unwrap();
+    match result {
+        treeline_core::services::PushOutcome::Accepted { .. } => {}
+        _ => panic!("Expected Accepted when hash matches"),
+    }
+}
+
+#[test]
+fn test_push_conflict_when_hash_mismatches() {
+    let hub_dir = TempDir::new().unwrap();
+    let hub_service = create_hub_service(&hub_dir);
+
+    // First push
+    let source_dir = TempDir::new().unwrap();
+    let _repo = create_test_repo(&source_dir);
+    let bundle = SyncBundle::create(source_dir.path()).unwrap();
+    hub_service.accept_push(&bundle, None).unwrap();
+
+    // Try to push with a stale hash
+    let result = hub_service.accept_push(&bundle, Some("stale_hash_abc")).unwrap();
+    match result {
+        treeline_core::services::PushOutcome::Conflict { hub_hash } => {
+            assert!(!hub_hash.is_empty());
+        }
+        _ => panic!("Expected Conflict when hash mismatches"),
+    }
+}
+
+#[test]
+fn test_hash_changes_after_push() {
+    let hub_dir = TempDir::new().unwrap();
+    let hub_service = create_hub_service(&hub_dir);
+
+    // Push database A
+    let source_a = TempDir::new().unwrap();
+    let repo_a = create_test_repo(&source_a);
+    let account = treeline_core::Account::new(uuid::Uuid::new_v4(), "Account A".to_string());
+    repo_a.upsert_account(&account).unwrap();
+    repo_a.checkpoint().unwrap();
+    drop(repo_a);
+    let bundle_a = SyncBundle::create(source_a.path()).unwrap();
+    let hash_a = match hub_service.accept_push(&bundle_a, None).unwrap() {
+        treeline_core::services::PushOutcome::Accepted { new_hash, .. } => new_hash,
+        _ => panic!("Expected Accepted"),
+    };
+
+    // Push database B (different content)
+    let source_b = TempDir::new().unwrap();
+    let repo_b = create_test_repo(&source_b);
+    let account2 = treeline_core::Account::new(uuid::Uuid::new_v4(), "Account B".to_string());
+    repo_b.upsert_account(&account2).unwrap();
+    repo_b.checkpoint().unwrap();
+    drop(repo_b);
+    let bundle_b = SyncBundle::create(source_b.path()).unwrap();
+    let hash_b = match hub_service.accept_push(&bundle_b, Some(&hash_a)).unwrap() {
+        treeline_core::services::PushOutcome::Accepted { new_hash, .. } => new_hash,
+        _ => panic!("Expected Accepted"),
+    };
+
+    assert_ne!(hash_a, hash_b);
 }
 
 // ============================================================================
@@ -303,7 +393,7 @@ fn test_push_then_pull_roundtrip() {
 
     // Push to hub
     let bundle = SyncBundle::create(source_dir.path()).unwrap();
-    hub_service.accept_push(&bundle).unwrap();
+    hub_service.accept_push(&bundle, None).unwrap();
 
     // Pull from hub
     let pulled_bundle = hub_service.get_bundle_for_pull().unwrap();

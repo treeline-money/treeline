@@ -79,6 +79,7 @@ fn run_link(url: &str, token: &str) -> Result<()> {
         token: token.to_string(),
         last_push: None,
         last_pull: None,
+        base_hash: None,
     };
     hub.save(&treeline_dir)?;
 
@@ -134,33 +135,60 @@ fn run_push(json: bool) -> Result<()> {
         eprintln!("Uploading {} to hub...", format_bytes(size as u64));
     }
 
-    // Upload to hub
+    // Upload to hub with base_hash for conflict detection
     let client = reqwest::blocking::Client::new();
-    let resp = client
+    let mut req = client
         .post(format!("{}/api/push", hub.url))
         .header("Authorization", format!("Bearer {}", hub.token))
-        .header("Content-Type", "application/octet-stream")
+        .header("Content-Type", "application/octet-stream");
+
+    if let Some(ref base_hash) = hub.base_hash {
+        req = req.header("X-Treeline-Base-Hash", base_hash.as_str());
+    }
+
+    let resp = req
         .body(bundle)
         .timeout(std::time::Duration::from_secs(300))
         .send()
         .context("Failed to connect to hub")?;
 
-    if !resp.status().is_success() {
-        let body = resp.text().unwrap_or_default();
-        anyhow::bail!("Push failed: {}", body);
+    let status = resp.status();
+    let body: serde_json::Value = resp.json().context("Failed to parse hub response")?;
+
+    if status == reqwest::StatusCode::CONFLICT {
+        let hub_hash = body["hub_hash"].as_str().unwrap_or("unknown");
+        if !json {
+            eprintln!(
+                "{} Hub has changed since your last sync.",
+                "Conflict!".red().bold()
+            );
+            eprintln!("Run 'tl hub pull' to get the latest, then push again.");
+            eprintln!("(In a future version, this will offer to merge automatically.)");
+        } else {
+            println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                "status": "conflict",
+                "hub_hash": hub_hash,
+                "base_hash": hub.base_hash,
+            }))?);
+        }
+        // TODO: when diffy-duck is integrated, offer to pull + diff + merge here
+        return Ok(());
     }
 
-    // Update last_push timestamp
+    if !status.is_success() {
+        let error = body["error"].as_str().unwrap_or("Unknown error");
+        anyhow::bail!("Push failed: {}", error);
+    }
+
+    // Update hub config with new hash and timestamp
+    let new_hash = body["hash"].as_str().map(|s| s.to_string());
     let mut hub = HubConfig::load(&treeline_dir)?.unwrap();
     hub.last_push = Some(chrono::Utc::now());
+    hub.base_hash = new_hash;
     hub.save(&treeline_dir)?;
 
     if json {
-        let result = serde_json::json!({
-            "status": "ok",
-            "bytes_uploaded": size,
-        });
-        println!("{}", serde_json::to_string_pretty(&result)?);
+        println!("{}", serde_json::to_string_pretty(&body)?);
     } else {
         eprintln!("{} Pushed {} to {}", "✓".green(), format_bytes(size as u64), hub.url);
     }
@@ -216,9 +244,18 @@ fn run_pull(json: bool) -> Result<()> {
     }
     treeline_core::services::hub::SyncBundle::extract(&bytes, &treeline_dir)?;
 
-    // Update last_pull timestamp
+    // Compute hash of the pulled database — this is now our base
+    let db_path = treeline_dir.join("treeline.duckdb");
+    let new_hash = if db_path.exists() {
+        Some(treeline_core::services::compute_file_hash(&db_path)?)
+    } else {
+        None
+    };
+
+    // Update hub config with hash and timestamp
     let mut hub = HubConfig::load(&treeline_dir)?.unwrap();
     hub.last_pull = Some(chrono::Utc::now());
+    hub.base_hash = new_hash;
     hub.save(&treeline_dir)?;
 
     if json {

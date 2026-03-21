@@ -146,15 +146,30 @@ async fn handle_push(
         return e;
     }
 
+    // Client sends its base hash to detect conflicts
+    let base_hash = headers
+        .get("x-treeline-base-hash")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
     let _lock = state.db_lock.write().await;
 
-    match state.hub_service.accept_push(&body) {
-        Ok(result) => (
+    match state.hub_service.accept_push(&body, base_hash.as_deref()) {
+        Ok(treeline_core::services::PushOutcome::Accepted { backup_name, bytes_received, new_hash }) => (
             StatusCode::OK,
             Json(json!({
                 "status": "ok",
-                "backup": result.backup_name,
-                "bytes_received": result.bytes_received,
+                "backup": backup_name,
+                "bytes_received": bytes_received,
+                "hash": new_hash,
+            })),
+        )
+            .into_response(),
+        Ok(treeline_core::services::PushOutcome::Conflict { hub_hash }) => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "status": "conflict",
+                "hub_hash": hub_hash,
             })),
         )
             .into_response(),
@@ -243,7 +258,10 @@ async fn handle_mcp(
 
     let response = if is_write {
         let _lock = state.db_lock.write().await;
-        mcp::handle_request(&req)
+        let resp = mcp::handle_request(&req);
+        // Recompute hash after writes so conflict detection stays current
+        let _ = state.hub_service.compute_and_store_hash();
+        resp
     } else {
         let _lock = state.db_lock.read().await;
         mcp::handle_request(&req)

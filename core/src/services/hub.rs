@@ -6,13 +6,19 @@
 //! The hub treats sync bundles as opaque blobs — it doesn't
 //! need to open or understand the contents to accept pushes
 //! or serve pulls.
+//!
+//! Conflict detection uses SHA-256 hashes of the database file.
+//! The hub stores the current hash, and clients track which hash
+//! they're based on. Pushes are rejected if the hub has changed
+//! since the client last synced.
 
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use zip::write::SimpleFileOptions;
 
 use crate::services::BackupService;
@@ -30,12 +36,29 @@ pub struct HubService {
     db_filename: String,
 }
 
-/// Result of accepting a push
+/// Result of attempting a push
 #[derive(Debug, Serialize)]
-pub struct PushResult {
-    /// Name of the backup created before replacing (None on first push)
-    pub backup_name: Option<String>,
-    pub bytes_received: u64,
+#[serde(tag = "status")]
+pub enum PushOutcome {
+    /// Push accepted, no conflict
+    #[serde(rename = "ok")]
+    Accepted {
+        backup_name: Option<String>,
+        bytes_received: u64,
+        new_hash: String,
+    },
+    /// Push rejected — hub has changed since client last synced
+    #[serde(rename = "conflict")]
+    Conflict {
+        hub_hash: String,
+    },
+}
+
+/// Hub sync metadata — stored in hub-sync.json on the hub
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct HubSyncMeta {
+    /// SHA-256 hash of the current database file
+    pub current_hash: Option<String>,
 }
 
 /// Sync bundle — a zip archive containing the allowlisted files/dirs
@@ -205,15 +228,29 @@ impl HubService {
         Ok(!expected.is_empty() && expected == token)
     }
 
-    /// Accept a pushed sync bundle
+    /// Accept a pushed sync bundle with conflict detection.
     ///
-    /// The bundle is treated as an opaque blob — the hub does not
-    /// try to open or validate it.
+    /// If `base_hash` is provided, the hub checks whether its current
+    /// database hash matches. If not, the push is rejected with
+    /// `PushOutcome::Conflict` so the client can diff and merge.
     ///
-    /// 1. Backs up the current database (if one exists)
-    /// 2. Extracts the bundle into the treeline directory
-    pub fn accept_push(&self, data: &[u8]) -> Result<PushResult> {
+    /// If `base_hash` is None (first push, or force push), the push
+    /// is accepted unconditionally.
+    pub fn accept_push(&self, data: &[u8], base_hash: Option<&str>) -> Result<PushOutcome> {
         let db_path = self.treeline_dir.join(&self.db_filename);
+
+        // Check for conflicts
+        if let Some(base_hash) = base_hash {
+            let hub_hash = self.current_hash()?;
+            if let Some(ref hub_hash) = hub_hash {
+                if hub_hash != base_hash {
+                    return Ok(PushOutcome::Conflict {
+                        hub_hash: hub_hash.clone(),
+                    });
+                }
+            }
+        }
+
         let bytes_received = data.len() as u64;
 
         // Back up current database before replacing (if one exists)
@@ -235,9 +272,13 @@ impl HubService {
         // Extract the sync bundle
         SyncBundle::extract(data, &self.treeline_dir)?;
 
-        Ok(PushResult {
+        // Update the hash
+        let new_hash = self.compute_and_store_hash()?;
+
+        Ok(PushOutcome::Accepted {
             backup_name,
             bytes_received,
+            new_hash,
         })
     }
 
@@ -256,4 +297,58 @@ impl HubService {
     pub fn has_database(&self) -> bool {
         self.treeline_dir.join(&self.db_filename).exists()
     }
+
+    /// Get the current database hash (from stored metadata)
+    pub fn current_hash(&self) -> Result<Option<String>> {
+        let meta = self.load_sync_meta()?;
+        Ok(meta.current_hash)
+    }
+
+    /// Compute the SHA-256 hash of the database file and store it
+    pub fn compute_and_store_hash(&self) -> Result<String> {
+        let db_path = self.treeline_dir.join(&self.db_filename);
+        let hash = compute_file_hash(&db_path)?;
+
+        let mut meta = self.load_sync_meta()?;
+        meta.current_hash = Some(hash.clone());
+        self.save_sync_meta(&meta)?;
+
+        Ok(hash)
+    }
+
+    fn sync_meta_path(&self) -> PathBuf {
+        self.treeline_dir.join("hub-sync.json")
+    }
+
+    fn load_sync_meta(&self) -> Result<HubSyncMeta> {
+        let path = self.sync_meta_path();
+        if !path.exists() {
+            return Ok(HubSyncMeta::default());
+        }
+        let content = fs::read_to_string(&path)?;
+        Ok(serde_json::from_str(&content).unwrap_or_default())
+    }
+
+    fn save_sync_meta(&self, meta: &HubSyncMeta) -> Result<()> {
+        let path = self.sync_meta_path();
+        let content = serde_json::to_string_pretty(meta)?;
+        fs::write(&path, content)?;
+        Ok(())
+    }
+}
+
+/// Compute SHA-256 hash of a file
+pub fn compute_file_hash(path: &Path) -> Result<String> {
+    let mut file = fs::File::open(path)
+        .with_context(|| format!("Failed to open file for hashing: {}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 8192];
+    loop {
+        let n = file.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buffer[..n]);
+    }
+    Ok(hex::encode(hasher.finalize()))
 }

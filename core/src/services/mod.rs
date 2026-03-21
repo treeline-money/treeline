@@ -23,7 +23,7 @@ mod tag;
 pub use backup::BackupService;
 pub use balance::{BackfillExecuteResult, BalanceService, BalanceSnapshotPreview};
 pub use compact::CompactService;
-pub use hub::{HubService, PushResult, SyncBundle};
+pub use hub::{HubService, PushOutcome, SyncBundle, compute_file_hash};
 pub use demo::DemoService;
 pub use doctor::DoctorService;
 pub use encryption::EncryptionService;
