@@ -641,6 +641,8 @@ fn run_watch(debounce_secs: u64, poll_secs: u64) -> Result<()> {
                 Err(e) => eprintln!("[watch] Push failed: {}", e),
             }
             last_poll = std::time::Instant::now();
+            // Update mtime after push/merge to avoid re-triggering
+            last_mtime = db_path.metadata().and_then(|m| m.modified()).ok();
             continue;
         }
 
@@ -671,17 +673,35 @@ fn run_watch(debounce_secs: u64, poll_secs: u64) -> Result<()> {
             };
 
             if needs_pull {
-                eprintln!("[watch] Hub changed, pulling...");
-                match run_pull(false) {
-                    Ok(()) => {
-                        // Update our mtime tracking so we don't re-push what we just pulled
-                        last_mtime = db_path
-                            .metadata()
-                            .and_then(|m| m.modified())
-                            .ok();
+                // Check if we also have local changes
+                let has_local_changes = if let Some(ref base_hash) = hub_config.base_hash {
+                    treeline_core::services::compute_file_hash(&db_path)
+                        .map(|h| &h != base_hash)
+                        .unwrap_or(false)
+                } else {
+                    false
+                };
+
+                if has_local_changes {
+                    // Both sides changed — push will trigger three-way merge
+                    eprintln!("[watch] Hub and local both changed, merging...");
+                    match run_push(false, false) {
+                        Ok(()) => {}
+                        Err(e) => eprintln!("[watch] Merge/push failed: {}", e),
                     }
-                    Err(e) => eprintln!("[watch] Pull failed: {}", e),
+                } else {
+                    // Only hub changed — safe to pull
+                    eprintln!("[watch] Hub changed, pulling...");
+                    match run_pull(false) {
+                        Ok(()) => {}
+                        Err(e) => eprintln!("[watch] Pull failed: {}", e),
+                    }
                 }
+                // Update mtime so we don't re-trigger on the file we just wrote
+                last_mtime = db_path
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .ok();
             }
         }
     }
