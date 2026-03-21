@@ -63,5 +63,8 @@ url = "2"
 # Temp files
 tempfile = "3"
 
+# Database diffing/merging
+diffy-duck.workspace = true
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

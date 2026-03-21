@@ -137,20 +137,22 @@ async fn health() -> &'static str {
     "ok"
 }
 
+#[derive(serde::Deserialize, Default)]
+struct PushParams {
+    base_hash: Option<String>,
+}
+
 async fn handle_push(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    params: Query<PushParams>,
     body: Bytes,
 ) -> impl IntoResponse {
     if let Err(e) = check_auth(&state.treeline_dir, &headers) {
         return e;
     }
 
-    // Client sends its base hash to detect conflicts
-    let base_hash = headers
-        .get("x-treeline-base-hash")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
+    let base_hash = params.base_hash.clone();
 
     let _lock = state.db_lock.write().await;
 
@@ -696,7 +698,7 @@ fn base_url_from_headers(headers: &HeaderMap) -> String {
 fn generate_random_id() -> String {
     use rand::Rng;
     let mut rng = rand::thread_rng();
-    let bytes: Vec<u8> = (0..32).map(|_| rng.gen()).collect();
+    let bytes: Vec<u8> = (0..32).map(|_| rng.gen::<u8>()).collect();
     hex::encode(bytes)
 }
 

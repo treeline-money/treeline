@@ -896,6 +896,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "diffy-duck"
+version = "0.1.0"
+dependencies = [
+ "duckdb",
+ "indexmap",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
+]
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1527,6 +1538,8 @@ checksum = "0ad4bb2b565bca0645f4d68c5c9af97fba094e9791da685bf83cb5f3ce74acf2"
 dependencies = [
  "equivalent",
  "hashbrown 0.16.1",
+ "serde",
+ "serde_core",
 ]
 
 [[package]]
@@ -3198,6 +3211,7 @@ dependencies = [
  "colored",
  "comfy-table",
  "dialoguer",
+ "diffy-duck",
  "dirs",
  "hex",
  "indicatif",
@@ -3208,6 +3222,7 @@ dependencies = [
  "serde_json",
  "serde_urlencoded",
  "sha2",
+ "tempfile",
  "tokio",
  "tower-http",
  "treeline-core",
@@ -3224,6 +3239,7 @@ dependencies = [
  "base64",
  "chrono",
  "csv",
+ "diffy-duck",
  "duckdb",
  "fs2",
  "hex",

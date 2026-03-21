@@ -10,6 +10,8 @@ use treeline_core::config::HubConfig;
 
 use super::{get_context, get_treeline_dir};
 
+use diffy_duck::{DatabaseConfig, Diff3ChangeOrigin, Diff3RowChange, DiffOptions, Merge3Strategy};
+
 #[derive(Subcommand)]
 pub enum HubCommands {
     /// Link to a remote hub
@@ -29,6 +31,9 @@ pub enum HubCommands {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+        /// Force push — skip conflict detection, overwrite hub
+        #[arg(long)]
+        force: bool,
     },
 
     /// Pull latest database from the hub
@@ -50,7 +55,7 @@ pub fn run(command: HubCommands) -> Result<()> {
     match command {
         HubCommands::Link { url, token } => run_link(&url, &token),
         HubCommands::Unlink => run_unlink(),
-        HubCommands::Push { json } => run_push(json),
+        HubCommands::Push { json, force } => run_push(json, force),
         HubCommands::Pull { json } => run_pull(json),
         HubCommands::Status { json } => run_status(json),
     }
@@ -101,7 +106,7 @@ fn run_unlink() -> Result<()> {
     Ok(())
 }
 
-fn run_push(json: bool) -> Result<()> {
+fn run_push(json: bool, force: bool) -> Result<()> {
     let treeline_dir = get_treeline_dir();
 
     let hub = HubConfig::load(&treeline_dir)?.ok_or_else(|| {
@@ -136,15 +141,18 @@ fn run_push(json: bool) -> Result<()> {
     }
 
     // Upload to hub with base_hash for conflict detection
+    let mut push_url = format!("{}/api/push", hub.url);
+    if !force {
+        if let Some(ref base_hash) = hub.base_hash {
+            push_url = format!("{}?base_hash={}", push_url, base_hash);
+        }
+    }
+
     let client = reqwest::blocking::Client::new();
-    let mut req = client
-        .post(format!("{}/api/push", hub.url))
+    let req = client
+        .post(&push_url)
         .header("Authorization", format!("Bearer {}", hub.token))
         .header("Content-Type", "application/octet-stream");
-
-    if let Some(ref base_hash) = hub.base_hash {
-        req = req.header("X-Treeline-Base-Hash", base_hash.as_str());
-    }
 
     let resp = req
         .body(bundle)
@@ -156,22 +164,194 @@ fn run_push(json: bool) -> Result<()> {
     let body: serde_json::Value = resp.json().context("Failed to parse hub response")?;
 
     if status == reqwest::StatusCode::CONFLICT {
-        let hub_hash = body["hub_hash"].as_str().unwrap_or("unknown");
-        if !json {
-            eprintln!(
-                "{} Hub has changed since your last sync.",
-                "Conflict!".red().bold()
-            );
-            eprintln!("Run 'tl hub pull' to get the latest, then push again.");
-            eprintln!("(In a future version, this will offer to merge automatically.)");
-        } else {
+        if json {
+            let hub_hash = body["hub_hash"].as_str().unwrap_or("unknown");
             println!("{}", serde_json::to_string_pretty(&serde_json::json!({
                 "status": "conflict",
                 "hub_hash": hub_hash,
                 "base_hash": hub.base_hash,
             }))?);
+            return Ok(());
         }
-        // TODO: when diffy-duck is integrated, offer to pull + diff + merge here
+
+        eprintln!(
+            "{} Hub has changed since your last sync. Attempting to merge...",
+            "Conflict!".yellow().bold()
+        );
+
+        // Check for base snapshot (needed for three-way merge)
+        let base_db_path = treeline_dir.join(".treeline.base.duckdb");
+        if !base_db_path.exists() {
+            eprintln!("No base snapshot available for three-way merge.");
+            eprintln!("Choose one version:");
+            eprintln!("  tl hub push --force   (overwrite hub with your version)");
+            eprintln!("  tl hub pull           (overwrite local with hub's version)");
+            return Ok(());
+        }
+
+        // Download the hub's current bundle
+        let pull_resp = client
+            .get(format!("{}/api/pull", hub.url))
+            .header("Authorization", format!("Bearer {}", hub.token))
+            .timeout(std::time::Duration::from_secs(300))
+            .send()
+            .context("Failed to download hub bundle for merge")?;
+
+        if !pull_resp.status().is_success() {
+            anyhow::bail!("Failed to download hub bundle: {}", pull_resp.status());
+        }
+
+        let hub_bundle = pull_resp.bytes()?;
+
+        // Extract hub bundle to a temp directory
+        let hub_temp = tempfile::TempDir::new().context("Failed to create temp dir")?;
+        treeline_core::services::hub::SyncBundle::extract(&hub_bundle, hub_temp.path())?;
+
+        let hub_db_path = hub_temp.path().join("treeline.duckdb");
+        if !hub_db_path.exists() {
+            anyhow::bail!("Hub bundle does not contain a database");
+        }
+
+        // Three-way diff: ancestor (base) vs local vs hub
+        let local_db_path = treeline_dir.join("treeline.duckdb");
+        let ancestor_config = DatabaseConfig::new(base_db_path.to_string_lossy());
+        let local_config = DatabaseConfig::new(local_db_path.to_string_lossy());
+        let hub_config = DatabaseConfig::new(hub_db_path.to_string_lossy());
+
+        let diff3_report = diffy_duck::diff3(
+            &ancestor_config, &local_config, &hub_config, &DiffOptions::default(),
+        ).map_err(|e| anyhow::anyhow!("Failed to diff databases: {}", e))?;
+
+        let has_conflicts = diff3_report.summary.total_conflicts > 0;
+        let total_changes = diff3_report.summary.total_non_conflicting
+            + diff3_report.summary.total_conflicts;
+        let has_new_tables = !diff3_report.a_only_tables.is_empty()
+            || !diff3_report.b_only_tables.is_empty();
+
+        if total_changes == 0 && !has_new_tables {
+            eprintln!("{} Databases are identical. Nothing to push.", "✓".green());
+            return Ok(());
+        }
+
+        // Show diff summary
+        eprintln!();
+        for table_diff in &diff3_report.tables {
+            let s = &table_diff.summary;
+            if s.total_changes() == 0 {
+                continue;
+            }
+            eprintln!(
+                "  {} — local: +{} -{} ~{}  hub: +{} -{} ~{}  conflicts: {}",
+                table_diff.table.to_string().bold(),
+                s.added_a, s.removed_a, s.modified_a,
+                s.added_b, s.removed_b, s.modified_b,
+                s.conflicts,
+            );
+        }
+        eprintln!();
+
+        // Show new tables
+        for t in &diff3_report.a_only_tables {
+            eprintln!("  {} — new table (local only)", t.to_string().bold());
+        }
+        for t in &diff3_report.b_only_tables {
+            eprintln!("  {} — new table (hub only)", t.to_string().bold());
+        }
+
+        if !has_conflicts {
+            // No conflicting rows — safe to auto-merge
+            eprintln!("No conflicts. Auto-merging...");
+
+            // Copy base to a temp file for merge (merge3 modifies ancestor in place)
+            let merge_temp = tempfile::TempDir::new()?;
+            let merge_db_path = merge_temp.path().join("merged.duckdb");
+            std::fs::copy(&base_db_path, &merge_db_path)?;
+
+            let merge_ancestor = DatabaseConfig::new(merge_db_path.to_string_lossy());
+
+            diffy_duck::merge3(
+                &merge_ancestor, &local_config, &hub_config, &Merge3Strategy::FailOnConflict,
+            ).map_err(|e| anyhow::anyhow!("Failed to merge: {}", e))?;
+
+            // Replace local database with the merged result
+            std::fs::copy(&merge_db_path, &local_db_path)?;
+
+            eprintln!("{} Merged successfully. Pushing...", "✓".green());
+
+            // Rebuild bundle and push (no base_hash — force after merge)
+            let merged_bundle = treeline_core::services::hub::SyncBundle::create(&treeline_dir)?;
+            let size = merged_bundle.len();
+
+            let resp = client
+                .post(format!("{}/api/push", hub.url))
+                .header("Authorization", format!("Bearer {}", hub.token))
+                .header("Content-Type", "application/octet-stream")
+                .body(merged_bundle)
+                .timeout(std::time::Duration::from_secs(300))
+                .send()
+                .context("Failed to push merged database")?;
+
+            if !resp.status().is_success() {
+                let body = resp.text().unwrap_or_default();
+                anyhow::bail!("Push after merge failed: {}", body);
+            }
+
+            let body: serde_json::Value = resp.json().unwrap_or_default();
+            let new_hash = body["hash"].as_str().map(|s| s.to_string());
+            let mut hub = HubConfig::load(&treeline_dir)?.unwrap();
+            hub.last_push = Some(chrono::Utc::now());
+            hub.base_hash = new_hash;
+            hub.save(&treeline_dir)?;
+
+            save_base_snapshot(&treeline_dir)?;
+
+            eprintln!("{} Pushed {} to {}", "✓".green(), format_bytes(size as u64), hub.url);
+            return Ok(());
+        }
+
+        // Has conflicts — show them and ask user
+        eprintln!(
+            "{} {} conflicting changes found:",
+            "Conflicts:".red().bold(),
+            diff3_report.summary.total_conflicts,
+        );
+        for table_diff in &diff3_report.tables {
+            for change in &table_diff.changes {
+                match change {
+                    Diff3RowChange::Modified { key, column_changes } => {
+                        let conflict_cols: Vec<_> = column_changes.iter()
+                            .filter(|c| c.origin == Diff3ChangeOrigin::Conflict)
+                            .collect();
+                        if conflict_cols.is_empty() {
+                            continue;
+                        }
+                        eprintln!("  {} (table: {})", "Row:".bold(), table_diff.table);
+                        for c in conflict_cols {
+                            eprintln!(
+                                "    {} — local: {}, hub: {}",
+                                c.column.bold(), c.a_value, c.b_value,
+                            );
+                        }
+                    }
+                    Diff3RowChange::Added { origin: Diff3ChangeOrigin::Conflict, row, other_row, .. } => {
+                        eprintln!("  {} Both sides added a row with the same key (table: {})", "Row:".bold(), table_diff.table);
+                        eprintln!("    local: {:?}", row);
+                        if let Some(other) = other_row {
+                            eprintln!("    hub:   {:?}", other);
+                        }
+                    }
+                    Diff3RowChange::Removed { origin: Diff3ChangeOrigin::Conflict, .. } => {
+                        eprintln!("  {} One side deleted, other modified (table: {})", "Row:".bold(), table_diff.table);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        eprintln!();
+        eprintln!("Resolve conflicts by choosing one version:");
+        eprintln!("  tl hub push --force   (overwrite hub with your local version)");
+        eprintln!("  tl hub pull           (overwrite local with hub's version)");
+
         return Ok(());
     }
 
@@ -186,6 +366,9 @@ fn run_push(json: bool) -> Result<()> {
     hub.last_push = Some(chrono::Utc::now());
     hub.base_hash = new_hash;
     hub.save(&treeline_dir)?;
+
+    // Save base snapshot for future three-way merge
+    save_base_snapshot(&treeline_dir)?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&body)?);
@@ -251,6 +434,9 @@ fn run_pull(json: bool) -> Result<()> {
     } else {
         None
     };
+
+    // Save base snapshot for future three-way merge
+    save_base_snapshot(&treeline_dir)?;
 
     // Update hub config with hash and timestamp
     let mut hub = HubConfig::load(&treeline_dir)?.unwrap();
@@ -346,4 +532,16 @@ fn format_bytes(bytes: u64) -> String {
     } else {
         format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
     }
+}
+
+/// Save a snapshot of the current database as the base for three-way merge.
+/// Called after every successful push or pull.
+fn save_base_snapshot(treeline_dir: &std::path::Path) -> Result<()> {
+    let db_path = treeline_dir.join("treeline.duckdb");
+    let base_path = treeline_dir.join(".treeline.base.duckdb");
+    if db_path.exists() {
+        std::fs::copy(&db_path, &base_path)
+            .context("Failed to save base snapshot")?;
+    }
+    Ok(())
 }
