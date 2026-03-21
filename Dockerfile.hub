@@ -1,0 +1,37 @@
+# Treeline Hub — Docker image for tl serve
+#
+# Multi-stage build: compile on Debian, run on slim.
+# Usage:
+#   docker build -f Dockerfile.hub -t treeline-hub .
+#   docker run -v treeline-data:/root/.treeline -p 4242:4242 treeline-hub
+
+FROM rust:1.85-bookworm AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libdbus-1-dev \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY . .
+
+RUN cargo build --release --bin tl
+
+# Runtime stage
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    libssl3 \
+    libdbus-1-3 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /build/target/release/tl /usr/local/bin/tl
+
+# Data volume
+VOLUME /root/.treeline
+
+EXPOSE 4242
+
+# Bind to 0.0.0.0 so Fly's proxy can reach it
+ENTRYPOINT ["tl", "serve", "--host", "0.0.0.0"]

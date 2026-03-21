@@ -1,0 +1,13 @@
+target/
+desktop/
+docs/
+template/
+node_modules/
+.git/
+.github/
+.claude/
+.cargo/
+artifacts/
+*.duckdb
+*.duckdb.wal
+*.mcpb

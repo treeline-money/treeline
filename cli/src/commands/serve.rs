@@ -97,6 +97,7 @@ pub fn run(host: &str, port: u16) -> Result<()> {
                 post(handle_push).layer(DefaultBodyLimit::max(500 * 1024 * 1024)),
             )
             .route("/api/pull", get(handle_pull))
+            .route("/api/hash", get(handle_hash))
             .route(
                 "/mcp",
                 post(handle_mcp)
@@ -209,6 +210,18 @@ async fn handle_pull(
         )
             .into_response(),
     }
+}
+
+async fn handle_hash(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(e) = check_auth(&state.treeline_dir, &headers) {
+        return e;
+    }
+
+    let hash = state.hub_service.current_hash().unwrap_or(None);
+    (StatusCode::OK, Json(json!({ "hash": hash }))).into_response()
 }
 
 // ============================================================================
