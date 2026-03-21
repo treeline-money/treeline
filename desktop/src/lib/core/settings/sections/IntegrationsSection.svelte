@@ -3,13 +3,15 @@
   import type { Settings } from "../../../sdk";
   import "../settings-shared.css";
 
+  type AccountSyncMode = "full" | "balances_only" | "disabled";
+
   interface SimplefinAccount {
     account_id: string;
     simplefin_id: string;
     name: string;
     institution_name: string;
     account_type: string | null;
-    balances_only: boolean;
+    sync_mode: AccountSyncMode;
   }
 
   interface LunchflowAccount {
@@ -19,15 +21,7 @@
     institution_name: string;
     account_type: string | null;
     currency: string | null;
-    balances_only: boolean;
-  }
-
-  interface SetupAccount {
-    simplefin_id: string;
-    name: string;
-    institution_name: string | null;
-    balance: string | null;
-    balances_only: boolean;
+    sync_mode: AccountSyncMode;
   }
 
   interface Integration {
@@ -44,16 +38,19 @@
     integrations: Integration[];
     simplefinAccounts: SimplefinAccount[];
     lunchflowAccounts: LunchflowAccount[];
+    simplefinPaused: boolean;
+    lunchflowPaused: boolean;
     connectionWarnings: string[];
     isCheckingConnection: boolean;
     connectionCheckSuccess: boolean | null;
     onExitDemoMode: () => void;
     onCheckConnection: () => void;
-    onToggleBalancesOnly: (account: SimplefinAccount) => void;
-    onToggleLunchflowBalancesOnly: (account: LunchflowAccount) => void;
+    onSetSyncMode: (account: SimplefinAccount, mode: AccountSyncMode) => void;
+    onSetLunchflowSyncMode: (account: LunchflowAccount, mode: AccountSyncMode) => void;
     onOpenSetupModal: () => void;
     onOpenLunchflowSetupModal: () => void;
     onDisconnect: (integrationName: string) => void;
+    onTogglePause: (integrationName: string) => void;
     onOpenExternalUrl: (url: string) => void;
     formatLastSync: (dateStr: string | null) => string;
   }
@@ -66,16 +63,19 @@
     integrations,
     simplefinAccounts,
     lunchflowAccounts = [],
+    simplefinPaused = false,
+    lunchflowPaused = false,
     connectionWarnings,
     isCheckingConnection,
     connectionCheckSuccess,
     onExitDemoMode,
     onCheckConnection,
-    onToggleBalancesOnly,
-    onToggleLunchflowBalancesOnly,
+    onSetSyncMode,
+    onSetLunchflowSyncMode,
     onOpenSetupModal,
     onOpenLunchflowSetupModal,
     onDisconnect,
+    onTogglePause,
     onOpenExternalUrl,
     formatLastSync,
   }: Props = $props();
@@ -177,14 +177,24 @@
           <p class="integration-desc">{SIMPLEFIN.description}</p>
         </div>
         {#if isSimplefinConnected}
-          <button class="btn secondary small" onclick={() => openDisconnectConfirm("simplefin")}>
-            Disconnect
-          </button>
+          <div class="integration-actions">
+            <button class="btn secondary small" onclick={() => onTogglePause("simplefin")}>
+              {simplefinPaused ? "Resume Syncing" : "Pause Syncing"}
+            </button>
+            <button class="btn secondary small" onclick={() => openDisconnectConfirm("simplefin")}>
+              Disconnect
+            </button>
+          </div>
         {/if}
       </div>
 
       {#if isSimplefinConnected && simplefinIntegration}
-        {#if connectionCheckSuccess === false}
+        {#if simplefinPaused}
+          <div class="integration-status paused">
+            <span class="status-dot"></span>
+            <span>Paused</span>
+          </div>
+        {:else if connectionCheckSuccess === false}
           <div class="integration-status warning">
             <span class="status-dot"></span>
             <span>Connection Issue</span>
@@ -197,24 +207,26 @@
         {/if}
 
         {#if simplefinAccounts.length > 0}
-          <div class="linked-accounts">
+          <div class="linked-accounts" class:dimmed={simplefinPaused}>
             <div class="accounts-header">
               <span class="accounts-title">Linked Accounts ({simplefinAccounts.length})</span>
-              <button
-                class="btn secondary small"
-                onclick={onCheckConnection}
-                disabled={isCheckingConnection}
-              >
-                {#if isCheckingConnection}
-                  Checking...
-                {:else}
-                  Check Connection
-                {/if}
-              </button>
+              {#if !simplefinPaused}
+                <button
+                  class="btn secondary small"
+                  onclick={onCheckConnection}
+                  disabled={isCheckingConnection}
+                >
+                  {#if isCheckingConnection}
+                    Checking...
+                  {:else}
+                    Check Connection
+                  {/if}
+                </button>
+              {/if}
             </div>
             <div class="sync-settings-help">
               <Icon name="info" size={14} />
-              <span class="help-text">Choose what to sync for each account. Select "Balances only" for accounts where you don't need individual transactions.</span>
+              <span class="help-text">Choose what to sync for each account. "Disabled" skips the account entirely during sync.</span>
             </div>
             {#each [...accountsByInstitution] as [institution, accounts]}
               {@const hasWarning = connectionWarnings.some(w => w.includes(institution))}
@@ -244,17 +256,24 @@
                       <div class="segmented-toggle">
                         <button
                           class="toggle-option"
-                          class:active={!account.balances_only}
-                          onclick={() => { if (account.balances_only) onToggleBalancesOnly(account); }}
+                          class:active={account.sync_mode === "full"}
+                          onclick={() => { if (account.sync_mode !== "full") onSetSyncMode(account, "full"); }}
                         >
-                          Balances + Transactions
+                          Balances + Txns
                         </button>
                         <button
                           class="toggle-option"
-                          class:active={account.balances_only}
-                          onclick={() => { if (!account.balances_only) onToggleBalancesOnly(account); }}
+                          class:active={account.sync_mode === "balances_only"}
+                          onclick={() => { if (account.sync_mode !== "balances_only") onSetSyncMode(account, "balances_only"); }}
                         >
                           Balances only
+                        </button>
+                        <button
+                          class="toggle-option"
+                          class:active={account.sync_mode === "disabled"}
+                          onclick={() => { if (account.sync_mode !== "disabled") onSetSyncMode(account, "disabled"); }}
+                        >
+                          Disabled
                         </button>
                       </div>
                     </div>
@@ -343,26 +362,38 @@
           <p class="integration-desc">{LUNCHFLOW.description}</p>
         </div>
         {#if isLunchflowConnected}
-          <button class="btn secondary small" onclick={() => openDisconnectConfirm("lunchflow")}>
-            Disconnect
-          </button>
+          <div class="integration-actions">
+            <button class="btn secondary small" onclick={() => onTogglePause("lunchflow")}>
+              {lunchflowPaused ? "Resume Syncing" : "Pause Syncing"}
+            </button>
+            <button class="btn secondary small" onclick={() => openDisconnectConfirm("lunchflow")}>
+              Disconnect
+            </button>
+          </div>
         {/if}
       </div>
 
       {#if isLunchflowConnected && lunchflowIntegration}
-        <div class="integration-status connected">
-          <span class="status-dot"></span>
-          <span>Connected</span>
-        </div>
+        {#if lunchflowPaused}
+          <div class="integration-status paused">
+            <span class="status-dot"></span>
+            <span>Paused</span>
+          </div>
+        {:else}
+          <div class="integration-status connected">
+            <span class="status-dot"></span>
+            <span>Connected</span>
+          </div>
+        {/if}
 
         {#if lunchflowAccounts.length > 0}
-          <div class="linked-accounts">
+          <div class="linked-accounts" class:dimmed={lunchflowPaused}>
             <div class="accounts-header">
               <span class="accounts-title">Linked Accounts ({lunchflowAccounts.length})</span>
             </div>
             <div class="sync-settings-help">
               <Icon name="info" size={14} />
-              <span class="help-text">Choose what to sync for each account. Select "Balances only" for accounts where you don't need individual transactions.</span>
+              <span class="help-text">Choose what to sync for each account. "Disabled" skips the account entirely during sync.</span>
             </div>
             {#each [...lunchflowAccountsByInstitution] as [institution, accounts]}
               <div class="institution-group">
@@ -384,17 +415,24 @@
                       <div class="segmented-toggle">
                         <button
                           class="toggle-option"
-                          class:active={!account.balances_only}
-                          onclick={() => { if (account.balances_only) onToggleLunchflowBalancesOnly(account); }}
+                          class:active={account.sync_mode === "full"}
+                          onclick={() => { if (account.sync_mode !== "full") onSetLunchflowSyncMode(account, "full"); }}
                         >
-                          Balances + Transactions
+                          Balances + Txns
                         </button>
                         <button
                           class="toggle-option"
-                          class:active={account.balances_only}
-                          onclick={() => { if (!account.balances_only) onToggleLunchflowBalancesOnly(account); }}
+                          class:active={account.sync_mode === "balances_only"}
+                          onclick={() => { if (account.sync_mode !== "balances_only") onSetLunchflowSyncMode(account, "balances_only"); }}
                         >
                           Balances only
+                        </button>
+                        <button
+                          class="toggle-option"
+                          class:active={account.sync_mode === "disabled"}
+                          onclick={() => { if (account.sync_mode !== "disabled") onSetLunchflowSyncMode(account, "disabled"); }}
+                        >
+                          Disabled
                         </button>
                       </div>
                     </div>
@@ -576,12 +614,31 @@
     color: var(--text-muted);
   }
 
+  .integration-status.paused .status-dot {
+    background: var(--accent-warning, #f59e0b);
+  }
+
+  .integration-status.paused {
+    color: var(--accent-warning, #f59e0b);
+  }
+
   .integration-status.warning .status-dot {
     background: var(--accent-warning, #f59e0b);
   }
 
   .integration-status.warning {
     color: var(--accent-warning, #f59e0b);
+  }
+
+  .integration-actions {
+    display: flex;
+    gap: var(--spacing-xs);
+    flex-shrink: 0;
+  }
+
+  .linked-accounts.dimmed {
+    opacity: 0.5;
+    pointer-events: none;
   }
 
   .integration-details {
@@ -766,6 +823,11 @@
 
   .segmented-toggle .toggle-option.active {
     background: var(--accent-primary);
+    color: white;
+  }
+
+  .segmented-toggle .toggle-option.active:last-child {
+    background: var(--text-muted);
     color: white;
   }
 

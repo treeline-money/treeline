@@ -776,6 +776,28 @@ export async function setupLunchflow(
 }
 
 // ============================================================================
+// Integration Pause/Resume
+// ============================================================================
+
+/**
+ * Set the paused state for an integration.
+ * When paused, sync will skip this integration without disconnecting it.
+ *
+ * @param integrationName - The integration name (e.g., "simplefin", "lunchflow")
+ * @param paused - Whether the integration should be paused
+ */
+export async function setIntegrationPaused(integrationName: string, paused: boolean): Promise<void> {
+  const settings = await getIntegrationSettings(integrationName);
+  settings.paused = paused;
+  const settingsJson = JSON.stringify(settings);
+  await invoke<string>("execute_query_with_params", {
+    query: `UPDATE sys_integrations SET integration_settings = ? WHERE integration_name = ?`,
+    params: [settingsJson, integrationName],
+    readonly: false,
+  });
+}
+
+// ============================================================================
 // Integration Account Settings
 // ============================================================================
 
@@ -797,16 +819,19 @@ export async function getIntegrationSettings(integrationName: string): Promise<R
 
 /**
  * Update the balancesOnly setting for a specific account within an integration
- * When true, sync will only fetch balances for this account (not transactions)
+ * Update the sync mode for a specific account within an integration.
  *
  * @param integrationName - The integration name (e.g., "simplefin")
  * @param providerAccountId - The provider's account ID (e.g., SimpleFIN account ID)
- * @param balancesOnly - Whether to only sync balances for this account
+ * @param mode - Sync mode: "full" (balances + transactions), "balances_only", or "disabled"
+ *               Also accepts boolean for backwards compat (true = balances_only)
  */
+export type AccountSyncMode = "full" | "balances_only" | "disabled";
+
 export async function updateIntegrationAccountSetting(
   integrationName: string,
   providerAccountId: string,
-  balancesOnly: boolean
+  mode: boolean | AccountSyncMode
 ): Promise<void> {
   // Get current integration settings
   const settings = await getIntegrationSettings(integrationName);
@@ -817,11 +842,19 @@ export async function updateIntegrationAccountSetting(
   }
 
   // Update the specific account's settings
-  const accountSettings = settings.accountSettings as Record<string, { balancesOnly?: boolean }>;
+  const accountSettings = settings.accountSettings as Record<string, { balancesOnly?: boolean; disabled?: boolean }>;
   if (!accountSettings[providerAccountId]) {
     accountSettings[providerAccountId] = {};
   }
-  accountSettings[providerAccountId].balancesOnly = balancesOnly;
+
+  // Support both legacy boolean and new sync mode
+  if (typeof mode === "boolean") {
+    accountSettings[providerAccountId].balancesOnly = mode;
+    accountSettings[providerAccountId].disabled = false;
+  } else {
+    accountSettings[providerAccountId].balancesOnly = mode === "balances_only";
+    accountSettings[providerAccountId].disabled = mode === "disabled";
+  }
 
   // Write back to database
   const settingsJson = JSON.stringify(settings);

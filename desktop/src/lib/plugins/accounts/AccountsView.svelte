@@ -23,8 +23,8 @@
   } from "../../shared";
   import { executeQuery, showToast, deleteAccount } from "../../sdk";
   import { registry } from "../../sdk/registry";
-  import type { AccountWithStats, BalanceClassification } from "./types";
-  import { getDefaultClassification } from "./types";
+  import type { AccountWithStats, BalanceClassification, AccountSource } from "./types";
+  import { getDefaultClassification, getSourceLabel } from "./types";
   import SetBalanceModal from "./SetBalanceModal.svelte";
   import ImportModal from "../../core/ImportModal.svelte";
   import RecalculateBalancesModal from "./RecalculateBalancesModal.svelte";
@@ -130,7 +130,9 @@
           COALESCE(stats.computed_balance, 0) as computed_balance,
           ls.balance_as_of,
           a.is_manual,
-          a.classification
+          a.classification,
+          a.sf_id,
+          a.lf_id
         FROM sys_accounts a
         LEFT JOIN account_stats stats ON a.account_id = stats.account_id
         LEFT JOIN latest_snapshot ls ON a.account_id = ls.account_id AND ls.rn = 1
@@ -141,6 +143,17 @@
         const accountType = row[3] as string | null;
         const isManual = row[14] as boolean | null;
         const classification = (row[15] as BalanceClassification) || getDefaultClassification(accountType);
+        const sfId = row[16] as string | null;
+        const lfId = row[17] as string | null;
+
+        // Derive account source from provider columns
+        const txCount = row[9] as number;
+        let source: AccountSource;
+        if (sfId) source = "simplefin";
+        else if (lfId) source = "lunchflow";
+        else if (isManual) source = "manual";
+        else if (txCount > 0) source = "csv_import";
+        else source = "manual";
 
         return {
           account_id: row[0] as string,
@@ -159,6 +172,7 @@
           balance_as_of: row[13] as string | null,
           classification,
           isManual: isManual ?? false,
+          source,
         };
       });
 
@@ -256,9 +270,9 @@
       const institutionValue = data.institution_name.trim() ? `'${data.institution_name.trim().replace(/'/g, "''")}'` : 'NULL';
 
       await executeQuery(
-        `INSERT INTO sys_accounts (account_id, name, nickname, institution_name, account_type, classification, currency, created_at, updated_at)
+        `INSERT INTO sys_accounts (account_id, name, nickname, institution_name, account_type, classification, currency, is_manual, created_at, updated_at)
          VALUES ('${accountId}', '${data.name.replace(/'/g, "''")}', ${nicknameValue},
-                 ${institutionValue}, '${data.account_type}', '${data.classification}', 'USD', '${now}', '${now}')`,
+                 ${institutionValue}, '${data.account_type}', '${data.classification}', 'USD', TRUE, '${now}', '${now}')`,
         { readonly: false }
       );
 
@@ -591,6 +605,9 @@
             <span class="detail-name">{getDisplayName(selectedAccount)}</span>
             {#if selectedAccount.institution_name}
               <span class="detail-institution">{selectedAccount.institution_name}</span>
+            {/if}
+            {#if getSourceLabel(selectedAccount.source)}
+              <span class="source-badge source-{selectedAccount.source}">{getSourceLabel(selectedAccount.source)}</span>
             {/if}
           </div>
 
@@ -996,6 +1013,7 @@
     display: flex;
     align-items: baseline;
     gap: var(--spacing-sm);
+    flex-wrap: wrap;
   }
 
   .detail-name {
@@ -1007,6 +1025,18 @@
   .detail-institution {
     font-size: 14px;
     color: var(--text-muted);
+  }
+
+  .source-badge {
+    font-size: 11px;
+    font-weight: 500;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
+    border: 1px solid var(--border-primary);
+    white-space: nowrap;
+    align-self: center;
   }
 
   .detail-balance {

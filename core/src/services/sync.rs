@@ -97,6 +97,30 @@ impl SyncService {
         dry_run: bool,
         balances_only: bool,
     ) -> Result<IntegrationSyncResult> {
+        // Check if integration is paused
+        if settings
+            .get("paused")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            return Ok(IntegrationSyncResult {
+                integration: name.to_string(),
+                accounts_synced: 0,
+                transactions_synced: 0,
+                transaction_stats: TransactionStats {
+                    discovered: 0,
+                    new: 0,
+                    skipped: 0,
+                },
+                sync_type: "paused".to_string(),
+                start_date: String::new(),
+                end_date: String::new(),
+                provider_warnings: vec![],
+                error: None,
+                auto_tag_failures: vec![],
+            });
+        }
+
         // Look up provider by name
         let provider = self
             .providers
@@ -159,6 +183,9 @@ impl SyncService {
             }
         }
 
+        // Check accountSettings for disabled flag on each account
+        let account_settings = settings.get("accountSettings").and_then(|v| v.as_object());
+
         // Process accounts
         let mut accounts_synced = 0i64;
         for mut account in accounts_result.accounts {
@@ -171,6 +198,19 @@ impl SyncService {
                 _ => None,
             };
             let ext_id = ext_id.unwrap_or_default();
+
+            // Skip disabled accounts entirely (no upsert, no balances, no transactions)
+            if let Some(settings_map) = account_settings {
+                if let Some(acc_settings) = settings_map.get(&ext_id) {
+                    if acc_settings
+                        .get("disabled")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false)
+                    {
+                        continue;
+                    }
+                }
+            }
 
             if let Some(&existing_id) = external_to_internal.get(&ext_id) {
                 // Existing account - update ID
@@ -188,10 +228,22 @@ impl SyncService {
             }
         }
 
-        // Save balance snapshots
+        // Save balance snapshots (skip disabled accounts)
         if !dry_run {
             for snapshot in accounts_result.balance_snapshots {
                 if let Some(ext_id) = orig_to_ext.get(&snapshot.account_id) {
+                    // Skip disabled accounts
+                    if let Some(settings_map) = account_settings {
+                        if let Some(acc_settings) = settings_map.get(ext_id.as_str()) {
+                            if acc_settings
+                                .get("disabled")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false)
+                            {
+                                continue;
+                            }
+                        }
+                    }
                     if let Some(&internal_id) = external_to_internal.get(ext_id) {
                         let mut updated = snapshot;
                         updated.account_id = internal_id;
@@ -205,21 +257,22 @@ impl SyncService {
         let (discovered, new_count, skipped_count, auto_tag_failures) = if balances_only {
             (0, 0, 0, Vec::new())
         } else {
-            // Fetch transactions (excluding per-account balances-only settings)
-            // Check accountSettings for balancesOnly flag on each account
-            let account_settings = settings.get("accountSettings").and_then(|v| v.as_object());
-
+            // Fetch transactions (excluding per-account balances-only and disabled settings)
             let ext_account_ids: Vec<String> = external_to_internal
                 .keys()
                 .filter(|ext_id| {
-                    // Include account only if NOT marked as balancesOnly
+                    // Include account only if NOT marked as balancesOnly or disabled
                     if let Some(settings_map) = account_settings {
                         if let Some(acc_settings) = settings_map.get(*ext_id) {
-                            // Default to false if balancesOnly not present
-                            return !acc_settings
+                            let is_balances_only = acc_settings
                                 .get("balancesOnly")
                                 .and_then(|v| v.as_bool())
                                 .unwrap_or(false);
+                            let is_disabled = acc_settings
+                                .get("disabled")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false);
+                            return !is_balances_only && !is_disabled;
                         }
                     }
                     // No settings for this account = include it

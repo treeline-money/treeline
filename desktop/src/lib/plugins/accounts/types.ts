@@ -18,6 +18,8 @@ export interface Account {
   updated_at: string;
 }
 
+export type AccountSource = "simplefin" | "lunchflow" | "csv_import" | "manual" | "unknown";
+
 export interface AccountWithStats extends Account {
   transaction_count: number;
   first_transaction: string | null;
@@ -26,6 +28,20 @@ export interface AccountWithStats extends Account {
   balance_as_of: string | null;
   classification: BalanceClassification;
   isManual: boolean;
+  source: AccountSource;
+}
+
+/**
+ * Derive human-readable source label from AccountSource.
+ */
+export function getSourceLabel(source: AccountSource): string {
+  switch (source) {
+    case "simplefin": return "SimpleFIN";
+    case "lunchflow": return "Lunch Flow";
+    case "csv_import": return "CSV Import";
+    case "manual": return "Manual";
+    default: return "";
+  }
 }
 
 export interface BalanceSnapshot {
