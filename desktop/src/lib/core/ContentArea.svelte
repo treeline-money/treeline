@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
   import { registry, modKey, logger } from "../sdk";
   import { createPluginSDK } from "../sdk/public";
   import type { Tab, ViewDefinition } from "../sdk";
@@ -61,8 +62,8 @@
     if (cleanupFunctions[tab.id]) {
       cleanupFunctions[tab.id]!();
       container.innerHTML = "";
-      // Remove Svelte-injected <style> tags that this plugin added.
-      // Svelte's append_styles() skips insertion if a <style> with the same id exists,
+      // Remove Svelte-injected style tags that this plugin added.
+      // append_styles() skips insertion if a style with the same id exists,
       // and the id is filename-based (not content-based), so stale styles block updates.
       for (const id of pluginStyleIds[tab.id] ?? []) {
         document.head.querySelector(`style#${id}`)?.remove();
@@ -125,7 +126,6 @@
   });
 
   // Clean up all on component destroy
-  import { onDestroy } from "svelte";
   onDestroy(() => {
     for (const cleanup of Object.values(cleanupFunctions)) {
       if (cleanup) cleanup();
