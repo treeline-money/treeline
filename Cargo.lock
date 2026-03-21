@@ -898,6 +898,7 @@ dependencies = [
 [[package]]
 name = "diffy-duck"
 version = "0.1.0"
+source = "git+https://github.com/zack-schrag/diffy-duck#defd039eccb7f046e83dee4a778dfa6d08511568"
 dependencies = [
  "duckdb",
  "indexmap",
