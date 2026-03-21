@@ -182,6 +182,10 @@ pub fn tool_definitions() -> Value {
                             "type": "boolean",
                             "description": "Preview changes without applying them",
                             "default": false
+                        },
+                        "lookback_days": {
+                            "type": "integer",
+                            "description": "Custom lookback window in days. Overrides the default 7-day overlap for incremental syncs or 90-day window for initial syncs. Useful for re-fetching older transactions."
                         }
                     },
                     "additionalProperties": false
@@ -402,7 +406,8 @@ pub fn execute_tool(name: &str, args: &Value) -> Result<Value, String> {
         "sync" => {
             let integration = args.get("integration").and_then(|v| v.as_str());
             let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
-            tool_sync(integration, dry_run)
+            let lookback_days = args.get("lookback_days").and_then(|v| v.as_i64());
+            tool_sync(integration, dry_run, lookback_days)
         }
         "tag" => {
             let tags = args
@@ -477,11 +482,11 @@ fn tool_query(sql: &str, allow_writes: bool) -> Result<Value, String> {
     serde_json::to_value(&result).map_err(|e| e.to_string())
 }
 
-fn tool_sync(integration: Option<&str>, dry_run: bool) -> Result<Value, String> {
+fn tool_sync(integration: Option<&str>, dry_run: bool, lookback_days: Option<i64>) -> Result<Value, String> {
     let ctx = get_context().map_err(|e| e.to_string())?;
     let result = ctx
         .sync_service
-        .sync(integration, dry_run, false)
+        .sync(integration, dry_run, false, lookback_days)
         .map_err(|e| e.to_string())?;
     serde_json::to_value(&result).map_err(|e| e.to_string())
 }

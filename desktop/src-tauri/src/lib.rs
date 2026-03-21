@@ -939,6 +939,7 @@ fn set_demo_mode(enabled: bool) -> Result<(), String> {
 async fn run_sync(
     dry_run: Option<bool>,
     balances_only: Option<bool>,
+    lookback_days: Option<i64>,
     encryption_state: State<'_, EncryptionState>,
     context_state: State<'_, TreelineContextState>,
     logging_state: State<'_, LoggingState>,
@@ -988,7 +989,7 @@ async fn run_sync(
         let sync_service =
             treeline_core::services::SyncService::new(repository, treeline_dir.into());
         let sync_result = sync_service
-            .sync(None, dry_run, balances_only)
+            .sync(None, dry_run, balances_only, lookback_days)
             .map_err(|e| e.to_string())?;
         serde_json::to_string(&sync_result).map_err(|e| e.to_string())
     })

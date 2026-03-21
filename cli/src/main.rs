@@ -41,6 +41,9 @@ enum Commands {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+        /// Custom lookback window in days (overrides default 7-day incremental / 90-day initial)
+        #[arg(long)]
+        lookback_days: Option<i64>,
     },
 
     /// Import transactions from a CSV file
@@ -288,7 +291,8 @@ fn run(cli: Cli) -> Result<()> {
             integration,
             dry_run,
             json,
-        } => sync::run(integration, dry_run, json),
+            lookback_days,
+        } => sync::run(integration, dry_run, json, lookback_days),
         Commands::Import {
             file,
             account,

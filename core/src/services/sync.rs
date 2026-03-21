@@ -60,11 +60,15 @@ impl SyncService {
     ///
     /// If `balances_only` is true, skips transaction fetching entirely.
     /// This is useful for users who just want to track account balances.
+    ///
+    /// If `lookback_days` is provided, it overrides the default lookback window
+    /// (7 days for incremental syncs, 90 days for initial syncs).
     pub fn sync(
         &self,
         integration: Option<&str>,
         dry_run: bool,
         balances_only: bool,
+        lookback_days: Option<i64>,
     ) -> Result<SyncResult> {
         let integrations = self.repository.get_integrations()?;
         let mut results = Vec::new();
@@ -80,7 +84,7 @@ impl SyncService {
         }
 
         for int in integrations_to_sync {
-            let result = self.sync_integration(&int.name, &int.settings, dry_run, balances_only)?;
+            let result = self.sync_integration(&int.name, &int.settings, dry_run, balances_only, lookback_days)?;
             results.push(result);
         }
 
@@ -96,6 +100,7 @@ impl SyncService {
         settings: &serde_json::Value,
         dry_run: bool,
         balances_only: bool,
+        lookback_days: Option<i64>,
     ) -> Result<IntegrationSyncResult> {
         // Check if integration is paused
         if settings
@@ -132,10 +137,16 @@ impl SyncService {
         let end_date = now.naive_utc().date();
 
         // Calculate start date based on sync type
+        // If lookback_days is provided, always use it (regardless of incremental/initial)
         let max_tx_date = self.repository.get_max_transaction_date()?;
-        let (start_date, is_incremental) = match max_tx_date {
-            Some(max_date) => (max_date - Duration::days(7), true),
-            None => ((now - Duration::days(90)).naive_utc().date(), false),
+        let (start_date, is_incremental) = if let Some(days) = lookback_days {
+            let is_incremental = max_tx_date.is_some();
+            ((now - Duration::days(days)).naive_utc().date(), is_incremental)
+        } else {
+            match max_tx_date {
+                Some(max_date) => (max_date - Duration::days(7), true),
+                None => ((now - Duration::days(90)).naive_utc().date(), false),
+            }
         };
 
         let sync_type = if is_incremental {
@@ -357,6 +368,7 @@ impl SyncService {
             sync_type: sync_type.to_string(),
             start_date: start_date.format("%Y-%m-%d").to_string(),
             end_date: end_date.format("%Y-%m-%d").to_string(),
+            lookback_days,
             provider_warnings,
             error: None,
             auto_tag_failures,
@@ -538,6 +550,9 @@ pub struct IntegrationSyncResult {
     pub sync_type: String,
     pub start_date: String,
     pub end_date: String,
+    /// Custom lookback days used (if any)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lookback_days: Option<i64>,
     pub provider_warnings: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,

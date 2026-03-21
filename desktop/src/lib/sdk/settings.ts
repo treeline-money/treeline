@@ -291,14 +291,16 @@ export interface SyncResult {
 export interface RunSyncOptions {
   dryRun?: boolean;
   balancesOnly?: boolean;
+  /** Custom lookback window in days. Overrides default 7-day incremental / 90-day initial. */
+  lookbackDays?: number;
 }
 
 /**
  * Run sync and update lastSyncDate (unless dry run)
  */
 export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult> {
-  const { dryRun = false, balancesOnly = false } = options;
-  const jsonString = await invoke<string>("run_sync", { dryRun, balancesOnly });
+  const { dryRun = false, balancesOnly = false, lookbackDays } = options;
+  const jsonString = await invoke<string>("run_sync", { dryRun, balancesOnly, lookbackDays });
   const result = JSON.parse(jsonString) as SyncResult;
 
   // Update lastSyncDate on success (but not for dry runs)
