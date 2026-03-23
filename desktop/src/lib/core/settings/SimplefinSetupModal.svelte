@@ -2,12 +2,14 @@
   import { Icon, SIMPLEFIN } from "../../shared";
   import "./settings-shared.css";
 
+  type AccountSyncMode = "full" | "balances_only" | "disabled";
+
   interface SetupAccount {
     simplefin_id: string;
     name: string;
     institution_name: string | null;
     balance: string | null;
-    balances_only: boolean;
+    sync_mode: AccountSyncMode;
   }
 
   interface Props {
@@ -21,7 +23,7 @@
     onClose: () => void;
     onSetupTokenChange: (token: string) => void;
     onSetup: () => void;
-    onToggleAccountBalancesOnly: (simplefinId: string) => void;
+    onSetAccountSyncMode: (simplefinId: string, mode: AccountSyncMode) => void;
     onSyncAfterSetup: () => void;
     onOpenExternalUrl: (url: string) => void;
   }
@@ -37,7 +39,7 @@
     onClose,
     onSetupTokenChange,
     onSetup,
-    onToggleAccountBalancesOnly,
+    onSetAccountSyncMode,
     onSyncAfterSetup,
     onOpenExternalUrl,
   }: Props = $props();
@@ -83,24 +85,31 @@
                   <div class="setup-account-toggle">
                     <button
                       class="toggle-option"
-                      class:active={!account.balances_only}
-                      onclick={() => { if (account.balances_only) onToggleAccountBalancesOnly(account.simplefin_id); }}
+                      class:active={account.sync_mode === "full"}
+                      onclick={() => { if (account.sync_mode !== "full") onSetAccountSyncMode(account.simplefin_id, "full"); }}
                     >
-                      Balances + Transactions
+                      Balances + Txns
                     </button>
                     <button
                       class="toggle-option"
-                      class:active={account.balances_only}
-                      onclick={() => { if (!account.balances_only) onToggleAccountBalancesOnly(account.simplefin_id); }}
+                      class:active={account.sync_mode === "balances_only"}
+                      onclick={() => { if (account.sync_mode !== "balances_only") onSetAccountSyncMode(account.simplefin_id, "balances_only"); }}
                     >
                       Balances only
+                    </button>
+                    <button
+                      class="toggle-option"
+                      class:active={account.sync_mode === "disabled"}
+                      onclick={() => { if (account.sync_mode !== "disabled") onSetAccountSyncMode(account.simplefin_id, "disabled"); }}
+                    >
+                      Skip
                     </button>
                   </div>
                 </div>
               {/each}
             </div>
             <p class="setup-accounts-hint">
-              "Balances + Transactions" syncs balances and 90 days of transactions. "Balances only" skips transaction history.
+              "Balances + Txns" syncs balances and 90 days of transactions. "Balances only" skips transactions. "Skip" excludes the account from syncing.
             </p>
           {:else}
             <div class="setup-accounts-intro">
@@ -433,8 +442,8 @@
   }
 
   .setup-account-toggle .toggle-option {
-    padding: 4px 10px;
-    font-size: 11px;
+    padding: 4px 8px;
+    font-size: 10px;
     border: none;
     background: transparent;
     color: var(--text-muted);

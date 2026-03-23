@@ -55,6 +55,12 @@ Most commands support `--json` for scripting.
 
 ### Automated Sync
 
+Sync with a custom lookback window (default is 7 days for incremental, 90 days for initial):
+
+```bash
+tl sync --lookback-days 30
+```
+
 Sync every morning at 8am:
 
 ```bash

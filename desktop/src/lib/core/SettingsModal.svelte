@@ -12,6 +12,7 @@
     setupSimplefin,
     setupLunchflow,
     getIntegrationSettings,
+    setIntegrationPaused,
     updateIntegrationAccountSetting,
     getDisabledPlugins,
     enablePlugin,
@@ -112,19 +113,27 @@
   let isLoadingIntegrations = $state(false);
 
   // SimpleFIN accounts and status
+  type AccountSyncMode = "full" | "balances_only" | "disabled";
+
   interface SimplefinAccount {
     account_id: string;
     simplefin_id: string;
     name: string;
     institution_name: string;
     account_type: string | null;
-    balances_only: boolean;
+    sync_mode: AccountSyncMode;
   }
   let simplefinAccounts = $state<SimplefinAccount[]>([]);
+  let simplefinPaused = $state(false);
   let connectionWarnings = $state<string[]>([]);
   let isCheckingConnection = $state(false);
   let connectionCheckSuccess = $state<boolean | null>(null);
   let simplefinSettings = $state<Record<string, unknown>>({});
+
+  // Lunchflow connection check state
+  let lunchflowConnectionWarnings = $state<string[]>([]);
+  let isCheckingLunchflowConnection = $state(false);
+  let lunchflowConnectionCheckSuccess = $state<boolean | null>(null);
 
   // SimpleFIN setup modal state
   let showSetupModal = $state(false);
@@ -139,7 +148,7 @@
     name: string;
     institution_name: string | null;
     balance: string | null;
-    balances_only: boolean;
+    sync_mode: AccountSyncMode;
   }
   let setupAccounts = $state<SetupAccount[]>([]);
 
@@ -151,9 +160,10 @@
     institution_name: string;
     account_type: string | null;
     currency: string | null;
-    balances_only: boolean;
+    sync_mode: AccountSyncMode;
   }
   let lunchflowAccounts = $state<LunchflowAccount[]>([]);
+  let lunchflowPaused = $state(false);
 
   // Lunchflow setup modal state
   let showLunchflowSetupModal = $state(false);
@@ -169,7 +179,7 @@
     institution_name: string | null;
     balance: string | null;
     currency: string | null;
-    balances_only: boolean;
+    sync_mode: AccountSyncMode;
   }
   let lunchflowSetupAccounts = $state<LunchflowSetupAccount[]>([]);
 
@@ -283,10 +293,17 @@
     }
   }
 
+  function deriveSyncMode(accSettings?: { balancesOnly?: boolean; disabled?: boolean }): AccountSyncMode {
+    if (accSettings?.disabled) return "disabled";
+    if (accSettings?.balancesOnly) return "balances_only";
+    return "full";
+  }
+
   async function loadSimplefinAccounts() {
     try {
       simplefinSettings = await getIntegrationSettings("simplefin");
-      const accountSettings = (simplefinSettings.accountSettings || {}) as Record<string, { balancesOnly?: boolean }>;
+      simplefinPaused = simplefinSettings.paused === true;
+      const accountSettings = (simplefinSettings.accountSettings || {}) as Record<string, { balancesOnly?: boolean; disabled?: boolean }>;
 
       const result = await executeQuery(
         `SELECT account_id, name, institution_name, account_type, sf_id as simplefin_id
@@ -302,7 +319,7 @@
           name: row[1] as string,
           institution_name: row[2] as string,
           account_type: row[3] as string | null,
-          balances_only: accountSettings[simplefinId]?.balancesOnly || false,
+          sync_mode: deriveSyncMode(accountSettings[simplefinId]),
         };
       });
     } catch (e) {
@@ -314,7 +331,8 @@
   async function loadLunchflowAccounts() {
     try {
       const lunchflowSettings = await getIntegrationSettings("lunchflow");
-      const accountSettings = (lunchflowSettings.accountSettings || {}) as Record<string, { balancesOnly?: boolean }>;
+      lunchflowPaused = lunchflowSettings.paused === true;
+      const accountSettings = (lunchflowSettings.accountSettings || {}) as Record<string, { balancesOnly?: boolean; disabled?: boolean }>;
 
       const result = await executeQuery(
         `SELECT account_id, name, institution_name, account_type, currency, lf_id as lunchflow_id
@@ -331,7 +349,7 @@
           institution_name: row[2] as string,
           account_type: row[3] as string | null,
           currency: row[4] as string | null,
-          balances_only: accountSettings[lunchflowId]?.balancesOnly || false,
+          sync_mode: deriveSyncMode(accountSettings[lunchflowId]),
         };
       });
     } catch (e) {
@@ -427,13 +445,14 @@
       } else {
         toast.success("Sync complete", `${totalAccounts} accounts, ${totalTransactions} new transactions`);
       }
-      await loadSettings();
-      // Refresh account lists so UI updates after sync
-      await loadSimplefinAccounts();
-      await loadLunchflowAccounts();
     } catch (e) {
       toast.error("Sync failed", e instanceof Error ? e.message : String(e));
     } finally {
+      // Always refresh data after sync attempt so the UI updates even if sync failed
+      await loadSettings();
+      await loadIntegrations();
+      await loadSimplefinAccounts();
+      await loadLunchflowAccounts();
       stopActivity();
       isSyncing = false;
     }
@@ -564,15 +583,59 @@
     }
   }
 
-  async function handleToggleBalancesOnly(account: SimplefinAccount) {
-    const newValue = !account.balances_only;
+  async function handleCheckLunchflowConnection() {
+    isCheckingLunchflowConnection = true;
+    lunchflowConnectionWarnings = [];
+    lunchflowConnectionCheckSuccess = null;
     try {
-      await updateIntegrationAccountSetting("simplefin", account.simplefin_id, newValue);
-      account.balances_only = newValue;
+      // Use balancesOnly sync to discover new accounts without pulling transactions
+      const result = await runSync({ balancesOnly: true });
+      const lfResult = result.results.find((r) => r.integration === "lunchflow");
+      if (lfResult?.provider_warnings) {
+        lunchflowConnectionWarnings = lfResult.provider_warnings;
+      }
+      if (lfResult?.error) {
+        lunchflowConnectionWarnings = [lfResult.error];
+      }
+      lunchflowConnectionCheckSuccess = lunchflowConnectionWarnings.length === 0;
+
+      // Reload accounts to pick up any newly discovered ones
+      await loadLunchflowAccounts();
+    } catch (e) {
+      lunchflowConnectionWarnings = [e instanceof Error ? e.message : String(e)];
+      lunchflowConnectionCheckSuccess = false;
+    } finally {
+      isCheckingLunchflowConnection = false;
+    }
+  }
+
+  async function handleSetSyncMode(account: SimplefinAccount, mode: AccountSyncMode) {
+    try {
+      await updateIntegrationAccountSetting("simplefin", account.simplefin_id, mode);
+      account.sync_mode = mode;
       simplefinAccounts = [...simplefinAccounts];
     } catch (e) {
-      console.error("Failed to update balances only setting:", e);
+      console.error("Failed to update sync mode:", e);
       toast.error("Failed to update setting", e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function handleTogglePause(integrationName: string) {
+    try {
+      const isPaused = integrationName === "simplefin" ? simplefinPaused : lunchflowPaused;
+      const newPaused = !isPaused;
+      await setIntegrationPaused(integrationName, newPaused);
+      if (integrationName === "simplefin") {
+        simplefinPaused = newPaused;
+      } else if (integrationName === "lunchflow") {
+        lunchflowPaused = newPaused;
+      }
+      toast.success(
+        newPaused ? "Syncing paused" : "Syncing resumed",
+        `${integrationName} will ${newPaused ? "not" : "now"} sync`
+      );
+    } catch (e) {
+      toast.error("Failed to update", e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -658,24 +721,17 @@
       setupSuccess = true;
 
       try {
-        await runSync({ balancesOnly: true });
-        const result = await executeQuery(
-          `SELECT
-             sf_id as simplefin_id,
-             name,
-             institution_name,
-             balance
-           FROM sys_accounts
-           WHERE sf_id IS NOT NULL
-           ORDER BY institution_name, name`
-        );
+        // Dry run to discover accounts without saving to DB
+        const syncResult = await runSync({ dryRun: true, balancesOnly: true });
+        const sfResult = syncResult.results.find((r) => r.integration === "simplefin");
+        const accounts = sfResult?.discovered_accounts || [];
 
-        setupAccounts = result.rows.map((row) => ({
-          simplefin_id: row[0] as string,
-          name: row[1] as string,
-          institution_name: row[2] as string | null,
-          balance: row[3] as string | null,
-          balances_only: false,
+        setupAccounts = accounts.map((acc) => ({
+          simplefin_id: acc.provider_id,
+          name: acc.name,
+          institution_name: acc.institution_name || null,
+          balance: acc.balance || null,
+          sync_mode: "full" as AccountSyncMode,
         }));
       } catch (e) {
         console.error("Failed to fetch accounts after setup:", e);
@@ -691,25 +747,21 @@
     }
   }
 
-  function toggleSetupAccountBalancesOnly(simplefinId: string) {
+  async function setSetupAccountSyncMode(simplefinId: string, mode: AccountSyncMode) {
     setupAccounts = setupAccounts.map(acc =>
       acc.simplefin_id === simplefinId
-        ? { ...acc, balances_only: !acc.balances_only }
+        ? { ...acc, sync_mode: mode }
         : acc
     );
+    // Persist immediately so closing the modal doesn't lose the choice
+    try {
+      await updateIntegrationAccountSetting("simplefin", simplefinId, mode);
+    } catch (e) {
+      console.error("Failed to save account setting:", e);
+    }
   }
 
   async function handleSyncAfterSetup() {
-    for (const acc of setupAccounts) {
-      if (acc.balances_only) {
-        try {
-          await updateIntegrationAccountSetting("simplefin", acc.simplefin_id, true);
-        } catch (e) {
-          console.error("Failed to save account setting:", e);
-        }
-      }
-    }
-
     closeSetupModal();
     await handleSync(false);
   }
@@ -748,26 +800,18 @@
       lunchflowSetupSuccess = true;
 
       try {
-        await runSync({ balancesOnly: true });
-        const result = await executeQuery(
-          `SELECT
-             lf_id as lunchflow_id,
-             name,
-             institution_name,
-             balance,
-             currency
-           FROM sys_accounts
-           WHERE lf_id IS NOT NULL
-           ORDER BY institution_name, name`
-        );
+        // Dry run to discover accounts without saving to DB
+        const syncResult = await runSync({ dryRun: true, balancesOnly: true });
+        const lfResult = syncResult.results.find((r) => r.integration === "lunchflow");
+        const accounts = lfResult?.discovered_accounts || [];
 
-        lunchflowSetupAccounts = result.rows.map((row) => ({
-          lunchflow_id: row[0] as string,
-          name: row[1] as string,
-          institution_name: row[2] as string | null,
-          balance: row[3] as string | null,
-          currency: row[4] as string | null,
-          balances_only: false,
+        lunchflowSetupAccounts = accounts.map((acc) => ({
+          lunchflow_id: acc.provider_id,
+          name: acc.name,
+          institution_name: acc.institution_name || null,
+          balance: acc.balance || null,
+          currency: acc.currency || null,
+          sync_mode: "full" as AccountSyncMode,
         }));
       } catch (e) {
         console.error("Failed to fetch accounts after setup:", e);
@@ -783,37 +827,32 @@
     }
   }
 
-  function toggleLunchflowSetupAccountBalancesOnly(lunchflowId: string) {
+  async function setLunchflowSetupAccountSyncMode(lunchflowId: string, mode: AccountSyncMode) {
     lunchflowSetupAccounts = lunchflowSetupAccounts.map(acc =>
       acc.lunchflow_id === lunchflowId
-        ? { ...acc, balances_only: !acc.balances_only }
+        ? { ...acc, sync_mode: mode }
         : acc
     );
+    // Persist immediately so closing the modal doesn't lose the choice
+    try {
+      await updateIntegrationAccountSetting("lunchflow", lunchflowId, mode);
+    } catch (e) {
+      console.error("Failed to save account setting:", e);
+    }
   }
 
   async function handleLunchflowSyncAfterSetup() {
-    for (const acc of lunchflowSetupAccounts) {
-      if (acc.balances_only) {
-        try {
-          await updateIntegrationAccountSetting("lunchflow", acc.lunchflow_id, true);
-        } catch (e) {
-          console.error("Failed to save account setting:", e);
-        }
-      }
-    }
-
     closeLunchflowSetupModal();
     await handleSync(false);
   }
 
-  async function handleToggleLunchflowBalancesOnly(account: LunchflowAccount) {
-    const newValue = !account.balances_only;
+  async function handleSetLunchflowSyncMode(account: LunchflowAccount, mode: AccountSyncMode) {
     try {
-      await updateIntegrationAccountSetting("lunchflow", account.lunchflow_id, newValue);
-      account.balances_only = newValue;
+      await updateIntegrationAccountSetting("lunchflow", account.lunchflow_id, mode);
+      account.sync_mode = mode;
       lunchflowAccounts = [...lunchflowAccounts];
     } catch (e) {
-      console.error("Failed to update balances only setting:", e);
+      console.error("Failed to update sync mode:", e);
       toast.error("Failed to update setting", e instanceof Error ? e.message : String(e));
     }
   }
@@ -918,16 +957,23 @@
                 {integrations}
                 {simplefinAccounts}
                 {lunchflowAccounts}
+                {simplefinPaused}
+                {lunchflowPaused}
                 {connectionWarnings}
                 {isCheckingConnection}
                 {connectionCheckSuccess}
+                {lunchflowConnectionWarnings}
+                {isCheckingLunchflowConnection}
+                {lunchflowConnectionCheckSuccess}
                 onExitDemoMode={handleExitDemoMode}
                 onCheckConnection={handleCheckConnection}
-                onToggleBalancesOnly={handleToggleBalancesOnly}
-                onToggleLunchflowBalancesOnly={handleToggleLunchflowBalancesOnly}
+                onCheckLunchflowConnection={handleCheckLunchflowConnection}
+                onSetSyncMode={handleSetSyncMode}
+                onSetLunchflowSyncMode={handleSetLunchflowSyncMode}
                 onOpenSetupModal={openSetupModal}
                 onOpenLunchflowSetupModal={openLunchflowSetupModal}
                 onDisconnect={handleDisconnect}
+                onTogglePause={handleTogglePause}
                 onOpenExternalUrl={openExternalUrl}
                 {formatLastSync}
               />
@@ -981,7 +1027,7 @@
     onClose={closeSetupModal}
     onSetupTokenChange={(token) => setupToken = token}
     onSetup={handleSetupSimplefin}
-    onToggleAccountBalancesOnly={toggleSetupAccountBalancesOnly}
+    onSetAccountSyncMode={setSetupAccountSyncMode}
     onSyncAfterSetup={handleSyncAfterSetup}
     onOpenExternalUrl={openExternalUrl}
   />
@@ -998,7 +1044,7 @@
     onClose={closeLunchflowSetupModal}
     onApiKeyChange={(key) => lunchflowApiKey = key}
     onSetup={handleSetupLunchflow}
-    onToggleAccountBalancesOnly={toggleLunchflowSetupAccountBalancesOnly}
+    onSetAccountSyncMode={setLunchflowSetupAccountSyncMode}
     onSyncAfterSetup={handleLunchflowSyncAfterSetup}
     onOpenExternalUrl={openExternalUrl}
   />

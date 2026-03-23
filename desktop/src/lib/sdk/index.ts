@@ -82,6 +82,8 @@ export {
   // Integrations
   setupSimplefin,
   setupLunchflow,
+  // Integration Pause/Resume
+  setIntegrationPaused,
   // Integration Account Settings
   getIntegrationSettings,
   updateIntegrationAccountSetting,

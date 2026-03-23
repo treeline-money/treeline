@@ -6,7 +6,7 @@ use treeline_core::LogEvent;
 
 use super::{get_context, get_logger, log_event};
 
-pub fn run(integration: Option<String>, dry_run: bool, json: bool) -> Result<()> {
+pub fn run(integration: Option<String>, dry_run: bool, json: bool, lookback_days: Option<i64>) -> Result<()> {
     let logger = get_logger();
     log_event(&logger, LogEvent::new("sync_started").with_command("sync"));
 
@@ -14,7 +14,7 @@ pub fn run(integration: Option<String>, dry_run: bool, json: bool) -> Result<()>
     // CLI always syncs with transactions (balances_only = false)
     let result = ctx
         .sync_service
-        .sync(integration.as_deref(), dry_run, false);
+        .sync(integration.as_deref(), dry_run, false, lookback_days);
 
     match &result {
         Ok(sync_result) => {
@@ -68,7 +68,12 @@ pub fn run(integration: Option<String>, dry_run: bool, json: bool) -> Result<()>
         } else {
             println!("{} {}", "Synced:".green(), sync_result.integration);
             println!("  Accounts synced: {}", sync_result.accounts_synced);
-            if sync_result.sync_type == "incremental" {
+            if let Some(days) = sync_result.lookback_days {
+                println!(
+                    "  Syncing transactions since {} (custom {}-day lookback)",
+                    sync_result.start_date, days
+                );
+            } else if sync_result.sync_type == "incremental" {
                 println!(
                     "  Syncing transactions since {} (with 7-day overlap)",
                     sync_result.start_date

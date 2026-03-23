@@ -527,7 +527,7 @@ fn test_simplefin_sync_no_duplicates() {
 
     // First sync
     let result1 = sync_service
-        .sync(Some("simplefin"), false, false)
+        .sync(Some("simplefin"), false, false, None)
         .expect("First sync failed");
 
     let first_sync_new = result1.results[0].transaction_stats.new;
@@ -538,7 +538,7 @@ fn test_simplefin_sync_no_duplicates() {
 
     // Second sync - should not create any duplicates
     let result2 = sync_service
-        .sync(Some("simplefin"), false, false)
+        .sync(Some("simplefin"), false, false, None)
         .expect("Second sync failed");
 
     let second_sync_new = result2.results[0].transaction_stats.new;
@@ -590,7 +590,7 @@ fn test_simplefin_rapid_sync_no_duplicates() {
     // Run 5 syncs rapidly
     for i in 0..5 {
         let result = sync_service
-            .sync(Some("simplefin"), false, false)
+            .sync(Some("simplefin"), false, false, None)
             .expect(&format!("Sync {} failed", i));
 
         println!(
@@ -637,7 +637,7 @@ fn test_lunchflow_sync_no_duplicates() {
 
     // First sync
     let result1 = sync_service
-        .sync(Some("lunchflow"), false, false)
+        .sync(Some("lunchflow"), false, false, None)
         .expect("First sync failed");
 
     let first_sync_new = result1.results[0].transaction_stats.new;
@@ -645,7 +645,7 @@ fn test_lunchflow_sync_no_duplicates() {
 
     // Second sync
     let result2 = sync_service
-        .sync(Some("lunchflow"), false, false)
+        .sync(Some("lunchflow"), false, false, None)
         .expect("Second sync failed");
 
     let second_sync_new = result2.results[0].transaction_stats.new;
@@ -684,7 +684,7 @@ fn test_lunchflow_rapid_sync_no_duplicates() {
     // Run 5 syncs rapidly
     for i in 0..5 {
         let result = sync_service
-            .sync(Some("lunchflow"), false, false)
+            .sync(Some("lunchflow"), false, false, None)
             .expect(&format!("Lunchflow sync {} failed", i));
 
         println!(
