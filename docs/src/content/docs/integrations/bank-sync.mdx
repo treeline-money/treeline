@@ -52,6 +52,20 @@ tl sync
 
 **Future syncs** pull recent transactions with overlap to avoid gaps. Treeline deduplicates automatically - your edits (tags, descriptions) are preserved.
 
+### Custom Lookback Window
+
+By default, incremental syncs look back 7 days from your latest transaction. To pull a larger window (e.g., to backfill older transactions), use `--lookback-days`:
+
+```bash
+# Sync the last 60 days
+tl sync --lookback-days 60
+
+# Preview what would be fetched
+tl sync --lookback-days 90 --dry-run
+```
+
+This overrides both the 7-day incremental and 90-day initial defaults.
+
 ## Account Mapping
 
 After your first sync, Treeline shows all discovered accounts. You can:
