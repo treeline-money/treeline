@@ -432,11 +432,11 @@
 
   // --- Handlers ---
 
-  async function handleSync(balancesOnly: boolean = false) {
+  async function handleSync(balancesOnly: boolean = false, lookbackDays?: number) {
     isSyncing = true;
     const stopActivity = activityStore.start("Syncing accounts...");
     try {
-      const result = await runSync({ balancesOnly });
+      const result = await runSync({ balancesOnly, lookbackDays });
       const totalAccounts = result.results.reduce((sum, r) => sum + (r.accounts_synced || 0), 0);
       const totalTransactions = result.results.reduce((sum, r) => sum + (r.transaction_stats?.new || r.transactions_synced || 0), 0);
       const errors = result.results.filter((r) => r.error);
@@ -939,7 +939,7 @@
                 {isSyncing}
                 onCurrencyChange={handleCurrencyChange}
                 onAutoSyncChange={handleAutoSyncChange}
-                onSync={() => handleSync()}
+                onSync={(lookbackDays?: number) => handleSync(false, lookbackDays)}
                 onDeleteProfile={handleDeleteProfile}
                 {formatLastSync}
               />

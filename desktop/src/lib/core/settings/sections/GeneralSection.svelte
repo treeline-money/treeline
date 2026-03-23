@@ -18,7 +18,7 @@
     isSyncing: boolean;
     onCurrencyChange: (currency: string) => void;
     onAutoSyncChange: (enabled: boolean) => void;
-    onSync: () => void;
+    onSync: (lookbackDays?: number) => void;
     onDeleteProfile: (name: string) => void;
     formatLastSync: (dateStr: string | null) => string;
   }
@@ -36,6 +36,8 @@
     onDeleteProfile,
     formatLastSync,
   }: Props = $props();
+
+  let lookbackDays = $state<number | undefined>(undefined);
 </script>
 
 <section class="section">
@@ -77,7 +79,7 @@
 
     <button
       class="btn primary"
-      onclick={onSync}
+      onclick={() => onSync(lookbackDays)}
       disabled={isSyncing}
     >
       {#if isSyncing}
@@ -88,6 +90,27 @@
         Sync Now
       {/if}
     </button>
+
+    <div class="lookback-option">
+      <span class="lookback-label">Fetch older transactions:</span>
+      <div class="lookback-choices">
+        {#each [30, 60, 90] as days}
+          <button
+            class="lookback-chip"
+            class:active={lookbackDays === days}
+            disabled={isSyncing}
+            onclick={() => lookbackDays = lookbackDays === days ? undefined : days}
+          >{days} days</button>
+        {/each}
+      </div>
+      <span class="lookback-hint">
+        {#if lookbackDays}
+          Next sync will fetch the last {lookbackDays} days from today.
+        {:else}
+          By default, sync fetches recent transactions since your last sync.
+        {/if}
+      </span>
+    </div>
   </div>
 
   <div class="setting-group">
@@ -171,6 +194,55 @@
     background: var(--bg-secondary);
     color: var(--text-primary);
     padding: 8px;
+  }
+
+  /* Lookback option */
+  .lookback-option {
+    margin-top: var(--spacing-sm);
+  }
+
+  .lookback-label {
+    font-size: 12px;
+    color: var(--text-secondary);
+    display: block;
+    margin-bottom: var(--spacing-xs);
+  }
+
+  .lookback-choices {
+    display: flex;
+    gap: var(--spacing-xs);
+    margin-bottom: var(--spacing-xs);
+  }
+
+  .lookback-chip {
+    padding: 3px 10px;
+    font-size: 11px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: 4px;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .lookback-chip:hover:not(:disabled) {
+    border-color: var(--text-muted);
+  }
+
+  .lookback-chip.active {
+    background: var(--accent-primary);
+    border-color: var(--accent-primary);
+    color: white;
+  }
+
+  .lookback-chip:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .lookback-hint {
+    font-size: 11px;
+    color: var(--text-muted);
   }
 
   /* Import profiles */
