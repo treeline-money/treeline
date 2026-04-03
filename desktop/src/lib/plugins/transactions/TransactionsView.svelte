@@ -3714,9 +3714,10 @@
   }
 
   .row-amount {
-    width: 90px;
+    width: 110px;
     text-align: right;
     flex-shrink: 0;
+    white-space: nowrap;
   }
 
   .row-amount.positive {
