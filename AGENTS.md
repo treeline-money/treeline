@@ -235,6 +235,19 @@ cd desktop && npm run check
 cd desktop && npm run build
 ```
 
+### E2E Tests
+
+End-to-end tests use WebDriver (via `tauri-plugin-webdriver`) + Selenium + pytest. Tests seed a temp `TREELINE_DIR` with fixture data, launch the app, and verify pages render.
+
+```bash
+cd desktop/e2e
+uv sync                                    # Install deps (first time)
+TAURI_E2E_DEV=1 uv run pytest -v           # Run all e2e tests
+TAURI_E2E_DEV=1 uv run pytest test_smoke.py -v  # Smoke only
+```
+
+Screenshots are saved to `desktop/e2e/screenshots/` (auto-captured on failure).
+
 ## Principles
 
 - **Local First**: All data stays on user's computer

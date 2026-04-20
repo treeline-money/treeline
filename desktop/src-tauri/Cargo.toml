@@ -42,6 +42,13 @@ treeline-core = { path = "../../core" }
 # which uses unstable Rust let-chain syntax not available in stable Rust
 psm = "=0.1.28"
 
+[features]
+e2e-testing = ["dep:tauri-plugin-webdriver"]
+
+[dependencies.tauri-plugin-webdriver]
+version = "0.2"
+optional = true
+
 [dev-dependencies]
 tempfile = "3"
 

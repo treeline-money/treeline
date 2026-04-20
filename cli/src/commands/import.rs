@@ -28,6 +28,9 @@ pub fn run(
     number_format: &str,
     anchor_balance: Option<f64>,
     anchor_date: Option<&str>,
+    create_if_not_exists: bool,
+    account_type: Option<&str>,
+    currency: Option<&str>,
     profile: Option<&str>,
     save_profile: Option<&str>,
     dry_run: bool,
@@ -44,8 +47,22 @@ pub fn run(
     // Resolve file path — support stdin via "-"
     let file_path = resolve_file(file)?;
 
-    // Resolve account by UUID or name (via service layer)
-    let account_id = ctx.import_service.resolve_account(account)?;
+    // Resolve account by UUID or name, creating if --create-if-not-exists
+    let account_id = match ctx.import_service.resolve_account(account) {
+        Ok(id) => id,
+        Err(_) if create_if_not_exists => {
+            let id = ctx.import_service.create_account(account, account_type, currency)?;
+            if !json {
+                println!(
+                    "{} account '{}'",
+                    "Created".green(),
+                    account
+                );
+            }
+            id
+        }
+        Err(e) => return Err(e),
+    };
 
     // Load profile if specified
     let loaded_profile = if let Some(profile_name) = profile {

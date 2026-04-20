@@ -40,6 +40,7 @@
         class:active={tab.id === activeTabId}
         onclick={() => handleTabClick(tab.id)}
         onauxclick={(e) => handleMiddleClick(e, tab.id)}
+        data-testid="tab-{tab.viewId}"
       >
         <span class="tab-icon"><Icon name={getIconName(tab.icon)} size={14} /></span>
         <span class="tab-title">{tab.title}</span>

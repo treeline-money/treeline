@@ -82,6 +82,7 @@
                 class:active={activeViewId === item.viewId}
                 onclick={() => handleItemClick(item.viewId)}
                 title={isCollapsed ? item.label : undefined}
+                data-testid="sidebar-{item.viewId}"
               >
                 <span class="item-icon">
                   <Icon name={getIconName(item.icon)} size={16} />

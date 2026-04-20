@@ -10,7 +10,9 @@
     "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "tauri:dev:e2e": "tauri dev --features e2e-testing",
+    "tauri:build:e2e": "tauri build --features e2e-testing"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^6.2.1",

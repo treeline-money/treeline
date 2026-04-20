@@ -95,6 +95,15 @@ enum Commands {
         /// Save settings as a named profile after import
         #[arg(long)]
         save_profile: Option<String>,
+        /// Create the account if it doesn't exist
+        #[arg(long)]
+        create_if_not_exists: bool,
+        /// Account type (used with --create-if-not-exists, e.g. depository, credit)
+        #[arg(long)]
+        account_type: Option<String>,
+        /// Currency code (used with --create-if-not-exists, default: USD)
+        #[arg(long)]
+        currency: Option<String>,
         /// Preview without importing
         #[arg(long)]
         dry_run: bool,
@@ -308,6 +317,9 @@ fn run(cli: Cli) -> Result<()> {
             number_format,
             anchor_balance,
             anchor_date,
+            create_if_not_exists,
+            account_type,
+            currency,
             profile,
             save_profile,
             dry_run,
@@ -327,6 +339,9 @@ fn run(cli: Cli) -> Result<()> {
             &number_format,
             anchor_balance,
             anchor_date.as_deref(),
+            create_if_not_exists,
+            account_type.as_deref(),
+            currency.as_deref(),
             profile.as_deref(),
             save_profile.as_deref(),
             dry_run,

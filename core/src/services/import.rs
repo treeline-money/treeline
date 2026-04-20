@@ -697,6 +697,19 @@ impl ImportService {
         );
     }
 
+    /// Create a new account with the given name and return its UUID string.
+    pub fn create_account(&self, name: &str, account_type: Option<&str>, currency: Option<&str>) -> Result<String> {
+        let mut account = Account::new(Uuid::new_v4(), name);
+        if let Some(t) = account_type {
+            account.account_type = Some(t.to_string());
+        }
+        if let Some(c) = currency {
+            account.currency = c.to_string();
+        }
+        self.repository.upsert_account(&account)?;
+        Ok(account.id.to_string())
+    }
+
     /// Get a display name for an account UUID.
     ///
     /// Returns "Name (Nickname)" if a nickname exists, otherwise just "Name".

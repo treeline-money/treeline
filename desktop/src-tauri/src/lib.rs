@@ -3214,7 +3214,7 @@ pub fn run() {
         }
     }
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .manage(EncryptionState::default())
         .manage(DevtoolsState::default())
         .manage(AppUpdateState::default())
@@ -3405,7 +3405,13 @@ pub fn run() {
             log_action,
             log_error,
             get_logs_path
-        ])
+        ]);
+
+        // WebDriver plugin for e2e testing (only included with --features e2e-testing)
+        #[cfg(feature = "e2e-testing")]
+        let builder = builder.plugin(tauri_plugin_webdriver::init());
+
+        builder
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
