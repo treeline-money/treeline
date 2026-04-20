@@ -403,6 +403,16 @@ fn use_staging_updates() -> bool {
         .unwrap_or(false)
 }
 
+/// Returns true if update checks (app + plugin) should be skipped.
+///
+/// Set `TREELINE_DISABLE_UPDATE_CHECKS=1` to opt out — useful during local
+/// development and e2e tests to avoid hitting GitHub on every app launch.
+fn update_checks_disabled() -> bool {
+    std::env::var("TREELINE_DISABLE_UPDATE_CHECKS")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
 /// Response from check_for_app_update command
 #[derive(Serialize)]
 struct AppUpdateInfo {
@@ -421,6 +431,11 @@ async fn check_for_app_update(
     app: AppHandle,
     update_state: State<'_, AppUpdateState>,
 ) -> Result<Option<AppUpdateInfo>, String> {
+    if update_checks_disabled() {
+        *update_state.update.lock().await = None;
+        return Ok(None);
+    }
+
     let mut builder = app.updater_builder();
 
     // Override endpoint if staging updates are enabled
@@ -1148,6 +1163,18 @@ async fn upgrade_plugin(plugin_id: String) -> Result<String, String> {
 /// Check if a plugin has an update available using treeline-core
 #[tauri::command]
 async fn check_plugin_update(plugin_id: String) -> Result<String, String> {
+    if update_checks_disabled() {
+        return serde_json::to_string(&serde_json::json!({
+            "plugin_id": plugin_id,
+            "has_update": false,
+            "installed_version": "",
+            "latest_version": null,
+            "source": null,
+            "reason": "update checks disabled via TREELINE_DISABLE_UPDATE_CHECKS"
+        }))
+        .map_err(|e| e.to_string());
+    }
+
     tauri::async_runtime::spawn_blocking(move || {
         let treeline_dir = get_treeline_dir()?;
         let plugin_service = PluginService::new(&treeline_dir);

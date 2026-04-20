@@ -18,12 +18,15 @@ E2E_DIR = Path(__file__).resolve().parent
 SEEDS_DIR = E2E_DIR / "seeds"
 SCREENSHOT_DIR = E2E_DIR / "screenshots"
 
-PLUGIN_URLS = {
-    "budget": "https://github.com/treeline-money/plugin-budget",
-    "goals": "https://github.com/treeline-money/plugin-goals",
-    "subscriptions": "https://github.com/treeline-money/plugin-subscriptions",
-    "cashflow": "https://github.com/treeline-money/plugin-cashflow",
-    "emergency-fund": "https://github.com/treeline-money/plugin-emergency-fund",
+# Plugin sibling checkouts live next to the treeline repo
+PLUGINS_PARENT_DIR = DESKTOP_DIR.parent.parent
+
+PLUGIN_DIRS = {
+    "budget": PLUGINS_PARENT_DIR / "plugin-budget",
+    "goals": PLUGINS_PARENT_DIR / "plugin-goals",
+    "subscriptions": PLUGINS_PARENT_DIR / "plugin-subscriptions",
+    "cashflow": PLUGINS_PARENT_DIR / "plugin-cashflow",
+    "emergency-fund": PLUGINS_PARENT_DIR / "plugin-emergency-fund",
 }
 
 # Find the tl CLI binary
@@ -50,7 +53,11 @@ def wait_for_webdriver(timeout=60):
 
 def run_tl(treeline_dir: str, *args):
     """Run a tl CLI command against the given treeline directory."""
-    env = {**os.environ, "TREELINE_DIR": treeline_dir}
+    env = {
+        **os.environ,
+        "TREELINE_DIR": treeline_dir,
+        "TREELINE_DISABLE_UPDATE_CHECKS": "1",
+    }
     result = subprocess.run(
         [TL_BINARY, *args],
         env=env,
@@ -105,16 +112,32 @@ def seed_from_config(treeline_dir: str, seed: dict):
         run_tl(treeline_dir, "query", "--allow-writes", sql)
         print(f"  Ran {sql_file}")
 
-    # 3. Install plugins
+    # 3. Install plugins from sibling checkouts (no GitHub downloads)
     for plugin_name in seed.get("plugins", []):
-        url = PLUGIN_URLS.get(plugin_name)
-        if not url:
-            raise ValueError(f"Unknown plugin: {plugin_name}")
-        try:
-            run_tl(treeline_dir, "plugin", "install", url)
-            print(f"  Installed {plugin_name}")
-        except RuntimeError as e:
-            print(f"  Warning: Failed to install {plugin_name}: {e}")
+        plugin_dir = PLUGIN_DIRS.get(plugin_name)
+        if plugin_dir is None:
+            raise ValueError(
+                f"Unknown plugin: {plugin_name}. Add it to PLUGIN_DIRS in conftest.py."
+            )
+        if not plugin_dir.exists():
+            raise RuntimeError(
+                f"Plugin checkout missing: {plugin_dir}\n"
+                f"E2E tests install plugins from sibling checkouts. "
+                f"Clone treeline-money/plugin-{plugin_name} alongside the treeline repo."
+            )
+
+        if not (plugin_dir / "node_modules").exists():
+            print(f"  Installing deps for {plugin_name}...")
+            subprocess.run(
+                ["npm", "install"], cwd=plugin_dir, check=True, capture_output=True
+            )
+
+        print(f"  Building {plugin_name}...")
+        subprocess.run(
+            ["npm", "run", "build"], cwd=plugin_dir, check=True, capture_output=True
+        )
+        run_tl(treeline_dir, "plugin", "install", str(plugin_dir))
+        print(f"  Installed {plugin_name} from {plugin_dir.name}")
 
 
 def get_seed_config(session):
@@ -149,7 +172,11 @@ def app_process(treeline_dir):
     binary = os.environ.get("TAURI_E2E_BINARY")
     use_dev = os.environ.get("TAURI_E2E_DEV") == "1"
 
-    env = {**os.environ, "TREELINE_DIR": treeline_dir}
+    env = {
+        **os.environ,
+        "TREELINE_DIR": treeline_dir,
+        "TREELINE_DISABLE_UPDATE_CHECKS": "1",
+    }
 
     if not binary and not use_dev:
         # Check if WebDriver is already running (app launched externally)
