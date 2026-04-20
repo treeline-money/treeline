@@ -88,10 +88,11 @@ jobs:
       - name: Run tests
         run: cargo test
 
-  # Desktop tests (needs GUI deps + frontend build)
+  # Desktop tests + e2e WebDriver suite (single job to avoid duplicate Tauri compile)
   test-desktop:
-    name: Test Desktop
+    name: Test Desktop + E2E
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Free disk space
@@ -101,67 +102,8 @@ jobs:
 
       - uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: 'npm'
-          cache-dependency-path: |
-            sdk/package-lock.json
-            desktop/package-lock.json
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Get cache key
-        id: cache-key
-        run: echo "week=$(date -u +%Y-%W)" >> $GITHUB_OUTPUT
-
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: "desktop/src-tauri -> target"
-          prefix-key: "ci-desktop-${{ steps.cache-key.outputs.week }}"
-
-      - name: Install Linux dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libdbus-1-dev
-
-      - name: Build SDK (local dependency)
-        working-directory: sdk
-        run: npm ci && npm run build
-
-      - name: Install UI dependencies
-        working-directory: desktop
-        run: npm ci
-
-      - name: Type check (frontend)
-        working-directory: desktop
-        run: npm run check
-
-      - name: Build frontend
-        working-directory: desktop
-        run: npm run build
-
-      - name: Run tests
-        working-directory: desktop/src-tauri
-        run: cargo test
-
-  # E2E tests against the running desktop app via WebDriver
-  test-e2e:
-    name: E2E Tests (Linux)
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-
-    steps:
-      # treeline lives at $GITHUB_WORKSPACE/treeline/ so conftest.py can find
-      # plugin sibling checkouts at $GITHUB_WORKSPACE/plugin-*
-      - name: Checkout treeline
-        uses: actions/checkout@v4
-        with:
-          path: treeline
-
+      # Plugin sibling checkouts for the e2e seed (TAURI_E2E_PLUGINS_DIR points
+      # conftest.py at $GITHUB_WORKSPACE so it finds plugin-* alongside treeline)
       - name: Checkout plugin-budget
         uses: actions/checkout@v4
         with:
@@ -188,15 +130,14 @@ jobs:
           repository: treeline-money/plugin-emergency-fund
           path: plugin-emergency-fund
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            libdbus-1-dev \
-            xvfb
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: |
+            sdk/package-lock.json
+            desktop/package-lock.json
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -208,43 +149,55 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: treeline -> target
-          prefix-key: "ci-e2e-${{ steps.cache-key.outputs.week }}"
+          workspaces: "desktop/src-tauri -> target"
+          prefix-key: "ci-desktop-${{ steps.cache-key.outputs.week }}"
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: 'npm'
-          cache-dependency-path: |
-            treeline/sdk/package-lock.json
-            treeline/desktop/package-lock.json
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libdbus-1-dev xvfb
 
       - name: Setup uv
         uses: astral-sh/setup-uv@v3
         with:
           enable-cache: true
 
-      - name: Build SDK (local dep for desktop)
-        working-directory: treeline/sdk
+      - name: Build SDK (local dependency)
+        working-directory: sdk
         run: npm ci && npm run build
 
-      - name: Install desktop frontend deps
-        working-directory: treeline/desktop
+      - name: Install UI dependencies
+        working-directory: desktop
         run: npm ci
 
-      - name: Build CLI
-        working-directory: treeline
+      - name: Type check (frontend)
+        working-directory: desktop
+        run: npm run check
+
+      - name: Build frontend
+        working-directory: desktop
+        run: npm run build
+
+      - name: Run tests
+        working-directory: desktop/src-tauri
+        run: cargo test
+
+      - name: Build CLI (used by e2e seed)
         run: cargo build --bin tl
 
+      - name: Build Tauri app for e2e (debug + e2e-testing feature, no bundle)
+        working-directory: desktop
+        run: npx tauri build --debug --no-bundle --features e2e-testing
+
       - name: Install e2e Python deps
-        working-directory: treeline/desktop/e2e
+        working-directory: desktop/e2e
         run: uv sync
 
       - name: Run e2e tests
-        working-directory: treeline/desktop/e2e
+        working-directory: desktop/e2e
         env:
-          TAURI_E2E_DEV: "1"
+          TAURI_E2E_BINARY: ${{ github.workspace }}/desktop/src-tauri/target/debug/treeline
+          TAURI_E2E_PLUGINS_DIR: ${{ github.workspace }}
         run: xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" uv run pytest -v
 
       - name: Upload screenshots on failure
@@ -252,14 +205,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: e2e-screenshots-linux
-          path: treeline/desktop/e2e/screenshots/
+          path: desktop/e2e/screenshots/
           if-no-files-found: ignore
 
   # Build desktop app (only on main pushes, not PRs)
   build-desktop:
     name: Build Desktop (${{ matrix.os }})
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [version, test-core-cli, test-desktop, test-e2e]
+    needs: [version, test-core-cli, test-desktop]
     strategy:
       fail-fast: false
       matrix:
@@ -502,7 +455,7 @@ jobs:
   build-cli:
     name: Build CLI (${{ matrix.os }})
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [version, test-core-cli, test-desktop, test-e2e]
+    needs: [version, test-core-cli, test-desktop]
     strategy:
       fail-fast: false
       matrix:
@@ -717,7 +670,7 @@ jobs:
   pack-sdk:
     name: Pack SDK
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [version, test-core-cli, test-desktop, test-e2e]
+    needs: [version, test-core-cli, test-desktop]
     runs-on: ubuntu-latest
 
     steps:

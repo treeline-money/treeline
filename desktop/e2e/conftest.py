@@ -18,8 +18,11 @@ E2E_DIR = Path(__file__).resolve().parent
 SEEDS_DIR = E2E_DIR / "seeds"
 SCREENSHOT_DIR = E2E_DIR / "screenshots"
 
-# Plugin sibling checkouts live next to the treeline repo
-PLUGINS_PARENT_DIR = DESKTOP_DIR.parent.parent
+# Plugin sibling checkouts live next to the treeline repo by default;
+# override via TAURI_E2E_PLUGINS_DIR (e.g. in CI where layout differs).
+PLUGINS_PARENT_DIR = Path(
+    os.environ.get("TAURI_E2E_PLUGINS_DIR", str(DESKTOP_DIR.parent.parent))
+)
 
 PLUGIN_DIRS = {
     "budget": PLUGINS_PARENT_DIR / "plugin-budget",
