@@ -1,0 +1,114 @@
+name: E2E Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e-linux:
+    name: E2E Tests (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout treeline
+        uses: actions/checkout@v4
+        with:
+          path: treeline
+
+      # Sibling plugin checkouts — conftest.py expects them at PLUGINS_PARENT_DIR
+      # (the dir containing treeline/), so they live at $GITHUB_WORKSPACE/plugin-*
+      - name: Checkout plugin-budget
+        uses: actions/checkout@v4
+        with:
+          repository: treeline-money/plugin-budget
+          path: plugin-budget
+      - name: Checkout plugin-goals
+        uses: actions/checkout@v4
+        with:
+          repository: treeline-money/plugin-goals
+          path: plugin-goals
+      - name: Checkout plugin-subscriptions
+        uses: actions/checkout@v4
+        with:
+          repository: treeline-money/plugin-subscriptions
+          path: plugin-subscriptions
+      - name: Checkout plugin-cashflow
+        uses: actions/checkout@v4
+        with:
+          repository: treeline-money/plugin-cashflow
+          path: plugin-cashflow
+      - name: Checkout plugin-emergency-fund
+        uses: actions/checkout@v4
+        with:
+          repository: treeline-money/plugin-emergency-fund
+          path: plugin-emergency-fund
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            libdbus-1-dev \
+            xvfb
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: treeline -> target
+          shared-key: e2e
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Build SDK (local dep for desktop)
+        working-directory: treeline/sdk
+        run: npm ci && npm run build
+
+      - name: Install desktop frontend deps
+        working-directory: treeline/desktop
+        run: npm ci
+
+      - name: Build CLI
+        working-directory: treeline
+        run: cargo build --bin tl
+
+      - name: Install e2e Python deps
+        working-directory: treeline/desktop/e2e
+        run: uv sync
+
+      - name: Run e2e tests
+        working-directory: treeline/desktop/e2e
+        env:
+          TAURI_E2E_DEV: "1"
+        run: xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" uv run pytest -v
+
+      - name: Upload screenshots on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-screenshots-linux
+          path: treeline/desktop/e2e/screenshots/
+          if-no-files-found: ignore
