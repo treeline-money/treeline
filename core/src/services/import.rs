@@ -15,7 +15,7 @@ use uuid::Uuid;
 use crate::adapters::duckdb::DuckDbRepository;
 use crate::config::{ColumnMappings, Config, ImportOptions as ConfigImportOptions, ImportProfile};
 use crate::domain::{Account, BalanceSnapshot, Transaction};
-use crate::services::TagService;
+use crate::services::{CompactService, TagService};
 
 /// Number format for parsing amounts
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -567,6 +567,12 @@ impl ImportService {
                 .repository
                 .bulk_insert_balance_snapshots(&snapshots_to_insert)?;
             balance_snapshots_created = count as i64;
+        }
+
+        // Best-effort auto-compact after a real import. Failures here shouldn't
+        // bubble up and fail the import itself.
+        if let Err(e) = CompactService::new(self.repository.clone()).compact() {
+            eprintln!("Warning: auto-compact after import failed: {}", e);
         }
 
         Ok(ImportResult {

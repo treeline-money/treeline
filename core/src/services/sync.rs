@@ -14,7 +14,7 @@ use crate::adapters::duckdb::DuckDbRepository;
 use crate::adapters::lunchflow::LunchflowProvider;
 use crate::adapters::simplefin::SimpleFINProvider;
 use crate::ports::{DataAggregationProvider, IntegrationProvider};
-use crate::services::TagService;
+use crate::services::{CompactService, TagService};
 
 /// Sync service for account and transaction synchronization
 pub struct SyncService {
@@ -86,6 +86,14 @@ impl SyncService {
         for int in integrations_to_sync {
             let result = self.sync_integration(&int.name, &int.settings, dry_run, balances_only, lookback_days)?;
             results.push(result);
+        }
+
+        // Best-effort auto-compact after a real sync. Failures here shouldn't
+        // bubble up and fail the sync itself.
+        if !dry_run {
+            if let Err(e) = CompactService::new(self.repository.clone()).compact() {
+                eprintln!("Warning: auto-compact after sync failed: {}", e);
+            }
         }
 
         Ok(SyncResult {
