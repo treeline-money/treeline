@@ -23,10 +23,16 @@ NOTE_TEXT = "Tried a new burger spot\nOrdered the special"
 
 
 def test_notes_round_trip(driver):
+    # CI runners (especially headed WebKit on Linux) can be noticeably slower
+    # than local dev. This test is collected before test_smoke alphabetically,
+    # so we can't rely on test_smoke's warmup — wait for the sidebar ourselves.
+    WebDriverWait(driver, 30).until(
+        EC.presence_of_element_located((By.CSS_SELECTOR, "aside.sidebar"))
+    )
     dismiss_modals(driver)
     navigate_to(driver, "transactions")
 
-    wait = WebDriverWait(driver, 10)
+    wait = WebDriverWait(driver, 20)
     row = wait.until(
         EC.element_to_be_clickable((By.CSS_SELECTOR, '[role="option"]'))
     )
@@ -42,8 +48,8 @@ def test_notes_round_trip(driver):
     notes_field.clear()
     notes_field.send_keys(NOTE_TEXT)
 
-    save_btn = driver.find_element(
-        By.XPATH, "//button[contains(@class,'btn') and contains(@class,'primary') and normalize-space()='Save']"
+    save_btn = wait.until(
+        EC.element_to_be_clickable((By.CSS_SELECTOR, ".modal-actions .btn.primary"))
     )
     save_btn.click()
 
