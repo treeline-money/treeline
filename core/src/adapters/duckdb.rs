@@ -526,7 +526,7 @@ impl DuckDbRepository {
             // directly as String. Without the CAST, row.get() silently fails and returns "[]".
             // See parse_duckdb_array() for the parsing logic.
             let mut stmt = conn.prepare(
-                "SELECT transaction_id, account_id, amount, description, transaction_date::VARCHAR,
+                "SELECT transaction_id, account_id, amount, description, notes, transaction_date::VARCHAR,
                         posted_date::VARCHAR, CAST(tags AS VARCHAR) as tags, external_ids, deleted_at, parent_transaction_id,
                         created_at, updated_at, csv_fingerprint, csv_batch_id, is_manual, tags_auto_applied,
                         sf_id, sf_posted, sf_amount, sf_description, sf_transacted_at, sf_pending, sf_extra,
@@ -549,7 +549,7 @@ impl DuckDbRepository {
         self.with_connection(|conn| {
             // CAST(tags AS VARCHAR) required - see get_transactions() for explanation
             let mut stmt = conn.prepare(
-                "SELECT transaction_id, account_id, amount, description, transaction_date::VARCHAR,
+                "SELECT transaction_id, account_id, amount, description, notes, transaction_date::VARCHAR,
                         posted_date::VARCHAR, CAST(tags AS VARCHAR) as tags, external_ids, deleted_at, parent_transaction_id,
                         created_at, updated_at, csv_fingerprint, csv_batch_id, is_manual, tags_auto_applied,
                         sf_id, sf_posted, sf_amount, sf_description, sf_transacted_at, sf_pending, sf_extra,
@@ -621,28 +621,28 @@ impl DuckDbRepository {
 
     fn row_to_transaction(row: &duckdb::Row) -> std::result::Result<Transaction, duckdb::Error> {
         // Column indices from SELECT:
-        // 0: transaction_id, 1: account_id, 2: amount, 3: description, 4: transaction_date,
-        // 5: posted_date, 6: tags, 7: external_ids, 8: deleted_at, 9: parent_transaction_id,
-        // 10: created_at, 11: updated_at, 12: csv_fingerprint, 13: csv_batch_id, 14: is_manual, 15: tags_auto_applied,
-        // 16: sf_id, 17: sf_posted, 18: sf_amount, 19: sf_description, 20: sf_transacted_at, 21: sf_pending, 22: sf_extra,
-        // 23: lf_id, 24: lf_account_id, 25: lf_amount, 26: lf_currency, 27: lf_date, 28: lf_merchant, 29: lf_description, 30: lf_is_pending
+        // 0: transaction_id, 1: account_id, 2: amount, 3: description, 4: notes, 5: transaction_date,
+        // 6: posted_date, 7: tags, 8: external_ids, 9: deleted_at, 10: parent_transaction_id,
+        // 11: created_at, 12: updated_at, 13: csv_fingerprint, 14: csv_batch_id, 15: is_manual, 16: tags_auto_applied,
+        // 17: sf_id, 18: sf_posted, 19: sf_amount, 20: sf_description, 21: sf_transacted_at, 22: sf_pending, 23: sf_extra,
+        // 24: lf_id, 25: lf_account_id, 26: lf_amount, 27: lf_currency, 28: lf_date, 29: lf_merchant, 30: lf_description, 31: lf_is_pending
         let id_str: String = row.get(0)?;
         let account_id_str: String = row.get(1)?;
         let amount: f64 = row.get(2).unwrap_or(0.0);
-        let tx_date_str: String = row.get(4).unwrap_or_default();
-        let posted_date_str: String = row.get(5).unwrap_or_default();
+        let tx_date_str: String = row.get(5).unwrap_or_default();
+        let posted_date_str: String = row.get(6).unwrap_or_default();
 
         // Tags are stored as VARCHAR[] - DuckDB Rust binding returns them as a string
         // Parse the DuckDB array format: [tag1, tag2] or ['tag1', 'tag2']
-        let tags_str: String = row.get(6).unwrap_or_else(|_| "[]".to_string());
+        let tags_str: String = row.get(7).unwrap_or_else(|_| "[]".to_string());
         let tags = parse_duckdb_array(&tags_str);
 
-        // Note: column 7 (external_ids) is in the query but not used - kept for backwards compat
-        let parent_id_str: Option<String> = row.get(9).ok();
-        let created_str: String = row.get(10).unwrap_or_default();
-        let updated_str: String = row.get(11).unwrap_or_default();
-        let sf_extra_json: Option<String> = row.get(22).ok();
-        let lf_date_str: Option<String> = row.get(27).ok();
+        // Note: column 8 (external_ids) is in the query but not used - kept for backwards compat
+        let parent_id_str: Option<String> = row.get(10).ok();
+        let created_str: String = row.get(11).unwrap_or_default();
+        let updated_str: String = row.get(12).unwrap_or_default();
+        let sf_extra_json: Option<String> = row.get(23).ok();
+        let lf_date_str: Option<String> = row.get(28).ok();
 
         // Parse UUIDs - if these fail, skip the row rather than creating new UUIDs
         let id = Uuid::parse_str(&id_str).map_err(|e| {
@@ -662,6 +662,7 @@ impl DuckDbRepository {
             account_id,
             amount,
             description: row.get(3).ok(),
+            notes: row.get(4).ok(),
             transaction_date: parse_date(&tx_date_str),
             posted_date: parse_date(&posted_date_str),
             tags,
@@ -669,42 +670,42 @@ impl DuckDbRepository {
             parent_transaction_id: parent_id_str.and_then(|s| Uuid::parse_str(&s).ok()),
             created_at: parse_timestamp(&created_str),
             updated_at: parse_timestamp(&updated_str),
-            // CSV Import tracking (columns 12-13)
-            csv_fingerprint: row.get(12).ok(),
-            csv_batch_id: row.get(13).ok(),
-            // Manual flag (column 14)
+            // CSV Import tracking (columns 13-14)
+            csv_fingerprint: row.get(13).ok(),
+            csv_batch_id: row.get(14).ok(),
+            // Manual flag (column 15)
             is_manual: row
-                .get::<_, Option<bool>>(14)
-                .ok()
-                .flatten()
-                .unwrap_or(false),
-            // Auto-tag tracking (column 15)
-            tags_auto_applied: row
                 .get::<_, Option<bool>>(15)
                 .ok()
                 .flatten()
                 .unwrap_or(false),
-            // SimpleFIN fields (columns 16-22)
-            sf_id: row.get(16).ok(),
-            sf_posted: row.get(17).ok(),
-            sf_amount: row.get(18).ok(),
-            sf_description: row.get(19).ok(),
-            sf_transacted_at: row.get(20).ok(),
-            sf_pending: row.get(21).ok(),
+            // Auto-tag tracking (column 16)
+            tags_auto_applied: row
+                .get::<_, Option<bool>>(16)
+                .ok()
+                .flatten()
+                .unwrap_or(false),
+            // SimpleFIN fields (columns 17-23)
+            sf_id: row.get(17).ok(),
+            sf_posted: row.get(18).ok(),
+            sf_amount: row.get(19).ok(),
+            sf_description: row.get(20).ok(),
+            sf_transacted_at: row.get(21).ok(),
+            sf_pending: row.get(22).ok(),
             sf_extra: sf_extra_json.and_then(|s| serde_json::from_str(&s).ok()),
-            // Lunchflow fields (columns 23-30)
-            lf_id: row.get(23).ok(),
-            lf_account_id: row.get(24).ok(),
+            // Lunchflow fields (columns 24-31)
+            lf_id: row.get(24).ok(),
+            lf_account_id: row.get(25).ok(),
             lf_amount: row
-                .get::<_, Option<f64>>(25)
+                .get::<_, Option<f64>>(26)
                 .ok()
                 .flatten()
                 .map(|f| Decimal::try_from(f).unwrap_or_default()),
-            lf_currency: row.get(26).ok(),
+            lf_currency: row.get(27).ok(),
             lf_date: lf_date_str.map(|s| parse_date(&s)),
-            lf_merchant: row.get(28).ok(),
-            lf_description: row.get(29).ok(),
-            lf_is_pending: row.get(30).ok(),
+            lf_merchant: row.get(29).ok(),
+            lf_description: row.get(30).ok(),
+            lf_is_pending: row.get(31).ok(),
         })
     }
 
@@ -719,17 +720,18 @@ impl DuckDbRepository {
 
             // Use raw SQL with array literal since DuckDB Rust binding doesn't support array params well
             let sql = format!(
-                "INSERT INTO sys_transactions (transaction_id, account_id, amount, description,
+                "INSERT INTO sys_transactions (transaction_id, account_id, amount, description, notes,
                                                transaction_date, posted_date, tags, external_ids,
                                                parent_transaction_id, created_at, updated_at,
                                                csv_fingerprint, csv_batch_id, is_manual, tags_auto_applied,
                                                sf_id, sf_posted, sf_amount, sf_description, sf_transacted_at, sf_pending, sf_extra,
                                                lf_id, lf_account_id, lf_amount, lf_currency, lf_date, lf_merchant, lf_description, lf_is_pending)
-                 VALUES (?, ?, ?, ?, ?, ?, {}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, {}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                  ON CONFLICT (transaction_id) DO UPDATE SET
                     account_id = EXCLUDED.account_id,
                     amount = EXCLUDED.amount,
                     description = EXCLUDED.description,
+                    notes = COALESCE(EXCLUDED.notes, sys_transactions.notes),
                     transaction_date = EXCLUDED.transaction_date,
                     posted_date = EXCLUDED.posted_date,
                     tags = EXCLUDED.tags,
@@ -765,6 +767,7 @@ impl DuckDbRepository {
                     tx.account_id.to_string(),
                     tx.amount.to_string().parse::<f64>().unwrap_or(0.0),
                     tx.description,
+                    tx.notes,
                     tx.transaction_date.to_string(),
                     tx.posted_date.to_string(),
                     external_ids,
@@ -834,13 +837,13 @@ impl DuckDbRepository {
 
             // Use INSERT ... ON CONFLICT DO NOTHING to skip existing transactions
             let sql = format!(
-                "INSERT INTO sys_transactions (transaction_id, account_id, amount, description,
+                "INSERT INTO sys_transactions (transaction_id, account_id, amount, description, notes,
                                                transaction_date, posted_date, tags, external_ids,
                                                parent_transaction_id, created_at, updated_at,
                                                csv_fingerprint, csv_batch_id, is_manual, tags_auto_applied,
                                                sf_id, sf_posted, sf_amount, sf_description, sf_transacted_at, sf_pending, sf_extra,
                                                lf_id, lf_account_id, lf_amount, lf_currency, lf_date, lf_merchant, lf_description, lf_is_pending)
-                 VALUES (?, ?, ?, ?, ?, ?, {}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, {}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                  ON CONFLICT (transaction_id) DO NOTHING",
                 tags_literal
             );
@@ -852,6 +855,7 @@ impl DuckDbRepository {
                     tx.account_id.to_string(),
                     tx.amount.to_string().parse::<f64>().unwrap_or(0.0),
                     tx.description,
+                    tx.notes,
                     tx.transaction_date.to_string(),
                     tx.posted_date.to_string(),
                     external_ids,
@@ -1152,13 +1156,13 @@ impl DuckDbRepository {
 
                 // Use INSERT ... ON CONFLICT DO NOTHING to handle any race conditions
                 let sql = format!(
-                    "INSERT INTO sys_transactions (transaction_id, account_id, amount, description,
+                    "INSERT INTO sys_transactions (transaction_id, account_id, amount, description, notes,
                                                    transaction_date, posted_date, tags, external_ids,
                                                    parent_transaction_id, created_at, updated_at,
                                                    csv_fingerprint, csv_batch_id, is_manual, tags_auto_applied,
                                                    sf_id, sf_posted, sf_amount, sf_description, sf_transacted_at, sf_pending, sf_extra,
                                                    lf_id, lf_account_id, lf_amount, lf_currency, lf_date, lf_merchant, lf_description, lf_is_pending)
-                     VALUES (?, ?, ?, ?, ?, ?, {}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, {}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                      ON CONFLICT (transaction_id) DO NOTHING",
                     tags_literal
                 );
@@ -1170,6 +1174,7 @@ impl DuckDbRepository {
                         tx.account_id.to_string(),
                         tx.amount.to_string().parse::<f64>().unwrap_or(0.0),
                         tx.description,
+                        tx.notes,
                         tx.transaction_date.to_string(),
                         tx.posted_date.to_string(),
                         external_ids,
@@ -1253,7 +1258,7 @@ impl DuckDbRepository {
         self.with_connection(|conn| {
             // CAST(tags AS VARCHAR) required - see get_transactions() for explanation
             let mut stmt = conn.prepare(
-                "SELECT transaction_id, account_id, amount, description, transaction_date::VARCHAR,
+                "SELECT transaction_id, account_id, amount, description, notes, transaction_date::VARCHAR,
                         posted_date::VARCHAR, CAST(tags AS VARCHAR) as tags, external_ids, deleted_at, parent_transaction_id,
                         created_at, updated_at, csv_fingerprint, csv_batch_id, is_manual, tags_auto_applied,
                         sf_id, sf_posted, sf_amount, sf_description, sf_transacted_at, sf_pending, sf_extra,

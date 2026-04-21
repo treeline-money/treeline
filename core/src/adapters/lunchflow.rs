@@ -470,6 +470,7 @@ impl LunchflowClient {
             account_id: Uuid::nil(), // Will be set by sync service after mapping
             amount: lf_tx.amount,
             description, // Core field mapped from lf_description
+            notes: None,
             transaction_date: posted_date,
             posted_date,
             tags: vec![],

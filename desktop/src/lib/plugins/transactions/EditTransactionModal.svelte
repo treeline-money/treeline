@@ -15,6 +15,7 @@
       amount: number;
       date: string;
       tags: string[];
+      notes: string | null;
     }) => void;
   }
 
@@ -25,6 +26,7 @@
   let descInput = $state("");
   let amountInput = $state("");
   let dateInput = $state("");
+  let notesInput = $state("");
   let error = $state<string | null>(null);
   let inputEl: HTMLInputElement | null = null;
 
@@ -35,6 +37,7 @@
       descInput = transaction.description;
       amountInput = transaction.amount.toString();
       dateInput = transaction.transaction_date;
+      notesInput = transaction.notes ?? "";
       error = null;
       // Focus the description input
       setTimeout(() => inputEl?.focus(), 10);
@@ -51,6 +54,7 @@
     const newDesc = descInput.trim();
     const newAmount = parseFloat(amountInput);
     const newDate = dateInput.trim();
+    const newNotes = notesInput.trim();
 
     // Validate amount
     if (isNaN(newAmount)) {
@@ -69,6 +73,7 @@
       amount: newAmount,
       date: newDate,
       tags: newTags,
+      notes: newNotes ? newNotes : null,
     });
   }
 
@@ -77,6 +82,9 @@
       e.preventDefault();
       onclose();
     } else if (e.key === "Enter" && !e.shiftKey) {
+      // Allow Enter to insert newlines in textareas (notes field)
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === "TEXTAREA") return;
       e.preventDefault();
       handleSave();
     }
@@ -156,6 +164,16 @@
         </div>
       {/if}
 
+      <div class="form-group">
+        <label for="modal-notes">Notes</label>
+        <textarea
+          id="modal-notes"
+          bind:value={notesInput}
+          placeholder="Optional notes (Enter for newline, ⌘↵ to save)"
+          rows="3"
+        ></textarea>
+      </div>
+
       <div class="account-info">
         <span class="account-label">Account:</span>
         <span class="account-value">
@@ -227,16 +245,25 @@
     font-weight: 500;
   }
 
-  .form-group input {
+  .form-group input,
+  .form-group textarea {
     padding: 8px 12px;
     background: var(--bg-primary);
     border: 1px solid var(--border-primary);
     border-radius: 4px;
     color: var(--text-primary);
     font-size: 13px;
+    font-family: inherit;
   }
 
-  .form-group input:focus {
+  .form-group textarea {
+    resize: vertical;
+    min-height: 60px;
+    line-height: 1.4;
+  }
+
+  .form-group input:focus,
+  .form-group textarea:focus {
     outline: none;
     border-color: var(--accent-primary);
   }

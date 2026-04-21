@@ -15,6 +15,8 @@ pub struct Transaction {
     pub account_id: Uuid,
     pub amount: Decimal,
     pub description: Option<String>,
+    /// Free-form user-editable annotation
+    pub notes: Option<String>,
     pub transaction_date: NaiveDate,
     pub posted_date: NaiveDate,
     /// Tags for categorization
@@ -94,6 +96,7 @@ impl Transaction {
             account_id,
             amount,
             description: None,
+            notes: None,
             transaction_date,
             posted_date: transaction_date,
             tags: Vec::new(),

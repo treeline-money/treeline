@@ -343,6 +343,7 @@ impl SimpleFINClient {
             account_id: Uuid::nil(), // Will be set by sync service after mapping
             amount,
             description: sf_tx.description.clone(), // Core field mapped from sf_description
+            notes: None,
             transaction_date: posted_date,
             posted_date,
             tags,

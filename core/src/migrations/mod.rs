@@ -74,4 +74,8 @@ pub const MIGRATIONS: &[(&str, &str)] = &[
         "015_recreate_dedup_indexes.sql",
         include_str!("015_recreate_dedup_indexes.sql"),
     ),
+    (
+        "016_add_transaction_notes.sql",
+        include_str!("016_add_transaction_notes.sql"),
+    ),
 ];

@@ -17,6 +17,8 @@ export interface Transaction {
   parent_transaction_id?: string | null;
   /** True if any tags on this transaction were applied by auto-tag rules */
   tags_auto_applied?: boolean;
+  /** Free-form user-editable annotation */
+  notes?: string | null;
 }
 
 export interface TagSuggestion {

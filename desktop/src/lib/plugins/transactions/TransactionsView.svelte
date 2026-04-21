@@ -480,7 +480,8 @@
         t.account_name,
         t.parent_transaction_id,
         a.nickname as account_nickname,
-        t.tags_auto_applied
+        t.tags_auto_applied,
+        t.notes
       FROM transactions t
       LEFT JOIN sys_accounts a ON t.account_id = a.account_id
     `;
@@ -523,6 +524,38 @@
     return { sql: query, params };
   }
 
+  let openNotesId = $state<string | null>(null);
+
+  function toggleNotesPopup(transactionId: string) {
+    openNotesId = openNotesId === transactionId ? null : transactionId;
+  }
+
+  $effect(() => {
+    if (openNotesId === null) return;
+
+    // Clicks inside the popup itself must not close it — users need to be able
+    // to select/copy text within it.
+    const onDocClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target?.closest(".notes-popup")) return;
+      openNotesId = null;
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") openNotesId = null;
+    };
+    document.addEventListener("click", onDocClick);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("click", onDocClick);
+      document.removeEventListener("keydown", onKey);
+    };
+  });
+
+  function truncateNotes(notes: string, max: number): string {
+    const trimmed = notes.trim();
+    return trimmed.length > max ? `${trimmed.slice(0, max).trimEnd()}…` : trimmed;
+  }
+
   function parseRows(rows: unknown[][]): Transaction[] {
     return rows.map(row => ({
       transaction_id: row[0] as string,
@@ -535,6 +568,7 @@
       parent_transaction_id: row[7] as string | null,
       account_nickname: row[8] as string | null,
       tags_auto_applied: row[9] as boolean | null ?? false,
+      notes: (row[10] as string | null) ?? null,
     }));
   }
 
@@ -1616,6 +1650,7 @@
     amount: number;
     date: string;
     tags: string[];
+    notes: string | null;
   }) {
     if (!editingTransaction) return;
 
@@ -1627,7 +1662,8 @@
         tags: data.tags,
         description: data.description,
         amount: data.amount,
-        transaction_date: data.date
+        transaction_date: data.date,
+        notes: data.notes,
       };
       transactions = [...transactions];
 
@@ -1649,10 +1685,11 @@
         `UPDATE sys_transactions SET
           tags = ${tagListSql},
           description = ?,
+          notes = ?,
           amount = ?,
           transaction_date = ?
         WHERE transaction_id = ?`,
-        [...txn.tags, txn.description, txn.amount, txn.transaction_date, txn.transaction_id],
+        [...txn.tags, txn.description, txn.notes ?? null, txn.amount, txn.transaction_date, txn.transaction_id],
         { readonly: false }
       );
 
@@ -2050,6 +2087,9 @@
   }
 
   let currentTxn = $derived(transactions[cursorIndex]);
+  let currentNotesPreview = $derived(
+    currentTxn?.notes ? truncateNotes(currentTxn.notes, 200) : null
+  );
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
@@ -2311,12 +2351,30 @@
             <div class="row-account" role="gridcell" tabindex="-1">
               {txn.account_nickname || txn.account_name || ''}
             </div>
-            <div class="row-desc" role="gridcell" tabindex="-1">
+            <div class="row-desc" class:has-notes={!!txn.notes} role="gridcell" tabindex="-1">
               {#if txn.parent_transaction_id}
                 <span class="split-badge" title="Part of split">⑂</span>
               {/if}
               <span class="desc-text">{txn.description}</span>
               <CopyButton value={txn.description} class="copy-btn-desc" />
+              {#if txn.notes}
+                <span class="notes-anchor">
+                  <button
+                    class="notes-indicator"
+                    class:open={openNotesId === txn.transaction_id}
+                    onclick={(e) => { e.stopPropagation(); toggleNotesPopup(txn.transaction_id); }}
+                    aria-label="Show notes"
+                    aria-expanded={openNotesId === txn.transaction_id}
+                  >
+                    <Icon name="file-text" size={12} />
+                  </button>
+                  {#if openNotesId === txn.transaction_id}
+                    <div class="notes-popup" role="dialog" aria-label="Transaction notes">
+                      {txn.notes}
+                    </div>
+                  {/if}
+                </span>
+              {/if}
             </div>
             <div
               class="row-amount"
@@ -2583,6 +2641,12 @@
                 <span class="txn-detail-label">Description</span>
                 <span class="txn-detail-value desc">{currentTxn.description}</span>
               </div>
+              {#if currentNotesPreview}
+                <div class="txn-detail-notes">
+                  <span class="txn-detail-label">Notes</span>
+                  <span class="txn-detail-value notes">{currentNotesPreview}</span>
+                </div>
+              {/if}
               {#if currentTxn.tags.length > 0}
                 <div class="txn-detail-tags">
                   <span class="txn-detail-label">
@@ -3367,6 +3431,7 @@
   }
 
   .txn-detail-desc,
+  .txn-detail-notes,
   .txn-detail-tags {
     display: flex;
     flex-direction: column;
@@ -3391,6 +3456,13 @@
   .txn-detail-value.desc {
     word-break: break-word;
     line-height: 1.4;
+  }
+
+  .txn-detail-value.notes {
+    word-break: break-word;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    color: var(--text-secondary);
   }
 
   .txn-detail-value.negative {
@@ -3732,6 +3804,7 @@
   /* Description cell - copy button absolute positioned */
   .row-desc {
     position: relative;
+    overflow: visible;
   }
 
   .row-desc .desc-text {
@@ -3741,11 +3814,20 @@
     padding-right: 26px;
   }
 
+  .row-desc.has-notes .desc-text {
+    /* Leave room for both the copy button and the notes indicator */
+    padding-right: 52px;
+  }
+
   .row-desc :global(.copy-btn-desc) {
     position: absolute;
     right: 4px;
     top: 50%;
     transform: translateY(-50%);
+  }
+
+  .row-desc.has-notes :global(.copy-btn-desc) {
+    right: 28px;
   }
 
   .row-desc:hover :global(.copy-button) {
@@ -3864,6 +3946,63 @@
 
   .auto-tag-indicator:hover {
     opacity: 1;
+  }
+
+  .notes-anchor {
+    position: absolute;
+    right: 4px;
+    top: 50%;
+    transform: translateY(-50%);
+    display: inline-flex;
+  }
+
+  .notes-indicator {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    background: transparent;
+    border: none;
+    border-radius: 3px;
+    color: var(--text-muted);
+    cursor: pointer;
+    opacity: 0.75;
+  }
+
+  .notes-indicator:hover {
+    opacity: 1;
+    background: var(--bg-tertiary);
+  }
+
+  .notes-indicator.open {
+    opacity: 1;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+  }
+
+  .notes-popup {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    min-width: 200px;
+    max-width: 360px;
+    max-height: 240px;
+    overflow-y: auto;
+    padding: 8px 10px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-primary);
+    border-radius: 4px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    color: var(--text-primary);
+    font-size: 12px;
+    line-height: 1.45;
+    text-align: left;
+    white-space: pre-wrap;
+    word-break: break-word;
+    z-index: 1000;
+    cursor: text;
   }
 
   /* Fast tooltip for auto-tag indicators */
