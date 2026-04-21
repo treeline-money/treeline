@@ -11,6 +11,8 @@ npm run tauri:dev   # Development with hot reload
 npm run build       # Production build
 ```
 
+For UI work, use the `/ui-dev` skill — drives the app via WebDriver so changes can be verified with screenshots instead of assumed.
+
 ## Styling Conventions
 
 ### CSS Variables
