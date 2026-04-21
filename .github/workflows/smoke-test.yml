@@ -20,6 +20,10 @@ on:
 permissions:
   contents: read
 
+# Silence auto-update chatter from both the desktop app and the tl CLI.
+env:
+  TREELINE_DISABLE_UPDATE_CHECKS: "1"
+
 jobs:
   resolve-version:
     name: Resolve Version

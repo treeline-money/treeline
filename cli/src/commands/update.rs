@@ -333,6 +333,15 @@ pub fn run(yes: bool, check_only: bool) -> Result<()> {
 /// Check for updates in the background (called from other commands).
 /// Shows a notification if an update is available.
 pub fn maybe_notify_update() {
+    // Skip entirely when TREELINE_DISABLE_UPDATE_CHECKS=1 — keeps CI runs
+    // and other automated environments from hitting the GitHub API.
+    if std::env::var("TREELINE_DISABLE_UPDATE_CHECKS")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        return;
+    }
+
     let state = UpdateState::load();
 
     // Check if we should do a new check (every 2 hours)

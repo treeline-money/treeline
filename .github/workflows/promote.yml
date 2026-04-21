@@ -18,6 +18,10 @@ on:
 permissions:
   contents: write
 
+# Silence auto-update chatter from both the desktop app and the tl CLI.
+env:
+  TREELINE_DISABLE_UPDATE_CHECKS: "1"
+
 jobs:
   promote:
     name: Promote to Production
