@@ -40,6 +40,14 @@
       "author": "Treeline",
       "repo": "https://github.com/treeline-money/plugin-cashflow",
       "featured": true
+    },
+    {
+      "id": "net-worth",
+      "name": "Net Worth",
+      "description": "Track net worth over time: trend chart, period movers, and by-account or portfolio-asset-class breakdowns.",
+      "author": "Treeline",
+      "repo": "https://github.com/treeline-money/plugin-net-worth",
+      "featured": true
     }
   ]
 }
