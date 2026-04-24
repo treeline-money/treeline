@@ -6,6 +6,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lib]
+name = "treeline_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "tl"
 path = "src/main.rs"
@@ -36,3 +40,6 @@ rand.workspace = true
 diffy-duck.workspace = true
 tempfile = "3"
 serde_urlencoded = "0.7"
+
+[dev-dependencies]
+url = "2"

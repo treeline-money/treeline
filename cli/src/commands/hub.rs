@@ -59,6 +59,31 @@ pub enum HubCommands {
         #[arg(long, default_value = "15")]
         poll: u64,
     },
+
+    /// Manage OAuth tokens issued by this hub
+    Tokens {
+        #[command(subcommand)]
+        command: TokensCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum TokensCommands {
+    /// List active access tokens issued to thin clients
+    List {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Revoke an access token by its displayed prefix
+    Revoke {
+        /// Token prefix (first 8 characters as shown by `tokens list`)
+        prefix: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 pub fn run(command: HubCommands) -> Result<()> {
@@ -69,7 +94,87 @@ pub fn run(command: HubCommands) -> Result<()> {
         HubCommands::Pull { json } => run_pull(json),
         HubCommands::Status { json } => run_status(json),
         HubCommands::Watch { debounce, poll } => run_watch(debounce, poll),
+        HubCommands::Tokens { command } => run_tokens(command),
     }
+}
+
+fn run_tokens(command: TokensCommands) -> Result<()> {
+    match command {
+        TokensCommands::List { json } => run_tokens_list(json),
+        TokensCommands::Revoke { prefix, json } => run_tokens_revoke(&prefix, json),
+    }
+}
+
+fn run_tokens_list(json: bool) -> Result<()> {
+    use treeline_core::services::oauth::OAuthStore;
+    let treeline_dir = get_treeline_dir();
+    let store = OAuthStore::new(treeline_dir);
+    let tokens = store.list_tokens().context("Failed to read OAuth state")?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&tokens)?);
+        return Ok(());
+    }
+
+    if tokens.is_empty() {
+        eprintln!("No active OAuth tokens.");
+        return Ok(());
+    }
+
+    use comfy_table::{Cell, Table};
+    let mut table = Table::new();
+    table.set_header(vec![
+        "Prefix",
+        "Client",
+        "Scopes",
+        "Issued",
+        "Expires",
+    ]);
+    for t in &tokens {
+        table.add_row(vec![
+            Cell::new(&t.access_token_prefix),
+            Cell::new(t.client_name.as_deref().unwrap_or("—")),
+            Cell::new(t.scopes.join(", ")),
+            Cell::new(t.issued_at.format("%Y-%m-%d %H:%M")),
+            Cell::new(t.expires_at.format("%Y-%m-%d %H:%M")),
+        ]);
+    }
+    println!("{}", table);
+    Ok(())
+}
+
+fn run_tokens_revoke(prefix: &str, json: bool) -> Result<()> {
+    use treeline_core::services::oauth::OAuthStore;
+    let treeline_dir = get_treeline_dir();
+    let store = OAuthStore::new(treeline_dir);
+
+    let n = store
+        .revoke_access_token_by_prefix(prefix)
+        .context("Failed to revoke token")?;
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(
+                &serde_json::json!({ "revoked": n, "prefix": prefix })
+            )?
+        );
+        return Ok(());
+    }
+
+    if n == 0 {
+        eprintln!("No token matched prefix '{}'.", prefix);
+    } else if n == 1 {
+        eprintln!("{} Revoked 1 token.", "✓".green());
+    } else {
+        eprintln!(
+            "{} Revoked {} tokens matching prefix '{}'.",
+            "✓".green(),
+            n,
+            prefix
+        );
+    }
+    Ok(())
 }
 
 fn run_link(url: &str, token: &str) -> Result<()> {
@@ -578,6 +683,13 @@ fn run_watch(debounce_secs: u64, poll_secs: u64) -> Result<()> {
     let hub = HubConfig::load(&treeline_dir)?.ok_or_else(|| {
         anyhow::anyhow!("Not linked to a hub. Run 'tl hub link <url> --token <token>' first.")
     })?;
+
+    // Unlock the database up front so the watch loop doesn't stall on the
+    // first change with an unexpected password prompt. If the DB is encrypted,
+    // this prompts once; the derived key is cached in the keychain so the
+    // subsequent get_context() inside run_push() succeeds silently.
+    let _unlock = get_context().context("Failed to unlock database")?;
+    drop(_unlock);
 
     eprintln!("Watching for changes (debounce: {}s, poll: {}s)", debounce_secs, poll_secs);
     eprintln!("Hub: {}", hub.url);

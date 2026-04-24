@@ -98,8 +98,19 @@ impl SyncBundle {
         Ok(buf)
     }
 
-    /// Extract a sync bundle into a treeline directory
+    /// Extract a sync bundle into a treeline directory.
+    ///
+    /// Acquires the DuckDB filesystem lock (`treeline.duckdb.lock`) for the
+    /// duration of the extraction. This prevents `treeline.duckdb` from being
+    /// overwritten while another process holds a DuckDB operation against it
+    /// (e.g. the desktop app mid-query, or `tl hub watch` running alongside
+    /// an open app). The lock file and naming convention match
+    /// `DuckDbRepository::acquire_lock`, so extract serializes with all
+    /// DuckDB operations on the same directory.
     pub fn extract(data: &[u8], treeline_dir: &Path) -> Result<()> {
+        fs::create_dir_all(treeline_dir)?;
+        let _lock = acquire_db_lock(treeline_dir)?;
+
         let cursor = std::io::Cursor::new(data);
         let mut archive = zip::ZipArchive::new(cursor)
             .context("Failed to read sync bundle")?;
@@ -129,7 +140,26 @@ impl SyncBundle {
         }
 
         Ok(())
+        // _lock drops here — releases the file lock.
     }
+}
+
+/// Acquire the same exclusive file lock that `DuckDbRepository` takes per
+/// operation. Returns the held `File` — dropping it releases the lock.
+fn acquire_db_lock(treeline_dir: &Path) -> Result<fs::File> {
+    use fs2::FileExt;
+    let lock_path = treeline_dir.join("treeline.duckdb.lock");
+    let lock_file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .with_context(|| format!("Failed to open {}", lock_path.display()))?;
+    lock_file
+        .lock_exclusive()
+        .context("Failed to acquire treeline.duckdb.lock for bundle extract")?;
+    Ok(lock_file)
 }
 
 /// Check if a path from a zip is within the sync allowlist

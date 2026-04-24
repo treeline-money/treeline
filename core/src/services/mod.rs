@@ -14,6 +14,7 @@ pub mod import;
 pub mod keychain;
 pub mod logging;
 pub mod migration;
+pub mod oauth;
 pub mod plugin;
 mod query;
 mod status;
