@@ -74,6 +74,56 @@ fn test_token_validation_no_token_file() {
     assert!(!HubService::validate_token(temp_dir.path(), "any-token").unwrap());
 }
 
+// Env-var tests mutate process-global state. Hold this mutex so they
+// can't race each other when cargo runs tests in parallel.
+static ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[test]
+fn test_token_loaded_from_env_var() {
+    let _g = ENV_GUARD.lock().unwrap();
+    let temp_dir = TempDir::new().unwrap();
+    std::env::remove_var("TL_HUB_TOKEN");
+
+    std::env::set_var("TL_HUB_TOKEN", "deadbeef0123");
+    let token = HubService::load_or_create_token(temp_dir.path()).unwrap();
+    std::env::remove_var("TL_HUB_TOKEN");
+
+    assert_eq!(token, "deadbeef0123");
+
+    // Persisted to disk: subsequent calls without the env var return the same.
+    let token_again = HubService::load_or_create_token(temp_dir.path()).unwrap();
+    assert_eq!(token_again, "deadbeef0123");
+}
+
+#[test]
+fn test_env_var_overrides_existing_token_file() {
+    let _g = ENV_GUARD.lock().unwrap();
+    let temp_dir = TempDir::new().unwrap();
+    std::env::remove_var("TL_HUB_TOKEN");
+
+    let original = HubService::load_or_create_token(temp_dir.path()).unwrap();
+
+    std::env::set_var("TL_HUB_TOKEN", "abcd1234");
+    let with_env = HubService::load_or_create_token(temp_dir.path()).unwrap();
+    std::env::remove_var("TL_HUB_TOKEN");
+
+    assert_ne!(original, with_env);
+    assert_eq!(with_env, "abcd1234");
+}
+
+#[test]
+fn test_empty_env_var_is_ignored() {
+    let _g = ENV_GUARD.lock().unwrap();
+    let temp_dir = TempDir::new().unwrap();
+
+    std::env::set_var("TL_HUB_TOKEN", "");
+    let token = HubService::load_or_create_token(temp_dir.path()).unwrap();
+    std::env::remove_var("TL_HUB_TOKEN");
+
+    // Empty env var falls through to the generate-fresh path.
+    assert_eq!(token.len(), 64);
+}
+
 // ============================================================================
 // HubConfig Tests
 // ============================================================================

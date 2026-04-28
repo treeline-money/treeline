@@ -221,9 +221,26 @@ impl HubService {
         treeline_dir.join("hub-token")
     }
 
-    /// Load or generate the hub auth token
+    /// Load or generate the hub auth token.
+    ///
+    /// Lookup order:
+    /// 1. `TL_HUB_TOKEN` env var — provisioners (e.g. Treeline Cloud) set this
+    ///    so they know the value of the master token without having to read
+    ///    it back off the machine. The value is persisted to disk so subsequent
+    ///    boots without the env var continue to work.
+    /// 2. The token file at `treeline_dir/hub-token`.
+    /// 3. A freshly generated token (also persisted).
     pub fn load_or_create_token(treeline_dir: &Path) -> Result<String> {
         let token_path = Self::token_path(treeline_dir);
+
+        if let Ok(env_token) = std::env::var("TL_HUB_TOKEN") {
+            let env_token = env_token.trim().to_string();
+            if !env_token.is_empty() {
+                fs::write(&token_path, &env_token)
+                    .context("Failed to persist TL_HUB_TOKEN to hub token file")?;
+                return Ok(env_token);
+            }
+        }
 
         if token_path.exists() {
             let token = fs::read_to_string(&token_path)
