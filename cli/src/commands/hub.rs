@@ -17,14 +17,17 @@ pub enum HubCommands {
     /// Link this device to a hub.
     ///
     /// Uses the device-code OAuth flow: prints a verification URL that you
-    /// open in a browser, paste your master token there, and the CLI
-    /// finishes automatically. The master never leaves the hub or your
-    /// browser; this device gets its own scoped device token.
+    /// open in a browser, sign in (or master-paste if self-hosting), and
+    /// the CLI finishes automatically. This device gets its own scoped
+    /// device token; nothing privileged is stored locally.
+    ///
+    /// With no `--url`, defaults to Treeline Cloud
+    /// (https://pro.treeline.money). Override via the TREELINE_PRO_URL
+    /// env var or pass `--url <hub-url>` for a self-hosted hub.
     Link {
-        /// Hub URL (e.g. https://my-hub.example.com). Required for now;
-        /// in the future will default to the Treeline Cloud URL.
+        /// Hub URL. Optional — defaults to Treeline Cloud.
         #[arg(long)]
-        url: String,
+        url: Option<String>,
         /// Override the device name (defaults to the OS hostname).
         #[arg(long)]
         name: Option<String>,
@@ -93,9 +96,23 @@ pub enum TokensCommands {
     },
 }
 
+/// Compile-time default for `tl hub link` when no `--url` is supplied.
+/// Override at runtime with `TREELINE_PRO_URL`.
+const DEFAULT_PRO_URL: &str = "https://pro.treeline.money";
+
+fn resolve_link_url(arg_url: Option<&str>) -> String {
+    if let Some(u) = arg_url {
+        return u.to_string();
+    }
+    std::env::var("TREELINE_PRO_URL").unwrap_or_else(|_| DEFAULT_PRO_URL.to_string())
+}
+
 pub fn run(command: HubCommands) -> Result<()> {
     match command {
-        HubCommands::Link { url, name } => run_link(&url, name.as_deref()),
+        HubCommands::Link { url, name } => {
+            let url = resolve_link_url(url.as_deref());
+            run_link(&url, name.as_deref())
+        }
         HubCommands::Unlink => run_unlink(),
         HubCommands::Push { json, force } => run_push(json, force),
         HubCommands::Pull { json } => run_pull(json),
