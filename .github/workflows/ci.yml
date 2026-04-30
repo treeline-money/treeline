@@ -69,7 +69,7 @@ jobs:
   test-core-cli:
     name: Test Core + CLI
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v4
@@ -99,7 +99,7 @@ jobs:
   test-desktop:
     name: Test Desktop + E2E
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
 
     steps:
       - name: Free disk space
@@ -220,7 +220,7 @@ jobs:
     name: Build Desktop (${{ matrix.os }})
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [version, test-core-cli, test-desktop]
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -353,7 +353,7 @@ jobs:
 
       - name: Notarize app (macOS)
         if: runner.os == 'macOS'
-        timeout-minutes: 40
+        timeout-minutes: 60
         run: |
           APP_PATH="desktop/src-tauri/target/release/bundle/macos/Treeline.app"
           DMG_PATH="desktop/src-tauri/target/release/bundle/dmg"
@@ -370,7 +370,7 @@ jobs:
             --key-id ${{ secrets.APPLE_API_KEY }} \
             --issuer ${{ secrets.APPLE_API_ISSUER }} \
             --wait \
-            --timeout 15m
+            --timeout 30m
 
           echo "Stapling notarization ticket to app..."
           xcrun stapler staple "$APP_PATH"
@@ -391,7 +391,7 @@ jobs:
             --key-id ${{ secrets.APPLE_API_KEY }} \
             --issuer ${{ secrets.APPLE_API_ISSUER }} \
             --wait \
-            --timeout 15m
+            --timeout 30m
 
           xcrun stapler staple "$DMG_PATH/$DMG_NAME"
 
@@ -467,7 +467,7 @@ jobs:
     name: Build CLI (${{ matrix.os }})
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [version, test-core-cli, test-desktop]
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -684,7 +684,7 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [version, test-core-cli, test-desktop]
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v4
