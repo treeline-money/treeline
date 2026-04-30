@@ -296,9 +296,18 @@ fn run_link(url: &str, name_override: Option<&str>) -> Result<()> {
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("Token response missing refresh_token"))?
         .to_string();
+    // Custom OAuth extension: when an authorization server orchestrates
+    // a link on behalf of a downstream hub (e.g. Treeline Cloud), the
+    // /token response carries the hub's actual URL. Prefer it so sync
+    // bypasses the orchestrator and goes direct.
+    let hub_url = pair["hub_url"]
+        .as_str()
+        .map(|s| s.trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| url.clone());
 
     let hub = HubConfig {
-        url: url.clone(),
+        url: hub_url,
         access_token,
         refresh_token,
         device_name: device_name.clone(),
