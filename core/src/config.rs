@@ -258,7 +258,9 @@ mod tests {
 
         let hub = HubConfig {
             url: "http://localhost:4242".to_string(),
-            token: "abc123".to_string(),
+            access_token: "test-access-token".to_string(),
+            refresh_token: "test-refresh-token".to_string(),
+            device_name: "test-device".to_string(),
             last_push: None,
             last_pull: None,
             base_hash: None,
@@ -267,7 +269,8 @@ mod tests {
 
         let loaded = HubConfig::load(temp_dir.path()).unwrap().unwrap();
         assert_eq!(loaded.url, "http://localhost:4242");
-        assert_eq!(loaded.token, "abc123");
+        assert_eq!(loaded.access_token, "test-access-token");
+        assert_eq!(loaded.refresh_token, "test-refresh-token");
         assert!(loaded.last_push.is_none());
         assert!(loaded.last_pull.is_none());
     }
@@ -279,7 +282,9 @@ mod tests {
         let now = chrono::Utc::now();
         let hub = HubConfig {
             url: "http://localhost:4242".to_string(),
-            token: "abc123".to_string(),
+            access_token: "test-access-token".to_string(),
+            refresh_token: "test-refresh-token".to_string(),
+            device_name: "test-device".to_string(),
             last_push: Some(now),
             last_pull: Some(now),
             base_hash: None,
@@ -297,7 +302,9 @@ mod tests {
 
         let hub = HubConfig {
             url: "http://localhost:4242".to_string(),
-            token: "abc123".to_string(),
+            access_token: "test-access-token".to_string(),
+            refresh_token: "test-refresh-token".to_string(),
+            device_name: "test-device".to_string(),
             last_push: None,
             last_pull: None,
             base_hash: None,
@@ -320,7 +327,9 @@ mod tests {
         // Save hub config separately
         let hub = HubConfig {
             url: "http://localhost:4242".to_string(),
-            token: "abc123".to_string(),
+            access_token: "test-access-token".to_string(),
+            refresh_token: "test-refresh-token".to_string(),
+            device_name: "test-device".to_string(),
             last_push: None,
             last_pull: None,
             base_hash: None,

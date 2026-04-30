@@ -629,7 +629,7 @@ fn run_push(json: bool, force: bool) -> Result<()> {
         for table_diff in &diff3_report.tables {
             for change in &table_diff.changes {
                 match change {
-                    Diff3RowChange::Modified { key, column_changes } => {
+                    Diff3RowChange::Modified { key: _, column_changes } => {
                         let conflict_cols: Vec<_> = column_changes.iter()
                             .filter(|c| c.origin == Diff3ChangeOrigin::Conflict)
                             .collect();

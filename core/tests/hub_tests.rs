@@ -138,7 +138,9 @@ fn test_hub_config_separate_from_settings() {
     // Save hub config
     let hub = HubConfig {
         url: "http://localhost:4242".to_string(),
-        token: "abc123".to_string(),
+        access_token: "test-access-token".to_string(),
+        refresh_token: "test-refresh-token".to_string(),
+        device_name: "test-device".to_string(),
         last_push: None,
         last_pull: None,
         base_hash: None,

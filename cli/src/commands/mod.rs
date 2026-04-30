@@ -146,6 +146,7 @@ pub fn get_context() -> Result<TreelineContext> {
 /// 2. TL_DB_PASSWORD env var (password, needs Argon2 derivation)
 /// 3. If encrypted and no key available, returns error
 /// 4. If not encrypted, proceeds without a key
+#[allow(dead_code)] // Exposed for future server/non-interactive callers.
 pub fn get_context_non_interactive() -> Result<TreelineContext> {
     let treeline_dir = get_treeline_dir();
 
