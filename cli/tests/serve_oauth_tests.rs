@@ -1030,3 +1030,86 @@ async fn api_clients_carries_friendly_name_and_scopes() {
     assert!(scope_strs.contains(&"push"));
     assert_eq!(entry["kind"], "device");
 }
+
+// ============================================================================
+// DELETE /api/clients/{client_id} — revoke
+// ============================================================================
+
+#[tokio::test]
+async fn revoke_client_wipes_tokens_and_drops_from_listing() {
+    let hub = spawn_hub().await;
+    let _ = full_device_code_flow(&hub, "pull push").await;
+
+    // Find the issued client_id via the listing.
+    let resp = reqwest::Client::new()
+        .get(format!("{}/api/clients", hub.base_url))
+        .bearer_auth(&hub.master_token)
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let client_id = body["clients"][0]["client_id"]
+        .as_str()
+        .expect("client_id present")
+        .to_string();
+
+    // Revoke.
+    let resp = reqwest::Client::new()
+        .delete(format!("{}/api/clients/{}", hub.base_url, client_id))
+        .bearer_auth(&hub.master_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    // Now listing should be empty (no live tokens for that client).
+    let resp = reqwest::Client::new()
+        .get(format!("{}/api/clients", hub.base_url))
+        .bearer_auth(&hub.master_token)
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let clients = body["clients"].as_array().unwrap();
+    assert!(
+        clients.is_empty(),
+        "expected empty listing after revoke, got {:?}",
+        clients
+    );
+}
+
+#[tokio::test]
+async fn revoke_client_requires_master_token() {
+    let hub = spawn_hub().await;
+    let (access, _, _) = full_device_code_flow(&hub, "pull push").await;
+
+    // Device-scoped token must not unlock revoke.
+    let resp = reqwest::Client::new()
+        .delete(format!("{}/api/clients/anything", hub.base_url))
+        .bearer_auth(&access)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // No auth at all → 401.
+    let resp = reqwest::Client::new()
+        .delete(format!("{}/api/clients/anything", hub.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn revoke_unknown_client_is_idempotent() {
+    let hub = spawn_hub().await;
+
+    let resp = reqwest::Client::new()
+        .delete(format!("{}/api/clients/does-not-exist", hub.base_url))
+        .bearer_auth(&hub.master_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+}

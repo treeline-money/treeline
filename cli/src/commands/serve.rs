@@ -20,10 +20,10 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use axum::body::Bytes;
-use axum::extract::{DefaultBodyLimit, Query, State};
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{HeaderMap, Method, StatusCode};
 use axum::response::{Html, IntoResponse};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde_json::json;
 use tokio::sync::RwLock;
@@ -195,6 +195,9 @@ pub fn build_app(state: Arc<AppState>) -> Router {
         // Admin: list connected devices and apps. Master-token gated; Pro
         // calls this with master from vault. Self-hosters can curl it.
         .route("/api/clients", get(handle_list_clients))
+        // Admin: revoke a client by its client_id. Wipes all access +
+        // refresh tokens issued to that client. Same master-gating.
+        .route("/api/clients/{client_id}", delete(handle_revoke_client))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -1201,6 +1204,28 @@ async fn handle_list_clients(
 
     match state.oauth_store.list_active_clients() {
         Ok(clients) => (StatusCode::OK, Json(json!({ "clients": clients }))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// Revoke every access + refresh token issued to a single client. Idempotent:
+/// the response is 204 even if the client_id has no live tokens (or never
+/// existed). Master-token gated.
+async fn handle_revoke_client(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(client_id): Path<String>,
+) -> axum::response::Response {
+    if let Err(e) = require_master_token(&state.treeline_dir, &headers) {
+        return e;
+    }
+
+    match state.oauth_store.revoke_client(&client_id) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": e.to_string()})),
