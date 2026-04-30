@@ -20,6 +20,10 @@ RUN cargo build --release --bin tl
 # Runtime stage
 FROM debian:bookworm-slim
 
+# Links the GHCR package to this repo so the workflow's GITHUB_TOKEN inherits
+# write access. Required for `docker push` from GitHub Actions.
+LABEL org.opencontainers.image.source=https://github.com/treeline-money/treeline
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     libssl3 \
