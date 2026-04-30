@@ -1,0 +1,116 @@
+name: Publish Hub Image
+
+# Builds Dockerfile.hub and pushes to GHCR. Treeline Cloud's per-user
+# Fly apps pull ghcr.io/treeline-money/treeline-hub:latest, so :latest
+# must track main. Versioned tags are pushed when a release is cut.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'core/**'
+      - 'cli/**'
+      - 'template/**'
+      - 'Dockerfile.hub'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.dockerignore'
+      - '.github/workflows/publish-hub-image.yml'
+  release:
+    types: [published]
+  workflow_dispatch:
+
+# One run per ref — stale builds get cancelled when a newer commit lands.
+concurrency:
+  group: publish-hub-image-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: treeline-money/treeline-hub
+
+jobs:
+  publish:
+    name: Build and Push
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tags
+        id: tags
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          SHORT_SHA="${SHA:0:7}"
+          IMAGE="${REGISTRY}/${IMAGE_NAME}"
+          TAGS=()
+
+          case "$EVENT_NAME" in
+            release)
+              # Versioned tag from the release tag name (CalVer YY.M.DDRR).
+              # Also bump :latest so existing pulls reflect the new release.
+              TAGS+=("${IMAGE}:${RELEASE_TAG}")
+              TAGS+=("${IMAGE}:latest")
+              ;;
+            push|workflow_dispatch)
+              TAGS+=("${IMAGE}:latest")
+              TAGS+=("${IMAGE}:sha-${SHORT_SHA}")
+              ;;
+          esac
+
+          # Join with newlines for build-push-action's `tags:` input.
+          {
+            echo 'tags<<EOF'
+            printf '%s\n' "${TAGS[@]}"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+          printf 'Image tags:\n%s' "$(printf '  %s\n' "${TAGS[@]}")"
+
+      # Mirror ci.yml's `build-cli` job: bump the workspace version in
+      # Cargo.toml before the Rust build so `tl --version` in the image
+      # reflects the release tag, not the stale Cargo.toml at the SHA.
+      # Build-time mutation only — not committed. Only applies on release;
+      # push/workflow_dispatch builds keep using HEAD's Cargo.toml.
+      - name: Update version in Cargo.toml (release only)
+        if: github.event_name == 'release'
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          # Strip a leading `v` if present so e.g. `v26.4.2901` → `26.4.2901`.
+          VERSION="${RELEASE_TAG#v}"
+          echo "Setting workspace version to $VERSION"
+          sed -i 's/^version = .*/version = "'"$VERSION"'"/' Cargo.toml
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.hub
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          # GHA cache for Docker layers — Rust compiles dominate the build,
+          # so layer reuse on subsequent runs is the big win. `mode=max`
+          # caches intermediate stages too (the builder stage).
+          cache-from: type=gha,scope=hub-image
+          cache-to: type=gha,mode=max,scope=hub-image
+          provenance: false
