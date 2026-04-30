@@ -40,10 +40,28 @@ use super::mcp;
 
 // ============================================================================
 // Scopes
+//
+// Two scope families share the same OAuth machinery, distinguished only by
+// audience and the routes they unlock:
+//   - MCP scopes (`read`, `write`) — for thin clients on `/mcp` (Claude,
+//     ChatGPT, etc.). Existing.
+//   - Replication scopes (`pull`, `push`) — for Treeline desktops/CLIs on
+//     `/api/{pull,push,hash}`. New. The CLI uses the device-code flow
+//     because there's no browser to redirect back to.
+//
+// `/authorize` renders only the section relevant to whichever family the
+// requesting client asked for, so an MCP client never sees pull/push and a
+// device never sees read/write.
 // ============================================================================
 
 const SCOPE_READ: &str = "read";
 const SCOPE_WRITE: &str = "write";
+const SCOPE_PULL: &str = "pull";
+const SCOPE_PUSH: &str = "push";
+
+const ALL_VALID_SCOPES: &[&str] = &[SCOPE_READ, SCOPE_WRITE, SCOPE_PULL, SCOPE_PUSH];
+const MCP_SCOPES: &[&str] = &[SCOPE_READ, SCOPE_WRITE];
+const REPLICATE_SCOPES: &[&str] = &[SCOPE_PULL, SCOPE_PUSH];
 
 /// MCP tools that mutate state. Calling these requires `write` scope.
 const WRITE_TOOLS: &[&str] = &["query_write", "sync", "tag", "demo", "skills_write"];
@@ -59,12 +77,35 @@ fn has_scope(scopes: &[String], needed: &str) -> bool {
     scopes.iter().any(|s| s == needed)
 }
 
-/// Parse the space-delimited `scope` param from the authorize form.
-/// Unknown scopes are dropped. Empty → defaults to `read`.
+/// Family the requesting client falls into. Drives which section of the
+/// authorize page renders and which routes the issued token can hit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScopeFamily {
+    Mcp,
+    Replicate,
+    /// No recognizable scopes — happens when a client requested only
+    /// unknown scope strings. We default to MCP read for backward compat
+    /// with the existing flow.
+    Unknown,
+}
+
+fn scope_family(scopes: &[String]) -> ScopeFamily {
+    let has_mcp = scopes.iter().any(|s| MCP_SCOPES.contains(&s.as_str()));
+    let has_replicate = scopes.iter().any(|s| REPLICATE_SCOPES.contains(&s.as_str()));
+    match (has_mcp, has_replicate) {
+        (true, false) => ScopeFamily::Mcp,
+        (false, true) => ScopeFamily::Replicate,
+        _ => ScopeFamily::Unknown,
+    }
+}
+
+/// Parse the space-delimited `scope` param from the authorize form. Unknown
+/// scopes are dropped. Empty → defaults to `read` (preserves existing MCP
+/// fallback behavior).
 fn parse_requested_scopes(raw: &str) -> Vec<String> {
     let valid: Vec<String> = raw
         .split_whitespace()
-        .filter(|s| *s == SCOPE_READ || *s == SCOPE_WRITE)
+        .filter(|s| ALL_VALID_SCOPES.contains(s))
         .map(|s| s.to_string())
         .collect();
     if valid.is_empty() {
@@ -150,6 +191,10 @@ pub fn build_app(state: Arc<AppState>) -> Router {
         .route("/authorize", post(handle_oauth_authorize_submit))
         .route("/token", post(handle_oauth_token))
         .route("/revoke", post(handle_oauth_revoke))
+        .route("/device/code", post(handle_device_code))
+        // Admin: list connected devices and apps. Master-token gated; Pro
+        // calls this with master from vault. Self-hosters can curl it.
+        .route("/api/clients", get(handle_list_clients))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -172,13 +217,14 @@ pub fn run(host: &str, port: u16) -> Result<()> {
 
     eprintln!("Treeline hub starting on http://{}", addr);
     eprintln!("Master hub token: {}", master_token);
+    eprintln!("(only used at the /authorize page when linking a new device or app)");
     if !has_db {
         eprintln!();
         eprintln!("No database yet. Waiting for first push.");
     }
     eprintln!();
-    eprintln!("Link a client with:");
-    eprintln!("  tl hub link http://{} --token {}", addr, master_token);
+    eprintln!("Link a device with:");
+    eprintln!("  tl hub link --url http://{}", addr);
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
@@ -208,7 +254,7 @@ async fn handle_push(
     params: Query<PushParams>,
     body: Bytes,
 ) -> axum::response::Response {
-    if let Err(e) = require_master_token(&state.treeline_dir, &headers) {
+    if let Err(e) = require_replicate_scope(&state.oauth_store, &headers, SCOPE_PUSH) {
         return e;
     }
 
@@ -250,7 +296,7 @@ async fn handle_pull(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> axum::response::Response {
-    if let Err(e) = require_master_token(&state.treeline_dir, &headers) {
+    if let Err(e) = require_replicate_scope(&state.oauth_store, &headers, SCOPE_PULL) {
         return e;
     }
 
@@ -278,7 +324,9 @@ async fn handle_hash(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> axum::response::Response {
-    if let Err(e) = require_master_token(&state.treeline_dir, &headers) {
+    // `pull` is enough to read the hash — it's a precondition check for a
+    // pull operation, not a write.
+    if let Err(e) = require_replicate_scope(&state.oauth_store, &headers, SCOPE_PULL) {
         return e;
     }
 
@@ -508,9 +556,25 @@ struct AuthorizeParams {
     code_challenge: Option<String>,
     code_challenge_method: Option<String>,
     scope: Option<String>,
+    /// Device-code flow: when present, the page is the completion screen
+    /// for a CLI's pending session, not a redirect-flow start. The session
+    /// already carries client_id and scopes; we look them up server-side
+    /// rather than trusting query params.
+    user_code: Option<String>,
 }
 
-async fn handle_oauth_authorize(Query(params): Query<AuthorizeParams>) -> axum::response::Response {
+async fn handle_oauth_authorize(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<AuthorizeParams>,
+) -> axum::response::Response {
+    // Branch 1: device-code completion. The CLI has a pending session
+    // tied to user_code; we look up its client+scopes from the store, not
+    // from the query string.
+    if let Some(user_code) = params.user_code.as_deref().filter(|s| !s.is_empty()) {
+        return render_device_authorize_page(&state, user_code).await;
+    }
+
+    // Branch 2: classic authorization-code redirect flow (unchanged behavior).
     let redirect_uri = params.redirect_uri.unwrap_or_default();
     let client_state = params.state.unwrap_or_default();
     let code_challenge = params.code_challenge.unwrap_or_default();
@@ -519,30 +583,12 @@ async fn handle_oauth_authorize(Query(params): Query<AuthorizeParams>) -> axum::
     let scope = params.scope.unwrap_or_else(|| SCOPE_READ.to_string());
 
     let requested = parse_requested_scopes(&scope);
-    let scope_items: String = requested
-        .iter()
-        .map(|s| {
-            let (name, desc) = match s.as_str() {
-                "read" => (
-                    "Read",
-                    "View your accounts, transactions, balances, and skills.",
-                ),
-                "write" => (
-                    "Write",
-                    "Modify data, run bank syncs, tag transactions, and edit skills.",
-                ),
-                other => (other, ""),
-            };
-            format!(
-                r#"<div class="scope-item"><span class="scope-check" aria-hidden="true">✓</span><div class="scope-body"><div class="scope-name">{}</div><div class="scope-desc">{}</div></div></div>"#,
-                name, desc
-            )
-        })
-        .collect();
+    let scope_items = render_scope_items(&requested);
+    let (heading, lead) = authorize_copy_for_family(scope_family(&requested));
 
     let body = format!(
-        r#"<h1>Connect a new app</h1>
-<p class="lead">An application wants to access your Treeline hub. Authorize it by pasting your hub token below.</p>
+        r#"<h1>{heading}</h1>
+<p class="lead">{lead}</p>
 <div class="scopes">
   <div class="scopes-label">Requested permissions</div>
   <div class="scope-list">{scope_items}</div>
@@ -566,10 +612,122 @@ async fn handle_oauth_authorize(Query(params): Query<AuthorizeParams>) -> axum::
     Html(render_page("Authorize", &body)).into_response()
 }
 
+/// `(heading, lead)` for the authorize page based on what kind of client
+/// is asking. Self-hosters see "Connect a new app" for an MCP client and
+/// "Link a device" for a Treeline desktop/CLI.
+fn authorize_copy_for_family(family: ScopeFamily) -> (&'static str, &'static str) {
+    match family {
+        ScopeFamily::Mcp => (
+            "Connect a new app",
+            "An app wants to access your Treeline hub. Authorize it by pasting your hub token below.",
+        ),
+        ScopeFamily::Replicate => (
+            "Link a device",
+            "A Treeline device wants to sync with this hub. Authorize it by pasting your hub token below.",
+        ),
+        ScopeFamily::Unknown => (
+            "Authorize",
+            "A client wants to access your Treeline hub. Authorize it by pasting your hub token below.",
+        ),
+    }
+}
+
+/// Render the scope checklist for the authorize page. Each scope appears
+/// once with a friendly label/description; unknown scope strings are
+/// silently dropped. By design only one family is shown — if a client asks
+/// for both, we show whichever family is actually requested first.
+fn render_scope_items(scopes: &[String]) -> String {
+    scopes
+        .iter()
+        .filter_map(|s| {
+            let (name, desc) = match s.as_str() {
+                SCOPE_READ => (
+                    "Read",
+                    "View your accounts, transactions, balances, and skills.",
+                ),
+                SCOPE_WRITE => (
+                    "Write",
+                    "Modify data, run bank syncs, tag transactions, and edit skills.",
+                ),
+                SCOPE_PULL => (
+                    "Pull",
+                    "Pull database bundles from this hub.",
+                ),
+                SCOPE_PUSH => (
+                    "Push",
+                    "Push database bundles to this hub.",
+                ),
+                _ => return None,
+            };
+            Some(format!(
+                r#"<div class="scope-item"><span class="scope-check" aria-hidden="true">✓</span><div class="scope-body"><div class="scope-name">{}</div><div class="scope-desc">{}</div></div></div>"#,
+                name, desc
+            ))
+        })
+        .collect()
+}
+
+/// Page rendered when the user opened a `verification_uri_complete` URL
+/// from a CLI device-code flow. The session knows the client and scopes;
+/// the user just confirms by master-pasting.
+async fn render_device_authorize_page(
+    state: &Arc<AppState>,
+    user_code: &str,
+) -> axum::response::Response {
+    let info = match state.oauth_store.find_pending_device_session(user_code) {
+        Ok(Some(info)) => info,
+        Ok(None) => {
+            let body = r#"<h1 class="error-heading">Code not found</h1>
+<p class="lead">That sign-in code is unknown or expired. Run <code>tl hub link</code> again to get a fresh one.</p>"#;
+            return Html(render_page("Sign in", body)).into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    let scope_items = render_scope_items(&info.scopes);
+    let (heading, lead) = authorize_copy_for_family(scope_family(&info.scopes));
+    let suggested_name = info
+        .client_name
+        .as_deref()
+        .unwrap_or("Treeline device")
+        .to_string();
+
+    let body = format!(
+        r#"<h1>{heading}</h1>
+<p class="lead">{lead}</p>
+<p class="muted">Sign-in code: <code>{user_code}</code></p>
+<div class="scopes">
+  <div class="scopes-label">Requested permissions</div>
+  <div class="scope-list">{scope_items}</div>
+</div>
+<form method="POST" action="/authorize" autocomplete="off">
+  <input type="hidden" name="user_code" value="{user_code}">
+  <label for="client_name">Name this device <span class="muted">(optional)</span></label>
+  <input id="client_name" type="text" name="client_name" value="{suggested_name}">
+  <label for="hub_token">Hub master token</label>
+  <input id="hub_token" class="mono" type="text" name="hub_token" placeholder="Paste your master token" autocomplete="off" autofocus required>
+  <button type="submit">Authorize</button>
+</form>
+<p class="hint">After authorizing, return to your terminal — <code>tl hub link</code> will finish automatically.</p>"#
+    );
+
+    Html(render_page("Sign in", &body)).into_response()
+}
+
 #[derive(serde::Deserialize)]
 struct AuthorizeForm {
     hub_token: String,
+    /// Set on the redirect (authorization-code) flow path. Empty/missing
+    /// when the form came from the device-code completion page.
+    #[serde(default)]
     redirect_uri: String,
+    #[serde(default)]
     state: String,
     code_challenge: Option<String>,
     #[allow(dead_code)]
@@ -579,6 +737,11 @@ struct AuthorizeForm {
     scope: Option<String>,
     #[serde(default)]
     client_name: Option<String>,
+    /// Set on the device-code completion path. When present, this submit
+    /// completes a CLI's pending session instead of issuing an
+    /// authorization code for redirect.
+    #[serde(default)]
+    user_code: Option<String>,
 }
 
 async fn handle_oauth_authorize_submit(
@@ -595,6 +758,13 @@ async fn handle_oauth_authorize_submit(
 <p class="hint">Retrieve your token with <code>fly ssh console -a treeline-hub -C "cat /data/hub-token"</code> or from your local <code>~/.treeline/hub-token</code> if you're self-hosting.</p>
 <p><a class="backlink" href="javascript:history.back()">← Go back</a></p>"#;
         return Html(render_page("Authorization failed", body)).into_response();
+    }
+
+    // Branch: device-code completion. Renames the pending session's client
+    // (so the device shows up under a friendly name in `/api/clients`),
+    // mints tokens, and tells the user to switch back to their terminal.
+    if let Some(user_code) = form.user_code.as_deref().filter(|s| !s.is_empty()) {
+        return complete_device_authorization(state, user_code, form.client_name.clone()).await;
     }
 
     // Resolve the client_id. If the thin client didn't register (some OAuth
@@ -645,6 +815,59 @@ async fn handle_oauth_authorize_submit(
     (StatusCode::FOUND, [(axum::http::header::LOCATION, redirect_url)]).into_response()
 }
 
+/// Authorize a CLI's pending device-code session. Looks up the session,
+/// renames its client to the user-supplied name, mints tokens, and shows a
+/// "you can close this tab" page.
+async fn complete_device_authorization(
+    state: Arc<AppState>,
+    user_code: &str,
+    client_name: Option<String>,
+) -> axum::response::Response {
+    // Look up the session to learn (a) its client_id (so we can rename it
+    // for the dashboard) and (b) the scopes the CLI requested (so the
+    // minted tokens grant exactly those, no more).
+    let info = match state.oauth_store.find_pending_device_session(user_code) {
+        Ok(Some(i)) => i,
+        Ok(None) => {
+            let body = r#"<h1 class="error-heading">Code not found</h1>
+<p class="lead">That sign-in code is unknown or expired. Run <code>tl hub link</code> again to get a fresh one.</p>"#;
+            return Html(render_page("Sign in", body)).into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    // Rename the client if the user provided a fresh name. Skip if it's
+    // the same we suggested (just trim/empty checks).
+    if let Some(name) = client_name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+        if Some(name) != info.client_name.as_deref() {
+            if let Err(e) = state.oauth_store.set_client_name(&info.client_id, name) {
+                tracing::warn!("failed to rename client {}: {}", info.client_id, e);
+            }
+        }
+    }
+
+    if let Err(e) = state
+        .oauth_store
+        .authorize_device_session(user_code, info.scopes)
+    {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response();
+    }
+
+    let body = r#"<h1>Device linked</h1>
+<p class="lead">You can close this tab — the terminal will finish automatically.</p>"#;
+    Html(render_page("Linked", body)).into_response()
+}
+
 #[derive(serde::Deserialize)]
 struct TokenRequest {
     grant_type: String,
@@ -657,6 +880,9 @@ struct TokenRequest {
     client_id: Option<String>,
     // refresh_token grant
     refresh_token: Option<String>,
+    // device_code grant (RFC 8628). Both forms of the device_code grant
+    // string land here so the CLI can use whichever it prefers.
+    device_code: Option<String>,
 }
 
 async fn handle_oauth_token(
@@ -672,11 +898,17 @@ async fn handle_oauth_token(
     match form.grant_type.as_str() {
         "authorization_code" => handle_grant_authorization_code(state, form).await,
         "refresh_token" => handle_grant_refresh_token(state, form).await,
+        // RFC 8628 specifies the verbose URN form. Accept the short form
+        // too — it's what most CLIs send and what's least error-prone for
+        // anyone reading config / debugging.
+        "urn:ietf:params:oauth:grant-type:device_code" | "device_code" => {
+            handle_grant_device_code(state, form).await
+        }
         _ => (
             StatusCode::BAD_REQUEST,
             Json(json!({
                 "error": "unsupported_grant_type",
-                "error_description": "Only authorization_code and refresh_token are supported",
+                "error_description": "Only authorization_code, refresh_token, and device_code are supported",
             })),
         )
             .into_response(),
@@ -781,6 +1013,197 @@ async fn handle_grant_refresh_token(
         Err(RefreshError::Io(e)) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": "server_error", "error_description": e})),
+        )
+            .into_response(),
+    }
+}
+
+async fn handle_grant_device_code(
+    state: Arc<AppState>,
+    form: TokenRequest,
+) -> axum::response::Response {
+    let device_code = match &form.device_code {
+        Some(c) => c.clone(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "invalid_request",
+                    "error_description": "Missing device_code parameter",
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    use treeline_core::services::oauth::DeviceCodeError;
+    match state.oauth_store.poll_device_token(&device_code) {
+        Ok(pair) => (
+            StatusCode::OK,
+            Json(json!({
+                "access_token": pair.access_token,
+                "refresh_token": pair.refresh_token,
+                "token_type": "Bearer",
+                "expires_in": pair.expires_in,
+                "scope": pair.scopes.join(" "),
+            })),
+        )
+            .into_response(),
+        // RFC 8628: each is a 400 with a specific error string. CLIs key
+        // off `error` (not status), so the strings are load-bearing.
+        Err(DeviceCodeError::AuthorizationPending) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "authorization_pending"})),
+        )
+            .into_response(),
+        Err(DeviceCodeError::Expired) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "expired_token"})),
+        )
+            .into_response(),
+        Err(DeviceCodeError::AccessDenied) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "access_denied"})),
+        )
+            .into_response(),
+        Err(DeviceCodeError::Unknown) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "invalid_grant"})),
+        )
+            .into_response(),
+        Err(DeviceCodeError::Io(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "server_error", "error_description": e})),
+        )
+            .into_response(),
+    }
+}
+
+// ============================================================================
+// Device-code initiation (`POST /device/code`)
+//
+// First step of RFC 8628. CLI POSTs `client_id` + `scope`; server returns
+// the codes the CLI prints and starts polling against. Public endpoint —
+// no auth, just a way for a CLI to register intent. The actual proof of
+// ownership happens at the browser-side `/authorize` step.
+// ============================================================================
+
+#[derive(serde::Deserialize)]
+struct DeviceCodeRequest {
+    client_id: Option<String>,
+    #[serde(default)]
+    scope: Option<String>,
+    /// Optional name from the CLI (e.g. hostname) so the authorize page
+    /// can pre-fill it when registering the client. If omitted, falls back
+    /// to "Treeline device".
+    #[serde(default)]
+    client_name: Option<String>,
+}
+
+async fn handle_device_code(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> axum::response::Response {
+    let form: DeviceCodeRequest = match parse_form_or_json::<DeviceCodeRequest>(&headers, &body) {
+        Ok(f) => f,
+        Err(resp) => return resp,
+    };
+
+    let scopes = parse_requested_scopes(form.scope.as_deref().unwrap_or(""));
+
+    // Either reuse the supplied client_id (if the CLI did dynamic
+    // registration first) or synthesize one — most CLIs won't bother with
+    // a separate /register call. Either way the issued tokens carry a
+    // stable client_id so revocation works.
+    let client_id = match form.client_id.as_deref() {
+        Some(id) if !id.is_empty() => id.to_string(),
+        _ => {
+            let name = form
+                .client_name
+                .clone()
+                .unwrap_or_else(|| "Treeline device".to_string());
+            match state.oauth_store.register_client(vec![], Some(name)) {
+                Ok(c) => c.client_id,
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({"error": "server_error", "error_description": e.to_string()})),
+                    )
+                        .into_response();
+                }
+            }
+        }
+    };
+
+    let auth = match state
+        .oauth_store
+        .start_device_authorization(&client_id, scopes)
+    {
+        Ok(a) => a,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "server_error", "error_description": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    let base = base_url_from_headers(&headers);
+    let verification_uri = format!("{}/authorize", base);
+    let verification_uri_complete = format!(
+        "{}/authorize?user_code={}",
+        base,
+        urlencoding_encode(&auth.user_code)
+    );
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "device_code": auth.device_code,
+            "user_code": auth.user_code,
+            "verification_uri": verification_uri,
+            "verification_uri_complete": verification_uri_complete,
+            "expires_in": auth.expires_in,
+            "interval": auth.interval,
+        })),
+    )
+        .into_response()
+}
+
+// Minimal URL-encoder for the user_code (alphanumerics + dash). Avoids
+// pulling a fresh crate just for this — the alphabet is constrained.
+fn urlencoding_encode(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' => c.to_string(),
+            _ => format!("%{:02X}", c as u32),
+        })
+        .collect()
+}
+
+// ============================================================================
+// `/api/clients` — admin listing
+//
+// Returns one row per registered OAuth client that currently has a valid
+// access token. Master-token gated; intended for Pro to render its
+// dashboard, but a self-hoster can curl it too.
+// ============================================================================
+
+async fn handle_list_clients(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> axum::response::Response {
+    if let Err(e) = require_master_token(&state.treeline_dir, &headers) {
+        return e;
+    }
+
+    match state.oauth_store.list_active_clients() {
+        Ok(clients) => (StatusCode::OK, Json(json!({ "clients": clients }))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
         )
             .into_response(),
     }
@@ -1086,6 +1509,22 @@ fn require_oauth_token(
         Err(ValidateError::Unknown) => Err(unauthorized_response("Unknown access token")),
         Err(ValidateError::Expired) => Err(unauthorized_response("Access token expired")),
     }
+}
+
+/// Gate `/api/{push,pull,hash}` on a pull-or-push-scoped device token.
+/// Master tokens are NOT accepted — devices must be linked via the OAuth
+/// device-code flow (`tl hub link`) to get a scoped token. Returns 401 if
+/// the token is missing/invalid, 403 if it lacks the required scope.
+fn require_replicate_scope(
+    store: &OAuthStore,
+    headers: &HeaderMap,
+    needed_scope: &str,
+) -> std::result::Result<(), axum::response::Response> {
+    let validated = require_oauth_token(store, headers)?;
+    if !has_scope(&validated.scopes, needed_scope) {
+        return Err(insufficient_scope_response(needed_scope));
+    }
+    Ok(())
 }
 
 fn bearer_token(headers: &HeaderMap) -> Option<&str> {

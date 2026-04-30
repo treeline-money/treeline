@@ -14,13 +14,20 @@ use diffy_duck::{DatabaseConfig, Diff3ChangeOrigin, Diff3RowChange, DiffOptions,
 
 #[derive(Subcommand)]
 pub enum HubCommands {
-    /// Link to a remote hub
+    /// Link this device to a hub.
+    ///
+    /// Uses the device-code OAuth flow: prints a verification URL that you
+    /// open in a browser, paste your master token there, and the CLI
+    /// finishes automatically. The master never leaves the hub or your
+    /// browser; this device gets its own scoped device token.
     Link {
-        /// Hub URL (e.g., http://localhost:4242)
-        url: String,
-        /// Auth token
+        /// Hub URL (e.g. https://my-hub.example.com). Required for now;
+        /// in the future will default to the Treeline Cloud URL.
         #[arg(long)]
-        token: String,
+        url: String,
+        /// Override the device name (defaults to the OS hostname).
+        #[arg(long)]
+        name: Option<String>,
     },
 
     /// Unlink from the remote hub
@@ -88,7 +95,7 @@ pub enum TokensCommands {
 
 pub fn run(command: HubCommands) -> Result<()> {
     match command {
-        HubCommands::Link { url, token } => run_link(&url, &token),
+        HubCommands::Link { url, name } => run_link(&url, name.as_deref()),
         HubCommands::Unlink => run_unlink(),
         HubCommands::Push { json, force } => run_push(json, force),
         HubCommands::Pull { json } => run_pull(json),
@@ -177,34 +184,192 @@ fn run_tokens_revoke(prefix: &str, json: bool) -> Result<()> {
     Ok(())
 }
 
-fn run_link(url: &str, token: &str) -> Result<()> {
+fn run_link(url: &str, name_override: Option<&str>) -> Result<()> {
     let treeline_dir = get_treeline_dir();
-
-    // Normalize URL: remove trailing slash
     let url = url.trim_end_matches('/').to_string();
 
-    // Test the connection before saving
-    let client = reqwest::blocking::Client::new();
+    let device_name = name_override
+        .map(|s| s.to_string())
+        .unwrap_or_else(default_device_name);
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .context("Failed to construct HTTP client")?;
+
+    // Sanity-check that the hub is reachable before we ask it for a code.
     let resp = client
         .get(format!("{}/health", url))
-        .timeout(std::time::Duration::from_secs(5))
         .send()
-        .context("Failed to connect to hub. Is it running?")?;
-
+        .with_context(|| format!("Failed to reach hub at {}. Is it running?", url))?;
     if !resp.status().is_success() {
         anyhow::bail!("Hub health check failed with status {}", resp.status());
     }
 
+    // Step 1: ask the hub for a device code.
+    let resp = client
+        .post(format!("{}/device/code", url))
+        .form(&[
+            ("scope", "pull push"),
+            ("client_name", device_name.as_str()),
+        ])
+        .send()
+        .context("Failed to request device code")?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().unwrap_or_default();
+        anyhow::bail!("Hub rejected device code request ({}): {}", status, body);
+    }
+
+    let body: serde_json::Value = resp.json().context("Failed to parse device code response")?;
+    let device_code = body["device_code"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("Hub response missing device_code"))?
+        .to_string();
+    let user_code = body["user_code"].as_str().unwrap_or("").to_string();
+    let verification_uri_complete = body["verification_uri_complete"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    let interval = body["interval"].as_i64().unwrap_or(2).max(1) as u64;
+    let expires_in = body["expires_in"].as_i64().unwrap_or(600).max(60) as u64;
+
+    eprintln!();
+    eprintln!("Open this URL to sign in:");
+    eprintln!();
+    eprintln!("  {}", verification_uri_complete);
+    eprintln!();
+    if !user_code.is_empty() {
+        eprintln!("Code: {}", user_code.bold());
+        eprintln!();
+    }
+    eprintln!("Waiting...");
+
+    // Step 2: poll /token until the user completes the browser-side authorize
+    // step (or the device code expires).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(expires_in);
+    let pair = loop {
+        if std::time::Instant::now() > deadline {
+            anyhow::bail!("Device code expired before authorization completed.");
+        }
+
+        std::thread::sleep(std::time::Duration::from_secs(interval));
+
+        let resp = client
+            .post(format!("{}/token", url))
+            .form(&[
+                ("grant_type", "device_code"),
+                ("device_code", device_code.as_str()),
+            ])
+            .send()
+            .context("Failed to poll /token")?;
+
+        if resp.status().is_success() {
+            break resp
+                .json::<serde_json::Value>()
+                .context("Failed to parse token response")?;
+        }
+
+        // RFC 8628: 400 with `error` of authorization_pending / slow_down /
+        // expired_token / access_denied / invalid_grant. Anything else is
+        // a real failure.
+        let body: serde_json::Value = resp.json().unwrap_or_default();
+        let err = body["error"].as_str().unwrap_or("");
+        match err {
+            "authorization_pending" => continue,
+            "slow_down" => {
+                std::thread::sleep(std::time::Duration::from_secs(interval));
+                continue;
+            }
+            "expired_token" => anyhow::bail!("Device code expired before authorization completed."),
+            "access_denied" => anyhow::bail!("Authorization was denied."),
+            other => anyhow::bail!("Token endpoint returned error: {}", other),
+        }
+    };
+
+    let access_token = pair["access_token"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("Token response missing access_token"))?
+        .to_string();
+    let refresh_token = pair["refresh_token"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("Token response missing refresh_token"))?
+        .to_string();
+
     let hub = HubConfig {
         url: url.clone(),
-        token: token.to_string(),
+        access_token,
+        refresh_token,
+        device_name: device_name.clone(),
         last_push: None,
         last_pull: None,
         base_hash: None,
     };
     hub.save(&treeline_dir)?;
 
-    eprintln!("{} Linked to {}", "✓".green(), url);
+    eprintln!("{} Linked as \"{}\"", "✓".green(), device_name);
+    Ok(())
+}
+
+/// OS hostname (best-effort), or "Treeline device" as a final fallback.
+fn default_device_name() -> String {
+    if let Ok(host) = std::env::var("HOST").or_else(|_| std::env::var("HOSTNAME")) {
+        if !host.is_empty() {
+            return host;
+        }
+    }
+    if let Ok(output) = std::process::Command::new("hostname").output() {
+        if output.status.success() {
+            let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !s.is_empty() {
+                return s;
+            }
+        }
+    }
+    "Treeline device".to_string()
+}
+
+/// Refresh `hub.access_token` using its `refresh_token` and persist. Returns
+/// the new access token. Used after a 401 from /api/* to recover without
+/// asking the user to re-link.
+fn refresh_access_token(
+    client: &reqwest::blocking::Client,
+    treeline_dir: &std::path::Path,
+    hub: &mut HubConfig,
+) -> Result<()> {
+    let resp = client
+        .post(format!("{}/token", hub.url))
+        .form(&[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", hub.refresh_token.as_str()),
+        ])
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .context("Failed to refresh access token")?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().unwrap_or_default();
+        anyhow::bail!(
+            "Token refresh failed ({}): {}. Re-link this device with `tl hub link`.",
+            status,
+            body
+        );
+    }
+
+    let body: serde_json::Value = resp.json().context("Failed to parse refresh response")?;
+    let new_access = body["access_token"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("Refresh response missing access_token"))?
+        .to_string();
+    let new_refresh = body["refresh_token"].as_str().map(|s| s.to_string());
+
+    hub.access_token = new_access;
+    if let Some(r) = new_refresh {
+        hub.refresh_token = r;
+    }
+    hub.save(treeline_dir)?;
     Ok(())
 }
 
@@ -225,8 +390,8 @@ fn run_unlink() -> Result<()> {
 fn run_push(json: bool, force: bool) -> Result<()> {
     let treeline_dir = get_treeline_dir();
 
-    let hub = HubConfig::load(&treeline_dir)?.ok_or_else(|| {
-        anyhow::anyhow!("Not linked to a hub. Run 'tl hub link <url> --token <token>' first.")
+    let mut hub = HubConfig::load(&treeline_dir)?.ok_or_else(|| {
+        anyhow::anyhow!("Not linked to a hub. Run 'tl hub link --url <url>' first.")
     })?;
 
     // Compact first
@@ -265,16 +430,26 @@ fn run_push(json: bool, force: bool) -> Result<()> {
     }
 
     let client = reqwest::blocking::Client::new();
-    let req = client
-        .post(&push_url)
-        .header("Authorization", format!("Bearer {}", hub.token))
-        .header("Content-Type", "application/octet-stream");
 
-    let resp = req
-        .body(bundle)
-        .timeout(std::time::Duration::from_secs(300))
-        .send()
+    // The bundle body has to be sent twice if a 401 hits and we refresh —
+    // reqwest consumes the body on `.send()`. Hold onto a clone for retry.
+    let send_push = |access_token: &str, body: Vec<u8>| {
+        client
+            .post(&push_url)
+            .header("Authorization", format!("Bearer {}", access_token))
+            .header("Content-Type", "application/octet-stream")
+            .body(body)
+            .timeout(std::time::Duration::from_secs(300))
+            .send()
+    };
+
+    let mut resp = send_push(&hub.access_token, bundle.clone())
         .context("Failed to connect to hub")?;
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        refresh_access_token(&client, &treeline_dir, &mut hub)?;
+        resp = send_push(&hub.access_token, bundle)
+            .context("Failed to connect to hub")?;
+    }
 
     let status = resp.status();
     let body: serde_json::Value = resp.json().context("Failed to parse hub response")?;
@@ -308,7 +483,7 @@ fn run_push(json: bool, force: bool) -> Result<()> {
         // Download the hub's current bundle
         let pull_resp = client
             .get(format!("{}/api/pull", hub.url))
-            .header("Authorization", format!("Bearer {}", hub.token))
+            .header("Authorization", format!("Bearer {}", hub.access_token))
             .timeout(std::time::Duration::from_secs(300))
             .send()
             .context("Failed to download hub bundle for merge")?;
@@ -411,7 +586,7 @@ fn run_push(json: bool, force: bool) -> Result<()> {
 
             let resp = client
                 .post(format!("{}/api/push", hub.url))
-                .header("Authorization", format!("Bearer {}", hub.token))
+                .header("Authorization", format!("Bearer {}", hub.access_token))
                 .header("Content-Type", "application/octet-stream")
                 .body(merged_bundle)
                 .timeout(std::time::Duration::from_secs(300))
@@ -509,8 +684,8 @@ fn run_push(json: bool, force: bool) -> Result<()> {
 fn run_pull(json: bool) -> Result<()> {
     let treeline_dir = get_treeline_dir();
 
-    let hub = HubConfig::load(&treeline_dir)?.ok_or_else(|| {
-        anyhow::anyhow!("Not linked to a hub. Run 'tl hub link <url> --token <token>' first.")
+    let mut hub = HubConfig::load(&treeline_dir)?.ok_or_else(|| {
+        anyhow::anyhow!("Not linked to a hub. Run 'tl hub link --url <url>' first.")
     })?;
 
     if !json {
@@ -519,12 +694,20 @@ fn run_pull(json: bool) -> Result<()> {
 
     // Download from hub
     let client = reqwest::blocking::Client::new();
-    let resp = client
-        .get(format!("{}/api/pull", hub.url))
-        .header("Authorization", format!("Bearer {}", hub.token))
-        .timeout(std::time::Duration::from_secs(300))
-        .send()
-        .context("Failed to connect to hub")?;
+    let pull_url = format!("{}/api/pull", hub.url);
+    let send_pull = |access_token: &str| {
+        client
+            .get(&pull_url)
+            .header("Authorization", format!("Bearer {}", access_token))
+            .timeout(std::time::Duration::from_secs(300))
+            .send()
+    };
+
+    let mut resp = send_pull(&hub.access_token).context("Failed to connect to hub")?;
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        refresh_access_token(&client, &treeline_dir, &mut hub)?;
+        resp = send_pull(&hub.access_token).context("Failed to connect to hub")?;
+    }
 
     if !resp.status().is_success() {
         let body = resp.text().unwrap_or_default();
@@ -598,7 +781,7 @@ fn run_status(json: bool) -> Result<()> {
                 );
             } else {
                 eprintln!("Not linked to any hub.");
-                eprintln!("Run 'tl hub link <url> --token <token>' to connect.");
+                eprintln!("Run 'tl hub link --url <url>' to connect.");
             }
         }
         Some(hub) => {
@@ -681,7 +864,7 @@ fn run_watch(debounce_secs: u64, poll_secs: u64) -> Result<()> {
     let treeline_dir = get_treeline_dir();
 
     let hub = HubConfig::load(&treeline_dir)?.ok_or_else(|| {
-        anyhow::anyhow!("Not linked to a hub. Run 'tl hub link <url> --token <token>' first.")
+        anyhow::anyhow!("Not linked to a hub. Run 'tl hub link --url <url>' first.")
     })?;
 
     // Unlock the database up front so the watch loop doesn't stall on the
@@ -770,7 +953,7 @@ fn run_watch(debounce_secs: u64, poll_secs: u64) -> Result<()> {
             // Get hub hash
             let hub_hash = client
                 .get(format!("{}/api/hash", hub_config.url))
-                .header("Authorization", format!("Bearer {}", hub_config.token))
+                .header("Authorization", format!("Bearer {}", hub_config.access_token))
                 .timeout(std::time::Duration::from_secs(5))
                 .send()
                 .ok()

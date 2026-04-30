@@ -456,7 +456,9 @@ async fn api_push_with_no_auth_is_rejected() {
 }
 
 #[tokio::test]
-async fn api_push_with_per_client_token_is_rejected() {
+async fn api_push_with_mcp_token_is_rejected_for_lacking_push_scope() {
+    // An MCP-scoped token (read/write) must NOT unlock /api/push — that
+    // gate is `push`. Returns 403 with insufficient_scope, not 401.
     let hub = spawn_hub().await;
     let (access, _, _) = full_oauth_flow(&hub, "read write").await;
 
@@ -467,14 +469,25 @@ async fn api_push_with_per_client_token_is_rejected() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let www_auth = resp
+        .headers()
+        .get("www-authenticate")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        www_auth.contains("insufficient_scope"),
+        "expected insufficient_scope, got {:?}",
+        www_auth
+    );
 }
 
 #[tokio::test]
-async fn api_push_with_master_token_accepts_auth() {
+async fn api_push_with_master_token_is_now_rejected() {
+    // Master no longer unlocks /api/* — devices must link via OAuth to
+    // get a push-scoped token.
     let hub = spawn_hub().await;
 
-    // Auth passes; bundle is garbage, so expect 400 (not 401).
     let resp = reqwest::Client::new()
         .post(format!("{}/api/push", hub.base_url))
         .bearer_auth(&hub.master_token)
@@ -482,14 +495,7 @@ async fn api_push_with_master_token_accepts_auth() {
         .send()
         .await
         .unwrap();
-    assert!(
-        resp.status() == StatusCode::BAD_REQUEST
-            || resp.status() == StatusCode::OK
-            || resp.status() == StatusCode::INTERNAL_SERVER_ERROR,
-        "expected non-401 for master auth, got {}",
-        resp.status()
-    );
-    assert_ne!(resp.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
 // ============================================================================
@@ -654,4 +660,373 @@ async fn mcp_malformed_json_returns_parse_error_at_http_200() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["error"]["code"], -32700);
+}
+
+// ============================================================================
+// Device-code flow (RFC 8628)
+//
+// End-to-end coverage of `tl hub link`'s server side: CLI POSTs /device/code,
+// browser-side POSTs /authorize with master + user_code, CLI poll on /token
+// returns tokens. Plus the negative cases: pending, expired, master required.
+// ============================================================================
+
+/// Drive the device-code dance against `hub`, simulating what `tl hub link`
+/// does. Returns (access_token, refresh_token, scopes).
+async fn full_device_code_flow(
+    hub: &TestHub,
+    scope: &str,
+) -> (String, String, Vec<String>) {
+    let c = reqwest::Client::new();
+
+    // Step 1: CLI initiates.
+    let resp = c
+        .post(format!("{}/device/code", hub.base_url))
+        .form(&[("scope", scope), ("client_name", "test-laptop")])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let device_code = body["device_code"].as_str().unwrap().to_string();
+    let user_code = body["user_code"].as_str().unwrap().to_string();
+    assert!(body["verification_uri_complete"]
+        .as_str()
+        .unwrap()
+        .contains(&user_code));
+
+    // Step 2: simulate the browser-side authorize (user types master + clicks).
+    let resp = c
+        .post(format!("{}/authorize", hub.base_url))
+        .form(&[
+            ("user_code", user_code.as_str()),
+            ("hub_token", hub.master_token.as_str()),
+            ("client_name", "Zack's Laptop"),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Step 3: CLI poll succeeds.
+    let resp = c
+        .post(format!("{}/token", hub.base_url))
+        .form(&[
+            ("grant_type", "device_code"),
+            ("device_code", device_code.as_str()),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let access = body["access_token"].as_str().unwrap().to_string();
+    let refresh = body["refresh_token"].as_str().unwrap().to_string();
+    let scopes: Vec<String> = body["scope"]
+        .as_str()
+        .unwrap_or("")
+        .split_whitespace()
+        .map(String::from)
+        .collect();
+    (access, refresh, scopes)
+}
+
+#[tokio::test]
+async fn device_code_flow_issues_pull_push_scoped_token() {
+    let hub = spawn_hub().await;
+    let (access, refresh, scopes) = full_device_code_flow(&hub, "pull push").await;
+
+    assert!(scopes.contains(&"pull".to_string()));
+    assert!(scopes.contains(&"push".to_string()));
+    assert_ne!(access, refresh);
+    assert_ne!(access, hub.master_token);
+}
+
+#[tokio::test]
+async fn device_code_poll_returns_authorization_pending_before_user_authorizes() {
+    let hub = spawn_hub().await;
+    let c = reqwest::Client::new();
+
+    let resp = c
+        .post(format!("{}/device/code", hub.base_url))
+        .form(&[("scope", "pull push"), ("client_name", "test")])
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let device_code = body["device_code"].as_str().unwrap();
+
+    // Poll immediately — no one authorized yet.
+    let resp = c
+        .post(format!("{}/token", hub.base_url))
+        .form(&[
+            ("grant_type", "device_code"),
+            ("device_code", device_code),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["error"], "authorization_pending");
+}
+
+#[tokio::test]
+async fn device_code_poll_returns_invalid_grant_for_unknown_code() {
+    let hub = spawn_hub().await;
+    let resp = reqwest::Client::new()
+        .post(format!("{}/token", hub.base_url))
+        .form(&[
+            ("grant_type", "device_code"),
+            ("device_code", "deadbeef-not-a-real-device-code"),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["error"], "invalid_grant");
+}
+
+#[tokio::test]
+async fn device_code_authorize_with_wrong_master_does_not_complete() {
+    let hub = spawn_hub().await;
+    let c = reqwest::Client::new();
+
+    let resp = c
+        .post(format!("{}/device/code", hub.base_url))
+        .form(&[("scope", "pull push"), ("client_name", "test")])
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let device_code = body["device_code"].as_str().unwrap().to_string();
+    let user_code = body["user_code"].as_str().unwrap().to_string();
+
+    // Submit /authorize with a wrong master.
+    let _ = c
+        .post(format!("{}/authorize", hub.base_url))
+        .form(&[
+            ("user_code", user_code.as_str()),
+            ("hub_token", "not-the-master"),
+        ])
+        .send()
+        .await
+        .unwrap();
+
+    // Session still pending — authorize page returns an error page (not a
+    // redirect), but the session wasn't transitioned.
+    let resp = c
+        .post(format!("{}/token", hub.base_url))
+        .form(&[
+            ("grant_type", "device_code"),
+            ("device_code", device_code.as_str()),
+        ])
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["error"], "authorization_pending");
+}
+
+#[tokio::test]
+async fn device_code_user_code_normalization_is_dash_and_case_insensitive() {
+    // User might type `gztm-xkqr` or `GZTMXKQR` instead of `GZTM-XKQR`.
+    // The /authorize page should normalize before lookup.
+    let hub = spawn_hub().await;
+    let c = reqwest::Client::new();
+
+    let resp = c
+        .post(format!("{}/device/code", hub.base_url))
+        .form(&[("scope", "pull push"), ("client_name", "t")])
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let device_code = body["device_code"].as_str().unwrap().to_string();
+    let user_code = body["user_code"].as_str().unwrap().to_string();
+
+    // Strip dash, lowercase, submit — should still resolve.
+    let mangled = user_code.replace('-', "").to_lowercase();
+
+    let resp = c
+        .post(format!("{}/authorize", hub.base_url))
+        .form(&[
+            ("user_code", mangled.as_str()),
+            ("hub_token", hub.master_token.as_str()),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Poll should now succeed.
+    let resp = c
+        .post(format!("{}/token", hub.base_url))
+        .form(&[
+            ("grant_type", "device_code"),
+            ("device_code", device_code.as_str()),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+// ============================================================================
+// Pull/Push scope enforcement on /api/*
+// ============================================================================
+
+#[tokio::test]
+async fn api_pull_with_pull_scoped_token_is_authorized() {
+    let hub = spawn_hub().await;
+    let (access, _, _) = full_device_code_flow(&hub, "pull push").await;
+
+    let resp = reqwest::Client::new()
+        .get(format!("{}/api/pull", hub.base_url))
+        .bearer_auth(&access)
+        .send()
+        .await
+        .unwrap();
+    // Auth succeeded — body might be a bundle (200) or a server error if
+    // the test DB lacks something; we just want to know it isn't 401/403.
+    assert_ne!(resp.status(), StatusCode::UNAUTHORIZED);
+    assert_ne!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn api_push_with_push_scoped_token_passes_auth() {
+    let hub = spawn_hub().await;
+    let (access, _, _) = full_device_code_flow(&hub, "pull push").await;
+
+    // Garbage body — auth succeeds, body parsing fails (400). The point
+    // is we got past auth.
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/push", hub.base_url))
+        .bearer_auth(&access)
+        .body(b"garbage".to_vec())
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(resp.status(), StatusCode::UNAUTHORIZED);
+    assert_ne!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn api_pull_with_pull_only_scope_works() {
+    let hub = spawn_hub().await;
+    let (access, _, _) = full_device_code_flow(&hub, "pull").await;
+
+    let resp = reqwest::Client::new()
+        .get(format!("{}/api/pull", hub.base_url))
+        .bearer_auth(&access)
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(resp.status(), StatusCode::UNAUTHORIZED);
+    assert_ne!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn api_push_with_pull_only_scope_is_rejected() {
+    let hub = spawn_hub().await;
+    let (access, _, _) = full_device_code_flow(&hub, "pull").await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/push", hub.base_url))
+        .bearer_auth(&access)
+        .body(b"garbage".to_vec())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn api_hash_with_pull_scope_is_authorized() {
+    let hub = spawn_hub().await;
+    let (access, _, _) = full_device_code_flow(&hub, "pull push").await;
+
+    let resp = reqwest::Client::new()
+        .get(format!("{}/api/hash", hub.base_url))
+        .bearer_auth(&access)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+// ============================================================================
+// /api/clients listing
+// ============================================================================
+
+#[tokio::test]
+async fn api_clients_lists_devices_and_apps_with_kind() {
+    let hub = spawn_hub().await;
+    // One device, one MCP app.
+    let _ = full_device_code_flow(&hub, "pull push").await;
+    let _ = full_oauth_flow(&hub, "read write").await;
+
+    let resp = reqwest::Client::new()
+        .get(format!("{}/api/clients", hub.base_url))
+        .bearer_auth(&hub.master_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let clients = body["clients"].as_array().expect("clients array");
+    assert_eq!(clients.len(), 2, "expected 1 device + 1 app, got {:?}", clients);
+
+    let kinds: Vec<&str> = clients.iter().filter_map(|c| c["kind"].as_str()).collect();
+    assert!(kinds.contains(&"device"), "kinds: {:?}", kinds);
+    assert!(kinds.contains(&"app"), "kinds: {:?}", kinds);
+}
+
+#[tokio::test]
+async fn api_clients_requires_master_token() {
+    let hub = spawn_hub().await;
+    let (access, _, _) = full_device_code_flow(&hub, "pull push").await;
+
+    // Device-scoped token must NOT unlock /api/clients (admin-only).
+    let resp = reqwest::Client::new()
+        .get(format!("{}/api/clients", hub.base_url))
+        .bearer_auth(&access)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // No auth at all → 401.
+    let resp = reqwest::Client::new()
+        .get(format!("{}/api/clients", hub.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn api_clients_carries_friendly_name_and_scopes() {
+    let hub = spawn_hub().await;
+    let _ = full_device_code_flow(&hub, "pull push").await;
+
+    let resp = reqwest::Client::new()
+        .get(format!("{}/api/clients", hub.base_url))
+        .bearer_auth(&hub.master_token)
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let clients = body["clients"].as_array().unwrap();
+    assert_eq!(clients.len(), 1);
+    let entry = &clients[0];
+
+    // Name comes from /authorize's "client_name" field, which the device-
+    // code flow sets to "Zack's Laptop".
+    assert_eq!(entry["name"], "Zack's Laptop");
+    let scopes = entry["scopes"].as_array().unwrap();
+    let scope_strs: Vec<&str> = scopes.iter().filter_map(|s| s.as_str()).collect();
+    assert!(scope_strs.contains(&"pull"));
+    assert!(scope_strs.contains(&"push"));
+    assert_eq!(entry["kind"], "device");
 }

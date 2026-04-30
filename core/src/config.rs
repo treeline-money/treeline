@@ -47,14 +47,22 @@ struct ImportProfilesContainer {
     account_mappings: HashMap<String, String>,
 }
 
-/// Hub configuration for remote sync
+/// Hub configuration for remote sync.
 ///
-/// Stored in hub.json (device-specific, never synced).
+/// Stored in `hub.json` (device-specific, never synced). Holds the OAuth
+/// `pull`/`push` device tokens minted by `tl hub link` — never the master
+/// token, which lives only on the hub itself (and Pro's vault). On 401 the
+/// CLI uses `refresh_token` to get a fresh access token transparently.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HubConfig {
     pub url: String,
-    pub token: String,
+    pub access_token: String,
+    pub refresh_token: String,
+    /// Friendly name this device registered as ("zacks-laptop"). Shown in
+    /// the hub's clients listing; useful for revoking from the other side.
+    #[serde(default)]
+    pub device_name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_push: Option<chrono::DateTime<chrono::Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
