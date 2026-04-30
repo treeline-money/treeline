@@ -33,11 +33,25 @@ async fn spawn_hub() -> TestHub {
 }
 
 async fn spawn_hub_with_ttls(access_ttl: Duration, refresh_ttl: Duration) -> TestHub {
+    spawn_hub_inner(access_ttl, refresh_ttl, true).await
+}
+
+/// Spawn a hub with no `treeline.duckdb` provisioned. Used to verify MCP
+/// `initialize` / `tools/list` succeed before any database has been pushed.
+async fn spawn_hub_without_database() -> TestHub {
+    spawn_hub_inner(Duration::days(30), Duration::days(365), false).await
+}
+
+async fn spawn_hub_inner(
+    access_ttl: Duration,
+    refresh_ttl: Duration,
+    with_database: bool,
+) -> TestHub {
     let temp_dir = TempDir::new().unwrap();
     let treeline_dir = temp_dir.path().to_path_buf();
 
-    // Provision a DuckDB so HubService::has_database() returns true.
-    {
+    if with_database {
+        // Provision a DuckDB so HubService::has_database() returns true.
         let db_path = treeline_dir.join("treeline.duckdb");
         let repo = DuckDbRepository::new(&db_path, None).expect("create repo");
         repo.ensure_schema().expect("schema");
@@ -495,4 +509,149 @@ async fn oauth_metadata_endpoints_are_reachable() {
     assert!(body["authorization_endpoint"].is_string());
     assert!(body["token_endpoint"].is_string());
     assert!(body["registration_endpoint"].is_string());
+}
+
+// ============================================================================
+// /mcp behavior on a freshly-provisioned hub with no database yet
+//
+// Thin clients (Claude.ai, ChatGPT, Claude Desktop) need to complete OAuth and
+// `initialize` / `tools/list` *before* the user has pushed any data — the hub
+// is effectively a Fly app with just OAuth state on disk. These tests pin
+// down: protocol-level handshakes succeed, data-requiring tool calls fail
+// gracefully via JSON-RPC error semantics (HTTP 200 + isError result), and
+// non-DB tools (e.g. `version`) keep working.
+// ============================================================================
+
+async fn mcp_post(
+    hub: &TestHub,
+    token: &str,
+    body: serde_json::Value,
+) -> reqwest::Response {
+    reqwest::Client::new()
+        .post(format!("{}/mcp", hub.base_url))
+        .bearer_auth(token)
+        .json(&body)
+        .send()
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn mcp_initialize_succeeds_without_database() {
+    let hub = spawn_hub_without_database().await;
+    let (access, _, _) = full_oauth_flow(&hub, "read").await;
+
+    let resp = mcp_post(
+        &hub,
+        &access,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+        }),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body.get("result").is_some(), "body was {}", body);
+    assert_eq!(body["result"]["serverInfo"]["name"], "treeline");
+    assert!(body["result"]["protocolVersion"].is_string());
+}
+
+#[tokio::test]
+async fn mcp_tools_list_succeeds_without_database() {
+    let hub = spawn_hub_without_database().await;
+    let (access, _, _) = full_oauth_flow(&hub, "read").await;
+
+    let resp = mcp_post(
+        &hub,
+        &access,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/list",
+        }),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let tools = body["result"]["tools"].as_array().expect("tools array");
+    assert!(!tools.is_empty(), "tools list should not be empty");
+    // Sanity: the schema-discovery tools the user will call first are present.
+    let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+    assert!(names.contains(&"query"));
+    assert!(names.contains(&"schema"));
+    assert!(names.contains(&"version"));
+}
+
+#[tokio::test]
+async fn mcp_data_tool_call_without_database_returns_jsonrpc_error_at_http_200() {
+    let hub = spawn_hub_without_database().await;
+    let (access, _, _) = full_oauth_flow(&hub, "read").await;
+
+    // `query` is in TOOLS_REQUIRING_DB. Without a DB on disk, the hub must
+    // return HTTP 200 + a JSON-RPC success envelope carrying isError=true,
+    // *not* HTTP 400 (Claude treats non-200 as a transport failure and never
+    // surfaces the error message to the user).
+    let resp = mcp_tools_call(
+        &hub,
+        &access,
+        "query",
+        serde_json::json!({"sql": "SELECT 1"}),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["jsonrpc"], "2.0");
+    assert_eq!(body["result"]["isError"], true);
+    let text = body["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        text.to_lowercase().contains("no database"),
+        "expected helpful empty-state message, got: {}",
+        text
+    );
+}
+
+#[tokio::test]
+async fn mcp_version_tool_works_without_database() {
+    // Tools that don't read DuckDB (`version`, `encryption_status`, `skills_*`,
+    // `demo`) must keep working before any push. Otherwise the dashboard's
+    // "Connect AI assistants" link is dead until the user does a CLI push.
+    let hub = spawn_hub_without_database().await;
+    let (access, _, _) = full_oauth_flow(&hub, "read").await;
+
+    let resp = mcp_tools_call(&hub, &access, "version", serde_json::json!({})).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body["result"].get("isError").is_none() || body["result"]["isError"] == false);
+    let text = body["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        text.contains("current_version"),
+        "expected version payload, got: {}",
+        text
+    );
+}
+
+#[tokio::test]
+async fn mcp_malformed_json_returns_parse_error_at_http_200() {
+    // JSON-RPC parse errors must also travel at HTTP 200 — same reasoning as
+    // the data-tool case above.
+    let hub = spawn_hub_without_database().await;
+    let (access, _, _) = full_oauth_flow(&hub, "read").await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("{}/mcp", hub.base_url))
+        .bearer_auth(&access)
+        .header("content-type", "application/json")
+        .body("{ this is not json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["error"]["code"], -32700);
 }

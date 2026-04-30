@@ -72,7 +72,9 @@ dirs = "5.0"
 
 # HTTP server
 axum = "0.8"
-tower-http = { version = "0.6", features = ["cors"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Internal crates
 treeline-core = { path = "core" }

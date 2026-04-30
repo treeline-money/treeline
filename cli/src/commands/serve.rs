@@ -28,6 +28,7 @@ use axum::{Json, Router};
 use serde_json::json;
 use tokio::sync::RwLock;
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::trace::TraceLayer;
 
 use treeline_core::services::hub::HubService;
 use treeline_core::services::oauth::{
@@ -46,6 +47,13 @@ const SCOPE_WRITE: &str = "write";
 
 /// MCP tools that mutate state. Calling these requires `write` scope.
 const WRITE_TOOLS: &[&str] = &["query_write", "sync", "tag", "demo", "skills_write"];
+
+/// MCP tools that read or write the DuckDB database. Calling these on a hub
+/// with no `treeline.duckdb` yet returns a JSON-RPC isError result rather than
+/// silently creating an empty DB. Tools not in this list (`version`,
+/// `encryption_status`, `skills_*`, `demo`) work without a database.
+const TOOLS_REQUIRING_DB: &[&str] =
+    &["status", "query", "query_write", "sync", "tag", "doctor", "schema"];
 
 fn has_scope(scopes: &[String], needed: &str) -> bool {
     scopes.iter().any(|s| s == needed)
@@ -143,10 +151,13 @@ pub fn build_app(state: Arc<AppState>) -> Router {
         .route("/token", post(handle_oauth_token))
         .route("/revoke", post(handle_oauth_revoke))
         .layer(cors)
+        .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
 
 pub fn run(host: &str, port: u16) -> Result<()> {
+    init_tracing();
+
     let treeline_dir = get_treeline_dir();
     std::fs::create_dir_all(&treeline_dir)?;
 
@@ -289,15 +300,9 @@ async fn handle_mcp(
         Err(e) => return e,
     };
 
-    if !state.hub_service.has_database() {
-        let resp = mcp::JsonRpcResponse::error(
-            serde_json::Value::Null,
-            -32000,
-            "No database on hub yet. Push a database first.".to_string(),
-        );
-        return (StatusCode::BAD_REQUEST, Json(resp)).into_response();
-    }
-
+    // JSON-RPC errors travel inside HTTP 200 — clients route by error code,
+    // not status code. The MCP spec is explicit on this; Claude treats non-200
+    // here as a transport failure rather than reading the JSON-RPC error body.
     let req: mcp::JsonRpcRequest = match serde_json::from_slice(&body) {
         Ok(req) => req,
         Err(e) => {
@@ -306,7 +311,7 @@ async fn handle_mcp(
                 -32700,
                 format!("Parse error: {}", e),
             );
-            return (StatusCode::BAD_REQUEST, Json(resp)).into_response();
+            return (StatusCode::OK, Json(resp)).into_response();
         }
     };
 
@@ -319,6 +324,14 @@ async fn handle_mcp(
         && !has_scope(&validated.scopes, SCOPE_WRITE)
     {
         return insufficient_scope_response(SCOPE_READ);
+    }
+
+    // Reject *only* data-requiring tool calls when no DB exists. `initialize`,
+    // `tools/list`, and tools that don't need DuckDB (`version`,
+    // `encryption_status`, `skills_*`, `demo`) still work, so thin clients can
+    // connect and discover capabilities before the user has pushed a database.
+    if requires_database(&req) && !state.hub_service.has_database() {
+        return no_database_response(&req);
     }
 
     let response = if is_write {
@@ -336,6 +349,33 @@ async fn handle_mcp(
         Some(resp) => (StatusCode::OK, Json(resp)).into_response(),
         None => StatusCode::ACCEPTED.into_response(),
     }
+}
+
+fn requires_database(req: &mcp::JsonRpcRequest) -> bool {
+    if req.method != "tools/call" {
+        return false;
+    }
+    req.params
+        .as_ref()
+        .and_then(|p| p.get("name"))
+        .and_then(|n| n.as_str())
+        .map(|name| TOOLS_REQUIRING_DB.contains(&name))
+        .unwrap_or(false)
+}
+
+fn no_database_response(req: &mcp::JsonRpcRequest) -> axum::response::Response {
+    let id = req.id.clone().unwrap_or(serde_json::Value::Null);
+    let resp = mcp::JsonRpcResponse::success(
+        id,
+        json!({
+            "content": [{
+                "type": "text",
+                "text": "No database on hub yet. Push a database first with `tl hub push`.",
+            }],
+            "isError": true,
+        }),
+    );
+    (StatusCode::OK, Json(resp)).into_response()
 }
 
 fn is_write_request(req: &mcp::JsonRpcRequest) -> bool {
@@ -1127,4 +1167,15 @@ fn base_url_from_headers(headers: &HeaderMap) -> String {
         .unwrap_or("localhost");
 
     format!("{}://{}", proto, host)
+}
+
+/// Install a `tracing` subscriber so `TraceLayer` emits one line per request.
+/// `RUST_LOG` overrides the default; set `RUST_LOG=debug` for verbose output.
+fn init_tracing() {
+    use tracing_subscriber::{fmt, EnvFilter};
+
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("tower_http=info,treeline_cli=info"));
+
+    let _ = fmt().with_env_filter(filter).try_init();
 }
