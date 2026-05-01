@@ -185,7 +185,7 @@
             {#if info.user_code}
               <div class="link-row">
                 <span class="link-label">Code</span>
-                <code class="link-value link-code">{info.user_code}</code>
+                <code class="link-value">{info.user_code}</code>
                 <button
                   class="link-action"
                   title="Copy code"
@@ -259,11 +259,6 @@
     font-size: 13px;
     color: var(--text-primary);
     word-break: break-all;
-  }
-  .link-code {
-    /* Match the URL row's font-family/size; the label is enough to
-       distinguish the two rows. Custom letter-spacing or bold makes the
-       monospace fonts look inconsistent. */
   }
   .link-action {
     background: transparent;

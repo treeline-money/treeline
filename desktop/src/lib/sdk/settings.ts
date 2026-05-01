@@ -28,6 +28,7 @@ export interface AppSettings {
   lastSeenVersion?: string | null;
   developerMode?: boolean; // Enable DevTools for plugin development
   pluginHotReload?: boolean; // Auto-reload external plugins on file change
+  experimentalFeatures?: Record<string, boolean>; // UI gating for in-progress features
 }
 
 /**

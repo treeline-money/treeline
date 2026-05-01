@@ -28,6 +28,8 @@
     themeManager,
     activityStore,
     pluginUpdatesStore,
+    featureFlags,
+    FEATURE_HUB,
     type Settings,
     type AppSettings,
     type ImportProfile,
@@ -77,16 +79,22 @@
     }
   });
 
-  const sections: { id: Section; label: string; icon: string }[] = [
+  const allSections: { id: Section; label: string; icon: string; flag?: string }[] = [
     { id: "general", label: "General", icon: "settings" },
     { id: "appearance", label: "Appearance", icon: "palette" },
     { id: "integrations", label: "Integrations", icon: "link" },
-    { id: "hub", label: "Hub", icon: "refresh" },
+    { id: "hub", label: "Hub", icon: "refresh", flag: FEATURE_HUB },
     { id: "plugins", label: "Plugins", icon: "zap" },
     { id: "storage", label: "Storage", icon: "database" },
     { id: "advanced", label: "Advanced", icon: "command" },
     { id: "about", label: "About", icon: "info" },
   ];
+
+  // Filter sections by feature flag. Reactive on `featureFlags` so toggling
+  // a flag in the Advanced panel updates the sidebar live.
+  let sections = $derived(
+    allSections.filter((s) => !s.flag || featureFlags.isEnabled(s.flag))
+  );
 
   // Demo mode state
   let isDemoMode = $state(false);

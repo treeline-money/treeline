@@ -7,7 +7,7 @@
   import UnlockModal from "./lib/core/UnlockModal.svelte";
   import WhatsNewModal from "./lib/core/WhatsNewModal.svelte";
   import { initializePlugins } from "./lib/plugins";
-  import { themeManager, isSyncNeeded, runSync, toast, getAppSetting, setAppSetting, registry, activityStore, tryAutoUnlock, getEncryptionStatus, hubWatch } from "./lib/sdk";
+  import { themeManager, isSyncNeeded, runSync, toast, getAppSetting, setAppSetting, registry, activityStore, tryAutoUnlock, getEncryptionStatus, hubWatch, featureFlags } from "./lib/sdk";
   import { loadCurrency } from "./lib/shared";
 
   let isLoading = $state(true);
@@ -68,8 +68,12 @@
 
       isLoading = false;
 
+      // Load feature flags before any flag-gated UI mounts.
+      await featureFlags.load();
+
       // Start in-process hub watcher (no-op if not linked or watch lock held
-      // by an external `tl hub watch`).
+      // by an external `tl hub watch`). Runs unconditionally — the Hub
+      // feature flag only gates UI surface, not the underlying watcher.
       hubWatch.start();
 
       // Show welcome modal for first-time users

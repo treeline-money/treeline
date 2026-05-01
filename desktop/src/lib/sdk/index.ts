@@ -147,6 +147,10 @@ export type { PluginUpdateInfo } from "./pluginUpdates.svelte";
 // Hub watch (in-process background watcher)
 export { hubWatch } from "./hub.svelte";
 export type { WatchEvent, WatchStatus } from "./hub.svelte";
+// Feature flags
+export { featureFlags, KNOWN_FLAGS, FEATURE_HUB } from "./featureFlags.svelte";
+export type { KnownFlag } from "./featureFlags.svelte";
+
 // Hub link (device-code OAuth)
 export {
   startHubLink,

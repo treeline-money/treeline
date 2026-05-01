@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { hubWatch } from "../sdk";
+  import { hubWatch, featureFlags, FEATURE_HUB } from "../sdk";
 
   // Tick every 15s so "Up to date · 30s ago" stays current.
   let now = $state(Date.now());
@@ -11,6 +11,7 @@
   });
 
   let label = $derived.by(() => {
+    if (!featureFlags.isEnabled(FEATURE_HUB)) return null;
     if (!hubWatch.running) return null;
     switch (hubWatch.status) {
       case "pushing":

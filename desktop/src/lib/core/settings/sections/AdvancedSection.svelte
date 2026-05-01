@@ -1,5 +1,6 @@
 <script lang="ts">
   import { Icon } from "../../../shared";
+  import { featureFlags, KNOWN_FLAGS } from "../../../sdk";
   import "../settings-shared.css";
 
   interface Props {
@@ -10,6 +11,10 @@
   }
 
   let { developerMode, pluginHotReload, onDeveloperModeChange, onPluginHotReloadChange }: Props = $props();
+
+  async function toggleFlag(name: string, enabled: boolean) {
+    await featureFlags.set(name, enabled);
+  }
 </script>
 
 <section class="section">
@@ -64,6 +69,27 @@
       </div>
     {/if}
   </div>
+
+  <div class="setting-group">
+    <h4 class="group-title">Experimental features</h4>
+    <p class="group-desc">
+      Toggle in-progress features. These may change or break between releases.
+    </p>
+
+    {#each KNOWN_FLAGS as flag (flag.name)}
+      <label class="checkbox-setting">
+        <input
+          type="checkbox"
+          checked={featureFlags.isEnabled(flag.name)}
+          onchange={(e) => toggleFlag(flag.name, e.currentTarget.checked)}
+        />
+        <div class="flag-text">
+          <span class="flag-label">{flag.label}</span>
+          <span class="flag-desc">{flag.description}</span>
+        </div>
+      </label>
+    {/each}
+  </div>
 </section>
 
 <style>
@@ -108,5 +134,20 @@
     background: var(--bg-tertiary);
     border-radius: 3px;
     color: var(--text-secondary);
+  }
+
+  .flag-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .flag-label {
+    color: var(--text-primary);
+    font-size: 13px;
+    font-weight: 500;
+  }
+  .flag-desc {
+    color: var(--text-muted);
+    font-size: 12px;
   }
 </style>
