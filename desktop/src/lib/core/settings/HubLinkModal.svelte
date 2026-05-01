@@ -161,7 +161,7 @@
               </div>
               <div class="option-content">
                 <h3>Treeline Cloud</h3>
-                <p>Sign in at pro.treeline.money. Provisioning is automatic.</p>
+                <p>Sign in at pro.treeline.money.</p>
               </div>
               <Icon name="arrow-right" size={16} />
             </button>
@@ -180,9 +180,9 @@
         {:else if phase === "form"}
           {#if destination === "cloud"}
             <p class="group-desc">
-              You'll sign in or sign up at <code>pro.treeline.money</code> in your browser.
-              We'll provision a hub on your account if you don't already have one and detect
-              the authorization automatically.
+              We'll open <code>pro.treeline.money</code> in your browser. Sign in (or sign
+              up) and authorize this device. If it's your first time, you'll need to
+              activate a hub from the Pro dashboard before authorizing.
             </p>
           {:else}
             <p class="group-desc">
@@ -269,8 +269,8 @@
           <p class="error-text">{errorMessage}</p>
           {#if destination === "cloud"}
             <p class="group-desc">
-              If you don't have a Treeline Cloud account yet, sign up at
-              <code>pro.treeline.money</code> first, then come back and try again.
+              Confirm you've signed in at <code>pro.treeline.money</code> and activated a
+              hub from the dashboard, then try again.
             </p>
             <div class="error-action">
               <button class="btn secondary" onclick={() => openUrl(CLOUD_URL)}>
