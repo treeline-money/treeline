@@ -2409,6 +2409,157 @@ fn hub_watch_status(state: State<HubWatchState>) -> Result<bool, String> {
 }
 
 // ============================================================================
+// Hub link (device-code OAuth)
+// ============================================================================
+
+/// State for an in-progress device-code link. Held between
+/// `start_hub_link` and the poll loop the frontend drives.
+pub struct HubLinkState {
+    flow: Mutex<Option<treeline_core::services::hub_client::DeviceCodeLink>>,
+}
+
+impl Default for HubLinkState {
+    fn default() -> Self {
+        Self {
+            flow: Mutex::new(None),
+        }
+    }
+}
+
+/// Public-facing snapshot of an in-progress link, returned to the frontend.
+/// Excludes `device_code` (private polling secret) and `expires_at` (frontend
+/// trusts the backend to time it out).
+#[derive(serde::Serialize)]
+struct HubLinkInfo {
+    user_code: String,
+    verification_uri: String,
+    verification_uri_complete: String,
+    interval: u64,
+    url: String,
+    device_name: String,
+}
+
+/// Outcome surface for `poll_hub_link`. Mirrors the core
+/// `DeviceCodeLinkOutcome` but flattened for serde + the frontend.
+#[derive(serde::Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum HubLinkPollResult {
+    Pending,
+    SlowDown,
+    Linked { hub_url: String, device_name: String },
+    Expired,
+    Denied,
+}
+
+/// Initiate a device-code link. Stores the in-progress flow in state and
+/// returns the user-code + verification URL the UI displays. Caller drives
+/// the polling loop via `poll_hub_link`.
+#[tauri::command]
+fn start_hub_link(
+    state: State<HubLinkState>,
+    url: String,
+    device_name: String,
+) -> Result<HubLinkInfo, String> {
+    use treeline_core::services::hub_client::DeviceCodeLink;
+
+    let flow = DeviceCodeLink::start(&url, &device_name).map_err(|e| e.to_string())?;
+    let info = HubLinkInfo {
+        user_code: flow.user_code.clone(),
+        verification_uri: flow.verification_uri.clone(),
+        verification_uri_complete: flow.verification_uri_complete.clone(),
+        interval: flow.interval,
+        url: flow.url.clone(),
+        device_name: flow.device_name.clone(),
+    };
+
+    let mut guard = state.flow.lock().map_err(|_| "Lock failed".to_string())?;
+    *guard = Some(flow);
+
+    Ok(info)
+}
+
+/// Poll the active device-code link once. Frontend should call this every
+/// `interval` seconds (and again after `slow_down`).
+#[tauri::command]
+fn poll_hub_link(state: State<HubLinkState>) -> Result<HubLinkPollResult, String> {
+    use treeline_core::services::hub_client::DeviceCodeLinkOutcome;
+
+    let flow = {
+        let guard = state.flow.lock().map_err(|_| "Lock failed".to_string())?;
+        guard
+            .as_ref()
+            .ok_or_else(|| "No link in progress".to_string())?
+            .clone()
+    };
+
+    let treeline_dir = get_treeline_dir()?;
+
+    match flow.poll(&treeline_dir).map_err(|e| e.to_string())? {
+        DeviceCodeLinkOutcome::Pending => Ok(HubLinkPollResult::Pending),
+        DeviceCodeLinkOutcome::SlowDown => Ok(HubLinkPollResult::SlowDown),
+        DeviceCodeLinkOutcome::Linked {
+            hub_url,
+            device_name,
+        } => {
+            let mut guard = state.flow.lock().map_err(|_| "Lock failed".to_string())?;
+            *guard = None;
+            Ok(HubLinkPollResult::Linked {
+                hub_url,
+                device_name,
+            })
+        }
+        DeviceCodeLinkOutcome::Expired => {
+            let mut guard = state.flow.lock().map_err(|_| "Lock failed".to_string())?;
+            *guard = None;
+            Ok(HubLinkPollResult::Expired)
+        }
+        DeviceCodeLinkOutcome::Denied => {
+            let mut guard = state.flow.lock().map_err(|_| "Lock failed".to_string())?;
+            *guard = None;
+            Ok(HubLinkPollResult::Denied)
+        }
+    }
+}
+
+/// Discard an in-progress link. Used when the user closes the modal.
+#[tauri::command]
+fn cancel_hub_link(state: State<HubLinkState>) -> Result<(), String> {
+    let mut guard = state.flow.lock().map_err(|_| "Lock failed".to_string())?;
+    *guard = None;
+    Ok(())
+}
+
+/// Unlink the device — removes `hub.json`. Caller should also stop the
+/// in-process watcher first if it's running.
+#[tauri::command]
+fn unlink_hub() -> Result<(), String> {
+    let treeline_dir = get_treeline_dir()?;
+    treeline_core::config::HubConfig::remove(&treeline_dir).map_err(|e| e.to_string())
+}
+
+/// Read the current hub link status from `hub.json`. Returns `None` when not
+/// linked.
+#[derive(serde::Serialize)]
+struct HubLinkStatus {
+    url: String,
+    device_name: String,
+    last_push: Option<chrono::DateTime<chrono::Utc>>,
+    last_pull: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[tauri::command]
+fn get_hub_link_status() -> Result<Option<HubLinkStatus>, String> {
+    let treeline_dir = get_treeline_dir()?;
+    let cfg = treeline_core::config::HubConfig::load(&treeline_dir).map_err(|e| e.to_string())?;
+    Ok(cfg.map(|c| HubLinkStatus {
+        url: c.url,
+        device_name: c.device_name,
+        last_push: c.last_push,
+        last_pull: c.last_pull,
+    }))
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -3360,6 +3511,7 @@ pub fn run() {
         .manage(LoggingState::default())
         .manage(PluginWatcherState::default())
         .manage(HubWatchState::default())
+        .manage(HubLinkState::default())
         .setup(|app| {
             let window = app.get_webview_window("main").unwrap();
             let devtools_state = app.state::<DevtoolsState>();
@@ -3547,7 +3699,13 @@ pub fn run() {
             // Hub watch (background watcher)
             start_hub_watch,
             stop_hub_watch,
-            hub_watch_status
+            hub_watch_status,
+            // Hub link (device-code OAuth)
+            start_hub_link,
+            poll_hub_link,
+            cancel_hub_link,
+            unlink_hub,
+            get_hub_link_status
         ]);
 
         // WebDriver plugin for e2e testing (only included with --features e2e-testing)

@@ -117,6 +117,198 @@ pub trait WatchObserver: Send {
     fn on_event(&mut self, event: WatchEvent);
 }
 
+// ============================================================================
+// Device-code link flow
+// ============================================================================
+
+/// In-progress device-code OAuth link.
+///
+/// The caller (CLI or desktop UI) holds this between `start` and the
+/// successful `poll` that returns `Linked`. The flow has two visible
+/// pieces: a `verification_uri_complete` to open in a browser, and a
+/// short `user_code` to display alongside.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceCodeLink {
+    /// Hub URL the device code was issued against. Trimmed of trailing `/`.
+    pub url: String,
+    /// Friendly device name supplied at start time. Echoed in `Linked`.
+    pub device_name: String,
+    /// Server-issued long opaque code — used for polling, never shown.
+    pub device_code: String,
+    /// Short user-facing code (e.g. `T24Y-PSKJ`) shown beside the URL.
+    pub user_code: String,
+    /// `<hub>/authorize` — what to display if the caller wants the bare URL.
+    pub verification_uri: String,
+    /// `<hub>/authorize?user_code=…` — preferred URL to open in a browser
+    /// because it pre-fills the form on the hub.
+    pub verification_uri_complete: String,
+    /// Poll interval in seconds. The hub may bump this via `slow_down`.
+    pub interval: u64,
+    /// When the device code stops being valid.
+    pub expires_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Outcome of a single `DeviceCodeLink::poll` call.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum DeviceCodeLinkOutcome {
+    /// User hasn't completed the browser flow yet — poll again after `interval`.
+    Pending,
+    /// Hub asked us to back off — caller should add `interval` to the wait.
+    SlowDown,
+    /// Linked — `hub.json` was written to the supplied `treeline_dir`.
+    Linked { hub_url: String, device_name: String },
+    /// Device code expired before authorization completed — caller restarts.
+    Expired,
+    /// User explicitly denied the authorization.
+    Denied,
+}
+
+impl DeviceCodeLink {
+    /// Start a device-code link against the given hub.
+    ///
+    /// Performs a `/health` check first so a typo'd URL fails fast with a
+    /// clear error rather than waiting for the device-code request to hang.
+    /// Returns the `DeviceCodeLink` the caller polls until `Linked`.
+    pub fn start(url: &str, device_name: &str) -> Result<Self> {
+        let url = url.trim_end_matches('/').to_string();
+        let device_name = device_name.to_string();
+
+        let http = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(15))
+            .build()
+            .context("Failed to construct HTTP client")?;
+
+        let resp = http
+            .get(format!("{}/health", url))
+            .send()
+            .with_context(|| format!("Failed to reach hub at {}. Is it running?", url))?;
+        if !resp.status().is_success() {
+            anyhow::bail!("Hub health check failed with status {}", resp.status());
+        }
+
+        let resp = http
+            .post(format!("{}/device/code", url))
+            .form(&[
+                ("scope", "pull push"),
+                ("client_name", device_name.as_str()),
+            ])
+            .send()
+            .context("Failed to request device code")?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().unwrap_or_default();
+            anyhow::bail!("Hub rejected device code request ({}): {}", status, body);
+        }
+
+        let body: serde_json::Value =
+            resp.json().context("Failed to parse device code response")?;
+        let device_code = body["device_code"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Hub response missing device_code"))?
+            .to_string();
+        let user_code = body["user_code"].as_str().unwrap_or("").to_string();
+        let verification_uri = body["verification_uri"].as_str().unwrap_or("").to_string();
+        let verification_uri_complete = body["verification_uri_complete"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        let interval = body["interval"].as_i64().unwrap_or(2).max(1) as u64;
+        let expires_in = body["expires_in"].as_i64().unwrap_or(600).max(60);
+        let expires_at = chrono::Utc::now() + chrono::Duration::seconds(expires_in);
+
+        Ok(Self {
+            url,
+            device_name,
+            device_code,
+            user_code,
+            verification_uri,
+            verification_uri_complete,
+            interval,
+            expires_at,
+        })
+    }
+
+    /// Poll `/token` once. On `Linked`, writes `hub.json` into `treeline_dir`.
+    ///
+    /// Caller is responsible for sleeping `interval` between polls. Hub may
+    /// also signal `SlowDown`, in which case the caller should add another
+    /// `interval` to the wait before polling again.
+    pub fn poll(&self, treeline_dir: &Path) -> Result<DeviceCodeLinkOutcome> {
+        if chrono::Utc::now() > self.expires_at {
+            return Ok(DeviceCodeLinkOutcome::Expired);
+        }
+
+        let http = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(15))
+            .build()
+            .context("Failed to construct HTTP client")?;
+
+        let resp = http
+            .post(format!("{}/token", self.url))
+            .form(&[
+                ("grant_type", "device_code"),
+                ("device_code", self.device_code.as_str()),
+            ])
+            .send()
+            .context("Failed to poll /token")?;
+
+        if resp.status().is_success() {
+            let pair: serde_json::Value =
+                resp.json().context("Failed to parse token response")?;
+            let access_token = pair["access_token"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Token response missing access_token"))?
+                .to_string();
+            let refresh_token = pair["refresh_token"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Token response missing refresh_token"))?
+                .to_string();
+            // Custom OAuth extension: when an authorization server orchestrates
+            // a link on behalf of a downstream hub (Treeline Cloud), the
+            // /token response carries the hub's actual URL. Prefer it so sync
+            // bypasses the orchestrator and goes direct.
+            let hub_url = pair["hub_url"]
+                .as_str()
+                .map(|s| s.trim_end_matches('/').to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| self.url.clone());
+
+            let hub = HubConfig {
+                url: hub_url.clone(),
+                access_token,
+                refresh_token,
+                device_name: self.device_name.clone(),
+                last_push: None,
+                last_pull: None,
+                base_hash: None,
+            };
+            std::fs::create_dir_all(treeline_dir)
+                .with_context(|| format!("Failed to create {}", treeline_dir.display()))?;
+            hub.save(treeline_dir)?;
+
+            return Ok(DeviceCodeLinkOutcome::Linked {
+                hub_url,
+                device_name: self.device_name.clone(),
+            });
+        }
+
+        // RFC 8628: 400 with `error` of authorization_pending / slow_down /
+        // expired_token / access_denied / invalid_grant. Anything else is
+        // a real failure.
+        let body: serde_json::Value = resp.json().unwrap_or_default();
+        let err = body["error"].as_str().unwrap_or("");
+        match err {
+            "authorization_pending" => Ok(DeviceCodeLinkOutcome::Pending),
+            "slow_down" => Ok(DeviceCodeLinkOutcome::SlowDown),
+            "expired_token" => Ok(DeviceCodeLinkOutcome::Expired),
+            "access_denied" => Ok(DeviceCodeLinkOutcome::Denied),
+            other => anyhow::bail!("Token endpoint returned error: {}", other),
+        }
+    }
+}
+
 /// Device-side hub client. Holds the treeline_dir + a reusable HTTP client.
 pub struct HubClient {
     treeline_dir: PathBuf,

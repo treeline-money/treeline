@@ -42,6 +42,7 @@
     GeneralSection,
     AppearanceSection,
     IntegrationsSection,
+    HubSection,
     PluginsSection,
     StorageSection,
     AdvancedSection,
@@ -50,7 +51,7 @@
   import SimplefinSetupModal from "./settings/SimplefinSetupModal.svelte";
   import LunchflowSetupModal from "./settings/LunchflowSetupModal.svelte";
 
-  type Section = "general" | "appearance" | "integrations" | "plugins" | "storage" | "advanced" | "about";
+  type Section = "general" | "appearance" | "integrations" | "hub" | "plugins" | "storage" | "advanced" | "about";
 
   interface Props {
     isOpen: boolean;
@@ -80,6 +81,7 @@
     { id: "general", label: "General", icon: "settings" },
     { id: "appearance", label: "Appearance", icon: "palette" },
     { id: "integrations", label: "Integrations", icon: "link" },
+    { id: "hub", label: "Hub", icon: "refresh" },
     { id: "plugins", label: "Plugins", icon: "zap" },
     { id: "storage", label: "Storage", icon: "database" },
     { id: "advanced", label: "Advanced", icon: "command" },
@@ -977,6 +979,8 @@
                 onOpenExternalUrl={openExternalUrl}
                 {formatLastSync}
               />
+            {:else if activeSection === "hub"}
+              <HubSection />
             {:else if activeSection === "plugins"}
               <PluginsSection
                 {plugins}

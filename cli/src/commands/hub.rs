@@ -13,8 +13,8 @@ use std::time::Duration;
 use treeline_core::config::HubConfig;
 use treeline_core::services::HubClient;
 use treeline_core::services::hub_client::{
-    ConflictDescription, ConflictKind, PullOutcome, PushOutcome, WatchEvent, WatchObserver,
-    WatchOptions,
+    ConflictDescription, ConflictKind, DeviceCodeLink, DeviceCodeLinkOutcome, PullOutcome,
+    PushOutcome, WatchEvent, WatchObserver, WatchOptions,
 };
 
 use super::{get_context, get_treeline_dir};
@@ -210,139 +210,42 @@ fn run_tokens_revoke(prefix: &str, json: bool) -> Result<()> {
 
 fn run_link(url: &str, name_override: Option<&str>) -> Result<()> {
     let treeline_dir = get_treeline_dir();
-    let url = url.trim_end_matches('/').to_string();
-
     let device_name = name_override
         .map(|s| s.to_string())
         .unwrap_or_else(default_device_name);
 
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .context("Failed to construct HTTP client")?;
-
-    // Sanity-check that the hub is reachable before we ask it for a code.
-    let resp = client
-        .get(format!("{}/health", url))
-        .send()
-        .with_context(|| format!("Failed to reach hub at {}. Is it running?", url))?;
-    if !resp.status().is_success() {
-        anyhow::bail!("Hub health check failed with status {}", resp.status());
-    }
-
-    // Step 1: ask the hub for a device code.
-    let resp = client
-        .post(format!("{}/device/code", url))
-        .form(&[
-            ("scope", "pull push"),
-            ("client_name", device_name.as_str()),
-        ])
-        .send()
-        .context("Failed to request device code")?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().unwrap_or_default();
-        anyhow::bail!("Hub rejected device code request ({}): {}", status, body);
-    }
-
-    let body: serde_json::Value = resp.json().context("Failed to parse device code response")?;
-    let device_code = body["device_code"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("Hub response missing device_code"))?
-        .to_string();
-    let user_code = body["user_code"].as_str().unwrap_or("").to_string();
-    let verification_uri_complete = body["verification_uri_complete"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
-    let interval = body["interval"].as_i64().unwrap_or(2).max(1) as u64;
-    let expires_in = body["expires_in"].as_i64().unwrap_or(600).max(60) as u64;
+    let flow = DeviceCodeLink::start(url, &device_name)?;
 
     eprintln!();
     eprintln!("Open this URL to sign in:");
     eprintln!();
-    eprintln!("  {}", verification_uri_complete);
+    eprintln!("  {}", flow.verification_uri_complete);
     eprintln!();
-    if !user_code.is_empty() {
-        eprintln!("Code: {}", user_code.bold());
+    if !flow.user_code.is_empty() {
+        eprintln!("Code: {}", flow.user_code.bold());
         eprintln!();
     }
     eprintln!("Waiting...");
 
-    // Step 2: poll /token until the user completes the browser-side authorize
-    // step (or the device code expires).
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(expires_in);
-    let pair = loop {
-        if std::time::Instant::now() > deadline {
-            anyhow::bail!("Device code expired before authorization completed.");
-        }
+    loop {
+        std::thread::sleep(Duration::from_secs(flow.interval));
 
-        std::thread::sleep(std::time::Duration::from_secs(interval));
-
-        let resp = client
-            .post(format!("{}/token", url))
-            .form(&[
-                ("grant_type", "device_code"),
-                ("device_code", device_code.as_str()),
-            ])
-            .send()
-            .context("Failed to poll /token")?;
-
-        if resp.status().is_success() {
-            break resp
-                .json::<serde_json::Value>()
-                .context("Failed to parse token response")?;
-        }
-
-        // RFC 8628: 400 with `error` of authorization_pending / slow_down /
-        // expired_token / access_denied / invalid_grant. Anything else is
-        // a real failure.
-        let body: serde_json::Value = resp.json().unwrap_or_default();
-        let err = body["error"].as_str().unwrap_or("");
-        match err {
-            "authorization_pending" => continue,
-            "slow_down" => {
-                std::thread::sleep(std::time::Duration::from_secs(interval));
+        match flow.poll(&treeline_dir)? {
+            DeviceCodeLinkOutcome::Pending => continue,
+            DeviceCodeLinkOutcome::SlowDown => {
+                std::thread::sleep(Duration::from_secs(flow.interval));
                 continue;
             }
-            "expired_token" => anyhow::bail!("Device code expired before authorization completed."),
-            "access_denied" => anyhow::bail!("Authorization was denied."),
-            other => anyhow::bail!("Token endpoint returned error: {}", other),
+            DeviceCodeLinkOutcome::Linked { device_name, .. } => {
+                eprintln!("{} Linked as \"{}\"", "✓".green(), device_name);
+                return Ok(());
+            }
+            DeviceCodeLinkOutcome::Expired => {
+                anyhow::bail!("Device code expired before authorization completed.")
+            }
+            DeviceCodeLinkOutcome::Denied => anyhow::bail!("Authorization was denied."),
         }
-    };
-
-    let access_token = pair["access_token"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("Token response missing access_token"))?
-        .to_string();
-    let refresh_token = pair["refresh_token"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("Token response missing refresh_token"))?
-        .to_string();
-    // Custom OAuth extension: when an authorization server orchestrates
-    // a link on behalf of a downstream hub (e.g. Treeline Cloud), the
-    // /token response carries the hub's actual URL. Prefer it so sync
-    // bypasses the orchestrator and goes direct.
-    let hub_url = pair["hub_url"]
-        .as_str()
-        .map(|s| s.trim_end_matches('/').to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| url.clone());
-
-    let hub = HubConfig {
-        url: hub_url,
-        access_token,
-        refresh_token,
-        device_name: device_name.clone(),
-        last_push: None,
-        last_pull: None,
-        base_hash: None,
-    };
-    hub.save(&treeline_dir)?;
-
-    eprintln!("{} Linked as \"{}\"", "✓".green(), device_name);
-    Ok(())
+    }
 }
 
 /// OS hostname (best-effort), or "Treeline device" as a final fallback.

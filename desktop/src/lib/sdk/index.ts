@@ -147,6 +147,15 @@ export type { PluginUpdateInfo } from "./pluginUpdates.svelte";
 // Hub watch (in-process background watcher)
 export { hubWatch } from "./hub.svelte";
 export type { WatchEvent, WatchStatus } from "./hub.svelte";
+// Hub link (device-code OAuth)
+export {
+  startHubLink,
+  pollHubLink,
+  cancelHubLink,
+  unlinkHub,
+  getHubLinkStatus,
+} from "./hub.svelte";
+export type { HubLinkInfo, HubLinkPollResult, HubLinkStatus } from "./hub.svelte";
 
 // Platform utilities
 export { isMac, modKey, formatShortcut } from "./platform";

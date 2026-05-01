@@ -172,3 +172,53 @@ class HubWatchStore {
 }
 
 export const hubWatch = new HubWatchStore();
+
+// ============================================================================
+// Hub link (device-code OAuth)
+// ============================================================================
+
+export interface HubLinkInfo {
+  user_code: string;
+  verification_uri: string;
+  verification_uri_complete: string;
+  interval: number;
+  url: string;
+  device_name: string;
+}
+
+export type HubLinkPollResult =
+  | { status: "pending" }
+  | { status: "slow_down" }
+  | { status: "linked"; hub_url: string; device_name: string }
+  | { status: "expired" }
+  | { status: "denied" };
+
+export interface HubLinkStatus {
+  url: string;
+  device_name: string;
+  last_push: string | null;
+  last_pull: string | null;
+}
+
+/** Start a device-code link against the given hub. Returns the user-code +
+ *  verification URL the UI should display. Frontend then polls
+ *  `pollHubLink` every `interval` seconds until linked / expired. */
+export async function startHubLink(url: string, deviceName: string): Promise<HubLinkInfo> {
+  return invoke<HubLinkInfo>("start_hub_link", { url, deviceName });
+}
+
+export async function pollHubLink(): Promise<HubLinkPollResult> {
+  return invoke<HubLinkPollResult>("poll_hub_link");
+}
+
+export async function cancelHubLink(): Promise<void> {
+  return invoke("cancel_hub_link");
+}
+
+export async function unlinkHub(): Promise<void> {
+  return invoke("unlink_hub");
+}
+
+export async function getHubLinkStatus(): Promise<HubLinkStatus | null> {
+  return invoke<HubLinkStatus | null>("get_hub_link_status");
+}
