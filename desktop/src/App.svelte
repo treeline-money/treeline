@@ -7,7 +7,7 @@
   import UnlockModal from "./lib/core/UnlockModal.svelte";
   import WhatsNewModal from "./lib/core/WhatsNewModal.svelte";
   import { initializePlugins } from "./lib/plugins";
-  import { themeManager, isSyncNeeded, runSync, toast, getAppSetting, setAppSetting, registry, activityStore, tryAutoUnlock, getEncryptionStatus } from "./lib/sdk";
+  import { themeManager, isSyncNeeded, runSync, toast, getAppSetting, setAppSetting, registry, activityStore, tryAutoUnlock, getEncryptionStatus, hubWatch } from "./lib/sdk";
   import { loadCurrency } from "./lib/shared";
 
   let isLoading = $state(true);
@@ -67,6 +67,10 @@
       await initializePlugins();
 
       isLoading = false;
+
+      // Start in-process hub watcher (no-op if not linked or watch lock held
+      // by an external `tl hub watch`).
+      hubWatch.start();
 
       // Show welcome modal for first-time users
       if (!hasCompletedOnboarding) {

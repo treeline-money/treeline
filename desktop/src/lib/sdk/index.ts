@@ -144,6 +144,10 @@ export type { Activity } from "./activity.svelte";
 export { pluginUpdatesStore } from "./pluginUpdates.svelte";
 export type { PluginUpdateInfo } from "./pluginUpdates.svelte";
 
+// Hub watch (in-process background watcher)
+export { hubWatch } from "./hub.svelte";
+export type { WatchEvent, WatchStatus } from "./hub.svelte";
+
 // Platform utilities
 export { isMac, modKey, formatShortcut } from "./platform";
 

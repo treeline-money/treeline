@@ -6,7 +6,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Mutex,
+    Arc, Mutex,
 };
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -2298,6 +2298,117 @@ fn get_logs_path(logging_state: State<LoggingState>) -> Result<Option<String>, S
 }
 
 // ============================================================================
+// Hub watch (in-process background watcher)
+// ============================================================================
+
+/// State for the in-process hub watcher. Holds the stop flag so the watcher
+/// can be cancelled from `stop_hub_watch` (e.g. on logout / before unlink).
+pub struct HubWatchState {
+    stop: Mutex<Option<Arc<AtomicBool>>>,
+}
+
+impl Default for HubWatchState {
+    fn default() -> Self {
+        Self {
+            stop: Mutex::new(None),
+        }
+    }
+}
+
+/// Start the in-process hub watcher.
+///
+/// Returns Ok(true) if the watcher was started, Ok(false) if one was already
+/// running. Errors if `hub.json` doesn't exist or the watch lock can't be
+/// acquired (e.g. a CLI `tl hub watch` is running for the same dir).
+#[tauri::command]
+fn start_hub_watch(
+    app: AppHandle,
+    state: State<HubWatchState>,
+    encryption_state: State<EncryptionState>,
+) -> Result<bool, String> {
+    {
+        let guard = state.stop.lock().map_err(|_| "Lock failed".to_string())?;
+        if guard.is_some() {
+            return Ok(false);
+        }
+    }
+
+    let treeline_dir = get_treeline_dir()?;
+    if !treeline_dir.join("hub.json").exists() {
+        return Err("Not linked to a hub.".to_string());
+    }
+
+    let encryption_key = encryption_state
+        .key
+        .lock()
+        .map_err(|_| "Failed to lock encryption state".to_string())?
+        .clone();
+
+    let ctx = TreelineContext::new(&treeline_dir, encryption_key.as_deref())
+        .map_err(|e| format!("Failed to build watcher context: {}", e))?;
+
+    let stop = Arc::new(AtomicBool::new(false));
+    {
+        let mut guard = state.stop.lock().map_err(|_| "Lock failed".to_string())?;
+        *guard = Some(Arc::clone(&stop));
+    }
+
+    let app_handle = app.clone();
+    let watcher_dir = treeline_dir.clone();
+
+    std::thread::spawn(move || {
+        use treeline_core::services::HubClient;
+        use treeline_core::services::hub_client::{WatchEvent, WatchObserver, WatchOptions};
+
+        struct TauriObserver {
+            app: AppHandle,
+        }
+        impl WatchObserver for TauriObserver {
+            fn on_event(&mut self, event: WatchEvent) {
+                let _ = self.app.emit("hub-watch-event", &event);
+            }
+        }
+
+        let client = HubClient::new(watcher_dir);
+        let opts = WatchOptions::default();
+        let mut observer = TauriObserver {
+            app: app_handle.clone(),
+        };
+
+        if let Err(e) = client.watch(&ctx, opts, &mut observer, stop) {
+            let _ = app_handle.emit(
+                "hub-watch-event",
+                WatchEvent::Error {
+                    message: e.to_string(),
+                },
+            );
+        }
+    });
+
+    Ok(true)
+}
+
+/// Signal the running watcher to stop and clear the state. Returns Ok(true)
+/// if a watcher was running, Ok(false) if there was nothing to stop.
+#[tauri::command]
+fn stop_hub_watch(state: State<HubWatchState>) -> Result<bool, String> {
+    let mut guard = state.stop.lock().map_err(|_| "Lock failed".to_string())?;
+    if let Some(flag) = guard.take() {
+        flag.store(true, Ordering::Relaxed);
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+/// Whether a hub watcher is currently running in this process.
+#[tauri::command]
+fn hub_watch_status(state: State<HubWatchState>) -> Result<bool, String> {
+    let guard = state.stop.lock().map_err(|_| "Lock failed".to_string())?;
+    Ok(guard.is_some())
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -3248,6 +3359,7 @@ pub fn run() {
         .manage(TreelineContextState::default())
         .manage(LoggingState::default())
         .manage(PluginWatcherState::default())
+        .manage(HubWatchState::default())
         .setup(|app| {
             let window = app.get_webview_window("main").unwrap();
             let devtools_state = app.state::<DevtoolsState>();
@@ -3431,7 +3543,11 @@ pub fn run() {
             log_page,
             log_action,
             log_error,
-            get_logs_path
+            get_logs_path,
+            // Hub watch (background watcher)
+            start_hub_watch,
+            stop_hub_watch,
+            hub_watch_status
         ]);
 
         // WebDriver plugin for e2e testing (only included with --features e2e-testing)
