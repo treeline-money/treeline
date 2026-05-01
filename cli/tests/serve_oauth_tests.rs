@@ -787,6 +787,130 @@ async fn device_code_poll_returns_invalid_grant_for_unknown_code() {
     assert_eq!(body["error"], "invalid_grant");
 }
 
+// ============================================================================
+// /authorize JSON content negotiation
+//
+// Pro orchestrates the device-code flow server-side; HTML responses with
+// distinctive headings made the adapter brittle to UI tweaks. With
+// `Accept: application/json` the handler returns structured JSON and
+// proper status codes instead.
+// ============================================================================
+
+#[tokio::test]
+async fn authorize_returns_json_when_accept_header_says_so() {
+    let hub = spawn_hub().await;
+    let c = reqwest::Client::new();
+
+    // Start a device-code session.
+    let resp = c
+        .post(format!("{}/device/code", hub.base_url))
+        .form(&[("scope", "pull push"), ("client_name", "x")])
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let user_code = body["user_code"].as_str().unwrap().to_string();
+
+    // Authorize with Accept: application/json.
+    let resp = c
+        .post(format!("{}/authorize", hub.base_url))
+        .header("Accept", "application/json")
+        .form(&[
+            ("user_code", user_code.as_str()),
+            ("hub_token", hub.master_token.as_str()),
+            ("client_name", "Json Caller"),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .starts_with("application/json"));
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "linked");
+}
+
+#[tokio::test]
+async fn authorize_json_returns_401_for_invalid_master() {
+    let hub = spawn_hub().await;
+    let c = reqwest::Client::new();
+
+    let resp = c
+        .post(format!("{}/device/code", hub.base_url))
+        .form(&[("scope", "pull push"), ("client_name", "x")])
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let user_code = body["user_code"].as_str().unwrap().to_string();
+
+    let resp = c
+        .post(format!("{}/authorize", hub.base_url))
+        .header("Accept", "application/json")
+        .form(&[
+            ("user_code", user_code.as_str()),
+            ("hub_token", "wrong-master"),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["error"], "invalid_token");
+}
+
+#[tokio::test]
+async fn authorize_json_returns_404_for_unknown_user_code() {
+    let hub = spawn_hub().await;
+    let resp = reqwest::Client::new()
+        .post(format!("{}/authorize", hub.base_url))
+        .header("Accept", "application/json")
+        .form(&[
+            ("user_code", "NOPE-NOPE"),
+            ("hub_token", hub.master_token.as_str()),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["error"], "code_not_found");
+}
+
+#[tokio::test]
+async fn authorize_returns_html_by_default_browser_path_unchanged() {
+    let hub = spawn_hub().await;
+    let c = reqwest::Client::new();
+
+    let resp = c
+        .post(format!("{}/device/code", hub.base_url))
+        .form(&[("scope", "pull push"), ("client_name", "x")])
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let user_code = body["user_code"].as_str().unwrap().to_string();
+
+    // No Accept header → still returns HTML (browser-friendly fallback).
+    let resp = c
+        .post(format!("{}/authorize", hub.base_url))
+        .form(&[
+            ("user_code", user_code.as_str()),
+            ("hub_token", hub.master_token.as_str()),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("Device linked"));
+    assert!(body.contains("<html"));
+}
+
 #[tokio::test]
 async fn device_code_authorize_with_wrong_master_does_not_complete() {
     let hub = spawn_hub().await;

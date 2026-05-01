@@ -749,13 +749,26 @@ struct AuthorizeForm {
 
 async fn handle_oauth_authorize_submit(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     axum::Form(form): axum::Form<AuthorizeForm>,
 ) -> axum::response::Response {
+    let wants_json = wants_json_response(&headers);
+
     // Validate the master hub token. This is what proves the user owns the hub.
     let valid =
         HubService::validate_token(&state.treeline_dir, &form.hub_token).unwrap_or(false);
 
     if !valid {
+        if wants_json {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({
+                    "error": "invalid_token",
+                    "error_description": "The hub token is incorrect.",
+                })),
+            )
+                .into_response();
+        }
         let body = r#"<h1 class="error-heading">Invalid token</h1>
 <p class="lead">The hub token you entered is incorrect. Double-check it and try again.</p>
 <p class="hint">Retrieve your token with <code>fly ssh console -a treeline-hub -C "cat /data/hub-token"</code> or from your local <code>~/.treeline/hub-token</code> if you're self-hosting.</p>
@@ -767,7 +780,7 @@ async fn handle_oauth_authorize_submit(
     // (so the device shows up under a friendly name in `/api/clients`),
     // mints tokens, and tells the user to switch back to their terminal.
     if let Some(user_code) = form.user_code.as_deref().filter(|s| !s.is_empty()) {
-        return complete_device_authorization(state, user_code, form.client_name.clone()).await;
+        return complete_device_authorization(state, user_code, form.client_name.clone(), wants_json).await;
     }
 
     // Resolve the client_id. If the thin client didn't register (some OAuth
@@ -825,6 +838,7 @@ async fn complete_device_authorization(
     state: Arc<AppState>,
     user_code: &str,
     client_name: Option<String>,
+    wants_json: bool,
 ) -> axum::response::Response {
     // Look up the session to learn (a) its client_id (so we can rename it
     // for the dashboard) and (b) the scopes the CLI requested (so the
@@ -832,6 +846,16 @@ async fn complete_device_authorization(
     let info = match state.oauth_store.find_pending_device_session(user_code) {
         Ok(Some(i)) => i,
         Ok(None) => {
+            if wants_json {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({
+                        "error": "code_not_found",
+                        "error_description": "That sign-in code is unknown or expired.",
+                    })),
+                )
+                    .into_response();
+            }
             let body = r#"<h1 class="error-heading">Code not found</h1>
 <p class="lead">That sign-in code is unknown or expired. Run <code>tl hub link</code> again to get a fresh one.</p>"#;
             return Html(render_page("Sign in", body)).into_response();
@@ -866,9 +890,33 @@ async fn complete_device_authorization(
             .into_response();
     }
 
+    if wants_json {
+        return (
+            StatusCode::OK,
+            Json(json!({"status": "linked"})),
+        )
+            .into_response();
+    }
     let body = r#"<h1>Device linked</h1>
 <p class="lead">You can close this tab — the terminal will finish automatically.</p>"#;
     Html(render_page("Linked", body)).into_response()
+}
+
+/// Inspect the request's `Accept` header for a JSON content negotiation.
+/// Browsers send `text/html, ...` and get the rendered page; programmatic
+/// callers (Pro's link orchestrator) send `application/json` and get a
+/// machine-readable response with proper status codes.
+fn wants_json_response(headers: &HeaderMap) -> bool {
+    headers
+        .get(axum::http::header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| {
+            // Fast path: explicit "application/json" anywhere in the list,
+            // and not preferring text/html over it. Conservative — when in
+            // doubt, return HTML to keep browsers happy.
+            v.contains("application/json") && !v.starts_with("text/html")
+        })
+        .unwrap_or(false)
 }
 
 #[derive(serde::Deserialize)]
