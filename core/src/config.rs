@@ -71,6 +71,16 @@ pub struct HubConfig {
     /// Used for conflict detection — "what version am I based on?"
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_hash: Option<String>,
+    /// The URL the user originally pointed at when linking — typically
+    /// `pro.treeline.money` for Pro-orchestrated links, or the same as `url`
+    /// for self-hosted hubs. After Pro's link flow completes, `url` gets
+    /// overwritten with the hub's direct URL (via the `hub_url` extension on
+    /// `/token`), so this field is the only signal that says "this was
+    /// a Pro link." Used by the desktop UI to label the connection.
+    /// Optional for backward compat with hub.json files written before
+    /// this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link_origin: Option<String>,
 }
 
 impl HubConfig {
@@ -264,6 +274,7 @@ mod tests {
             last_push: None,
             last_pull: None,
             base_hash: None,
+            link_origin: None,
         };
         hub.save(temp_dir.path()).unwrap();
 
@@ -288,6 +299,7 @@ mod tests {
             last_push: Some(now),
             last_pull: Some(now),
             base_hash: None,
+            link_origin: None,
         };
         hub.save(temp_dir.path()).unwrap();
 
@@ -308,6 +320,7 @@ mod tests {
             last_push: None,
             last_pull: None,
             base_hash: None,
+            link_origin: None,
         };
         hub.save(temp_dir.path()).unwrap();
         assert!(HubConfig::load(temp_dir.path()).unwrap().is_some());
@@ -333,6 +346,7 @@ mod tests {
             last_push: None,
             last_pull: None,
             base_hash: None,
+            link_origin: None,
         };
         hub.save(temp_dir.path()).unwrap();
 

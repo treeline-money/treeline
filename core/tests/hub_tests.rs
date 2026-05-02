@@ -144,6 +144,7 @@ fn test_hub_config_separate_from_settings() {
         last_push: None,
         last_pull: None,
         base_hash: None,
+        link_origin: None,
     };
     hub.save(temp_dir.path()).unwrap();
 

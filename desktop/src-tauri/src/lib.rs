@@ -2541,10 +2541,16 @@ fn unlink_hub() -> Result<(), String> {
 /// linked.
 #[derive(serde::Serialize)]
 struct HubLinkStatus {
+    /// The hub the device actually talks to for sync. For Pro-orchestrated
+    /// links this is the hub's direct URL (Fly), not pro.treeline.money.
     url: String,
     device_name: String,
     last_push: Option<chrono::DateTime<chrono::Utc>>,
     last_pull: Option<chrono::DateTime<chrono::Utc>>,
+    /// The URL the user pointed at when linking (e.g. `pro.treeline.money`
+    /// for Cloud links, or the hub URL for self-hosted). Used by the UI
+    /// to label the connection. `None` for legacy hub.json files.
+    link_origin: Option<String>,
 }
 
 #[tauri::command]
@@ -2556,6 +2562,7 @@ fn get_hub_link_status() -> Result<Option<HubLinkStatus>, String> {
         device_name: c.device_name,
         last_push: c.last_push,
         last_pull: c.last_pull,
+        link_origin: c.link_origin,
     }))
 }
 

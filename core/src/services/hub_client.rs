@@ -283,6 +283,11 @@ impl DeviceCodeLink {
                 last_push: None,
                 last_pull: None,
                 base_hash: None,
+                // The URL the user pointed the modal at — preserved separately
+                // because Pro's `/token` overwrites `url` with the hub's
+                // direct URL (so sync can bypass Pro), which loses the signal
+                // that this was a Pro-orchestrated link.
+                link_origin: Some(self.url.clone()),
             };
             std::fs::create_dir_all(treeline_dir)
                 .with_context(|| format!("Failed to create {}", treeline_dir.display()))?;
@@ -296,7 +301,9 @@ impl DeviceCodeLink {
 
         // RFC 8628: 400 with `error` of authorization_pending / slow_down /
         // expired_token / access_denied / invalid_grant. Anything else is
-        // a real failure.
+        // a real failure — surface `error_description` so users see Pro's
+        // actual message ("You don't have a hub yet…") instead of an opaque
+        // "server_error" code.
         let body: serde_json::Value = resp.json().unwrap_or_default();
         let err = body["error"].as_str().unwrap_or("");
         match err {
@@ -304,7 +311,13 @@ impl DeviceCodeLink {
             "slow_down" => Ok(DeviceCodeLinkOutcome::SlowDown),
             "expired_token" => Ok(DeviceCodeLinkOutcome::Expired),
             "access_denied" => Ok(DeviceCodeLinkOutcome::Denied),
-            other => anyhow::bail!("Token endpoint returned error: {}", other),
+            other => {
+                let desc = body["error_description"]
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(other);
+                anyhow::bail!("{}", desc);
+            }
         }
     }
 }

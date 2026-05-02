@@ -76,9 +76,13 @@
     return `${days}d ago`;
   }
 
-  function hubDisplayName(url: string): string {
+  function hubDisplayName(s: HubLinkStatus): string {
+    // Prefer `link_origin` because `url` gets overwritten with the hub's
+    // direct (Fly) URL after Pro completes the link. Fall back to `url`
+    // for legacy hub.json files written before `link_origin` existed.
+    const candidate = s.link_origin ?? s.url;
     try {
-      const host = new URL(url).hostname;
+      const host = new URL(candidate).hostname;
       if (host === "pro.treeline.money") return "Treeline Cloud";
       return "Self-hosted hub";
     } catch {
@@ -130,7 +134,7 @@
         <div class="hub-status">
           <span class="status-dot {watcherInfo.kind}"></span>
           <div class="hub-status-text">
-            <h4 class="hub-name">Connected to {hubDisplayName(status.url)}</h4>
+            <h4 class="hub-name">Connected to {hubDisplayName(status)}</h4>
             <span class="hub-substate">{watcherInfo.label}</span>
           </div>
         </div>
