@@ -2529,11 +2529,25 @@ fn cancel_hub_link(state: State<HubLinkState>) -> Result<(), String> {
     Ok(())
 }
 
-/// Unlink the device — removes `hub.json`. Caller should also stop the
-/// in-process watcher first if it's running.
+/// Unlink the device — best-effort RFC 7009 revoke of the device's hub
+/// tokens (so a stolen `hub.json` can't keep using them), then removes
+/// `hub.json` locally. Caller should also stop the in-process watcher
+/// first if it's running.
 #[tauri::command]
 fn unlink_hub() -> Result<(), String> {
+    use treeline_core::services::HubClient;
+
     let treeline_dir = get_treeline_dir()?;
+
+    // Best-effort. If the hub is unreachable we still remove the local
+    // config — the user's intent is clear ("get this device off the hub").
+    // Worst case the tokens linger on the hub until the user revokes via
+    // `tl hub tokens revoke` or the dashboard.
+    let client = HubClient::new(treeline_dir.clone());
+    if let Err(e) = client.revoke_tokens() {
+        eprintln!("[unlink_hub] revoke failed (continuing with local cleanup): {}", e);
+    }
+
     treeline_core::config::HubConfig::remove(&treeline_dir).map_err(|e| e.to_string())
 }
 

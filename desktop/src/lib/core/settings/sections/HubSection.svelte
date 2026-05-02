@@ -10,7 +10,10 @@
     type WatchStatus,
   } from "../../../sdk";
   import HubLinkModal from "../HubLinkModal.svelte";
+  import { openUrl } from "@tauri-apps/plugin-opener";
   import "../settings-shared.css";
+
+  const CLOUD_DASHBOARD_URL = "https://pro.treeline.money/welcome";
 
   let status = $state<HubLinkStatus | null>(null);
   let loading = $state(true);
@@ -76,18 +79,20 @@
     return `${days}d ago`;
   }
 
-  function hubDisplayName(s: HubLinkStatus): string {
+  function isCloud(s: HubLinkStatus): boolean {
     // Prefer `link_origin` because `url` gets overwritten with the hub's
     // direct (Fly) URL after Pro completes the link. Fall back to `url`
     // for legacy hub.json files written before `link_origin` existed.
     const candidate = s.link_origin ?? s.url;
     try {
-      const host = new URL(candidate).hostname;
-      if (host === "pro.treeline.money") return "Treeline Cloud";
-      return "Self-hosted hub";
+      return new URL(candidate).hostname === "pro.treeline.money";
     } catch {
-      return "Self-hosted hub";
+      return false;
     }
+  }
+
+  function hubDisplayName(s: HubLinkStatus): string {
+    return isCloud(s) ? "Treeline Cloud" : "Self-hosted hub";
   }
 
   type StatusKind = "ok" | "active" | "warn" | "error" | "neutral";
@@ -142,14 +147,23 @@
 
       <div class="hub-meta">
         <div class="meta-row">
-          <span class="meta-label">Hub</span>
-          <code class="meta-value">{status.url}</code>
-        </div>
-        <div class="meta-row">
           <span class="meta-label">Device</span>
           <span class="meta-value">{status.device_name}</span>
         </div>
+        {#if !isCloud(status)}
+          <div class="meta-row">
+            <span class="meta-label">Hub</span>
+            <code class="meta-value">{status.url}</code>
+          </div>
+        {/if}
       </div>
+
+      {#if isCloud(status)}
+        <button class="manage-link" onclick={() => openUrl(CLOUD_DASHBOARD_URL)}>
+          Manage in Treeline Cloud
+          <Icon name="external-link" size={12} />
+        </button>
+      {/if}
 
       <div class="hub-divider"></div>
 
@@ -280,6 +294,22 @@
     color: var(--text-primary);
     font-family: var(--font-mono);
     word-break: break-all;
+  }
+
+  .manage-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: var(--spacing-sm);
+    padding: 0;
+    background: transparent;
+    border: none;
+    color: var(--accent-primary);
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .manage-link:hover {
+    text-decoration: underline;
   }
 
   .hub-divider {

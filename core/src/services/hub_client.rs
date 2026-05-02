@@ -462,6 +462,33 @@ impl HubClient {
         Ok(PullOutcome { bytes: size, hash: new_hash })
     }
 
+    /// Best-effort RFC 7009 revoke of this device's refresh token. The hub
+    /// cascades the revoke to every access token minted from it, so the
+    /// device is fully de-authorized after a successful call. Returns Err
+    /// on network failure or non-2xx status; callers (typically `unlink_hub`)
+    /// should log the failure and continue with local cleanup since the
+    /// user's intent is clear.
+    pub fn revoke_tokens(&self) -> Result<()> {
+        let hub = HubConfig::load(&self.treeline_dir)?
+            .ok_or_else(|| anyhow::anyhow!("Not linked to a hub."))?;
+
+        let resp = self
+            .http
+            .post(format!("{}/revoke", hub.url))
+            .form(&[
+                ("token", hub.refresh_token.as_str()),
+                ("token_type_hint", "refresh_token"),
+            ])
+            .timeout(Duration::from_secs(10))
+            .send()
+            .context("Failed to reach /revoke")?;
+
+        if !resp.status().is_success() {
+            anyhow::bail!("Revoke returned {}", resp.status());
+        }
+        Ok(())
+    }
+
     /// Ask the hub for its current bundle hash. Used by the watch loop to
     /// decide whether a pull is needed.
     pub fn poll_hub_hash(&self) -> Result<Option<String>> {
