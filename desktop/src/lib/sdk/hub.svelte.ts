@@ -227,3 +227,17 @@ export async function unlinkHub(): Promise<void> {
 export async function getHubLinkStatus(): Promise<HubLinkStatus | null> {
   return invoke<HubLinkStatus | null>("get_hub_link_status");
 }
+
+/** Outcome of `pushToHubNow`. */
+export type HubPushNowResult =
+  | { status: "pushed"; bytes: number }
+  | { status: "auto_merged"; bytes: number }
+  | { status: "conflict" }
+  | { status: "no_base_snapshot" }
+  | { status: "no_changes" };
+
+/** One-shot push to the linked hub. Used right after linking so the local
+ *  DB lands on the hub immediately — the device is the source of truth. */
+export async function pushToHubNow(): Promise<HubPushNowResult> {
+  return invoke<HubPushNowResult>("push_to_hub_now");
+}

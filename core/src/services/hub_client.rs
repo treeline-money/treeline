@@ -607,7 +607,11 @@ impl HubClient {
                     Some(base) => compute_file_hash(&db_path)
                         .map(|h| h.as_str() != base)
                         .unwrap_or(false),
-                    None => false,
+                    // No base means we've never synced (e.g. just linked). The
+                    // device is the source of truth — treat any local DB as
+                    // "has changes to push" so we don't clobber it with a pull
+                    // from a hub that may have stale or different data.
+                    None => db_path.exists(),
                 };
 
                 if has_local_changes {

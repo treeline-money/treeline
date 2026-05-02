@@ -158,8 +158,14 @@ export {
   cancelHubLink,
   unlinkHub,
   getHubLinkStatus,
+  pushToHubNow,
 } from "./hub.svelte";
-export type { HubLinkInfo, HubLinkPollResult, HubLinkStatus } from "./hub.svelte";
+export type {
+  HubLinkInfo,
+  HubLinkPollResult,
+  HubLinkStatus,
+  HubPushNowResult,
+} from "./hub.svelte";
 
 // Platform utilities
 export { isMac, modKey, formatShortcut } from "./platform";

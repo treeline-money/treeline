@@ -2537,6 +2537,50 @@ fn unlink_hub() -> Result<(), String> {
     treeline_core::config::HubConfig::remove(&treeline_dir).map_err(|e| e.to_string())
 }
 
+/// One-shot push to the linked hub. Used right after linking so the device's
+/// local DB lands on the hub immediately (the device is the source of truth
+/// post-link). Returns a tag the frontend uses for toast copy.
+#[derive(serde::Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum HubPushNowResult {
+    Pushed { bytes: u64 },
+    AutoMerged { bytes: u64 },
+    Conflict,
+    NoBaseSnapshot,
+    NoChanges,
+}
+
+#[tauri::command]
+fn push_to_hub_now(
+    encryption_state: State<EncryptionState>,
+) -> Result<HubPushNowResult, String> {
+    use treeline_core::services::HubClient;
+    use treeline_core::services::hub_client::PushOutcome;
+
+    let treeline_dir = get_treeline_dir()?;
+    if !treeline_dir.join("hub.json").exists() {
+        return Err("Not linked to a hub.".to_string());
+    }
+
+    let encryption_key = encryption_state
+        .key
+        .lock()
+        .map_err(|_| "Failed to lock encryption state".to_string())?
+        .clone();
+
+    let ctx = TreelineContext::new(&treeline_dir, encryption_key.as_deref())
+        .map_err(|e| format!("Failed to build context: {}", e))?;
+
+    let client = HubClient::new(treeline_dir);
+    match client.push(&ctx, false).map_err(|e| e.to_string())? {
+        PushOutcome::Pushed { bytes, .. } => Ok(HubPushNowResult::Pushed { bytes }),
+        PushOutcome::AutoMerged { bytes, .. } => Ok(HubPushNowResult::AutoMerged { bytes }),
+        PushOutcome::Conflict { .. } => Ok(HubPushNowResult::Conflict),
+        PushOutcome::NoBaseSnapshot { .. } => Ok(HubPushNowResult::NoBaseSnapshot),
+        PushOutcome::NoChanges => Ok(HubPushNowResult::NoChanges),
+    }
+}
+
 /// Read the current hub link status from `hub.json`. Returns `None` when not
 /// linked.
 #[derive(serde::Serialize)]
@@ -3712,7 +3756,8 @@ pub fn run() {
             poll_hub_link,
             cancel_hub_link,
             unlink_hub,
-            get_hub_link_status
+            get_hub_link_status,
+            push_to_hub_now
         ]);
 
         // WebDriver plugin for e2e testing (only included with --features e2e-testing)

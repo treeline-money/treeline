@@ -4,6 +4,7 @@
     startHubLink,
     pollHubLink,
     cancelHubLink,
+    pushToHubNow,
     type HubLinkInfo,
     hubWatch,
     toast,
@@ -94,7 +95,30 @@
             break;
           case "linked":
             stopPolling();
-            toast.success(`Linked as "${result.device_name}"`);
+            // Initial push: the device is the source of truth post-link, so
+            // get the local DB onto the hub before the watch loop kicks in
+            // (which would otherwise pull and clobber a fresh link with hub
+            // data that may have come from elsewhere).
+            try {
+              const pushResult = await pushToHubNow();
+              switch (pushResult.status) {
+                case "pushed":
+                case "auto_merged":
+                case "no_changes":
+                  toast.success(`Linked as "${result.device_name}"`);
+                  break;
+                case "conflict":
+                case "no_base_snapshot":
+                  toast.warning(
+                    "Linked, but the hub has data that conflicts with this device. Resolve via CLI: tl hub push --force or tl hub pull.",
+                  );
+                  break;
+              }
+            } catch (e) {
+              toast.warning(
+                `Linked as "${result.device_name}", but the initial push failed: ${e}`,
+              );
+            }
             await hubWatch.start();
             onLinked();
             onClose();
