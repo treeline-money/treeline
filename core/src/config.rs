@@ -15,7 +15,14 @@ use std::path::Path;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-/// Raw settings.json structure (matching Python/App format)
+/// Raw settings.json structure (matching Python/App format).
+///
+/// **When adding a new field that should sync across devices**, also add
+/// its dotted path to `SHARED_SETTING_PATHS` in `services/hub.rs`.
+/// Anything not listed there is treated as per-device on receive: kept
+/// local if already set, bootstrapped from a pulled bundle only when
+/// missing locally. Forgetting to classify a shared field means it
+/// silently behaves as per-device — a quiet bug.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SettingsFile {

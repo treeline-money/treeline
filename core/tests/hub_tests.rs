@@ -3,6 +3,7 @@
 //! Tests for database push/pull/token management and sync bundles.
 //! Run with: cargo test --test hub_tests -- --nocapture
 
+use std::io::Write;
 use std::sync::Arc;
 use tempfile::TempDir;
 
@@ -474,4 +475,338 @@ fn test_has_database() {
 
     create_test_repo(&hub_dir);
     assert!(hub_service.has_database());
+}
+
+// ============================================================================
+// Receive semantics — top-level pass-through, mirror dirs, settings merge
+// ============================================================================
+
+/// Build a bundle from a temp dir and return the bytes.
+fn bundle_from(dir: &std::path::Path) -> Vec<u8> {
+    SyncBundle::create(dir).unwrap()
+}
+
+/// Build a bundle that contains only a treeline.duckdb file.
+fn bundle_with_only_db() -> Vec<u8> {
+    let src = TempDir::new().unwrap();
+    let _repo = create_test_repo(&src);
+    bundle_from(src.path())
+}
+
+#[test]
+fn test_extract_preserves_top_level_files_not_in_bundle() {
+    // Bundle has only the DB; local already has settings.json and encryption.json.
+    // Those locally-present top-level files must survive.
+    let bundle = bundle_with_only_db();
+
+    let dest = TempDir::new().unwrap();
+    std::fs::write(dest.path().join("settings.json"), r#"{"app":{"theme":"dark"}}"#).unwrap();
+    std::fs::write(
+        dest.path().join("encryption.json"),
+        r#"{"encrypted":false}"#,
+    )
+    .unwrap();
+
+    SyncBundle::extract(&bundle, dest.path()).unwrap();
+
+    assert!(dest.path().join("settings.json").exists());
+    assert!(dest.path().join("encryption.json").exists());
+    assert_eq!(
+        std::fs::read_to_string(dest.path().join("settings.json")).unwrap(),
+        r#"{"app":{"theme":"dark"}}"#,
+        "settings.json should be untouched when the bundle didn't include it"
+    );
+}
+
+#[test]
+fn test_extract_preserves_local_skills_when_bundle_has_no_skills() {
+    // Bundle lacks any skills/ entries → local skills must survive.
+    let bundle = bundle_with_only_db();
+
+    let dest = TempDir::new().unwrap();
+    let local_skill = dest.path().join("skills").join("my-skill");
+    std::fs::create_dir_all(&local_skill).unwrap();
+    std::fs::write(local_skill.join("SKILL.md"), "# Local").unwrap();
+
+    SyncBundle::extract(&bundle, dest.path()).unwrap();
+
+    assert!(dest.path().join("skills/my-skill/SKILL.md").exists());
+}
+
+#[test]
+fn test_extract_clears_skills_dir_when_bundle_has_skills() {
+    // Bundle has skills/new-skill; local has skills/old-skill.
+    // After extract: only new-skill exists (mirror semantics for skills).
+    let src = TempDir::new().unwrap();
+    let _repo = create_test_repo(&src);
+    let new_skill = src.path().join("skills").join("new-skill");
+    std::fs::create_dir_all(&new_skill).unwrap();
+    std::fs::write(new_skill.join("SKILL.md"), "# New").unwrap();
+    let bundle = bundle_from(src.path());
+
+    let dest = TempDir::new().unwrap();
+    let old_skill = dest.path().join("skills").join("old-skill");
+    std::fs::create_dir_all(&old_skill).unwrap();
+    std::fs::write(old_skill.join("SKILL.md"), "# Old").unwrap();
+
+    SyncBundle::extract(&bundle, dest.path()).unwrap();
+
+    assert!(
+        dest.path().join("skills/new-skill/SKILL.md").exists(),
+        "new skill should be present"
+    );
+    assert!(
+        !dest.path().join("skills/old-skill").exists(),
+        "old skill should be wiped (mirror semantics)"
+    );
+}
+
+#[test]
+fn test_extract_per_plugin_replace_clears_old_files_in_replaced_plugin() {
+    // Bundle has plugins/budget/new.js. Local has plugins/budget/old.js.
+    // After extract: budget dir replaced — old.js gone, new.js present.
+    let src = TempDir::new().unwrap();
+    let _repo = create_test_repo(&src);
+    let budget = src.path().join("plugins").join("budget");
+    std::fs::create_dir_all(&budget).unwrap();
+    std::fs::write(budget.join("new.js"), "// new").unwrap();
+    let bundle = bundle_from(src.path());
+
+    let dest = TempDir::new().unwrap();
+    let local_budget = dest.path().join("plugins").join("budget");
+    std::fs::create_dir_all(&local_budget).unwrap();
+    std::fs::write(local_budget.join("old.js"), "// old").unwrap();
+
+    SyncBundle::extract(&bundle, dest.path()).unwrap();
+
+    assert!(dest.path().join("plugins/budget/new.js").exists());
+    assert!(
+        !dest.path().join("plugins/budget/old.js").exists(),
+        "old plugin file should be wiped during per-plugin replace"
+    );
+}
+
+#[test]
+fn test_extract_preserves_plugins_not_in_bundle() {
+    // Bundle has plugins/budget. Local has plugins/budget AND plugins/goals.
+    // After extract: budget replaced from bundle, goals untouched.
+    let src = TempDir::new().unwrap();
+    let _repo = create_test_repo(&src);
+    let budget = src.path().join("plugins").join("budget");
+    std::fs::create_dir_all(&budget).unwrap();
+    std::fs::write(budget.join("index.js"), "// budget from bundle").unwrap();
+    let bundle = bundle_from(src.path());
+
+    let dest = TempDir::new().unwrap();
+    let local_budget = dest.path().join("plugins").join("budget");
+    std::fs::create_dir_all(&local_budget).unwrap();
+    std::fs::write(local_budget.join("stale.js"), "// stale").unwrap();
+    let local_goals = dest.path().join("plugins").join("goals");
+    std::fs::create_dir_all(&local_goals).unwrap();
+    std::fs::write(local_goals.join("index.js"), "// local-only goals").unwrap();
+
+    SyncBundle::extract(&bundle, dest.path()).unwrap();
+
+    assert!(dest.path().join("plugins/budget/index.js").exists());
+    assert!(
+        !dest.path().join("plugins/budget/stale.js").exists(),
+        "old budget file should be wiped"
+    );
+    assert!(
+        dest.path().join("plugins/goals/index.js").exists(),
+        "local-only plugin must survive — bundle did not mention goals"
+    );
+}
+
+#[test]
+fn test_extract_settings_shared_path_overrides_local() {
+    // Local has currency=USD; bundle has currency=EUR. Currency is shared → bundle wins.
+    let src = TempDir::new().unwrap();
+    let _repo = create_test_repo(&src);
+    std::fs::write(
+        src.path().join("settings.json"),
+        r#"{"app":{"currency":"EUR"}}"#,
+    )
+    .unwrap();
+    let bundle = bundle_from(src.path());
+
+    let dest = TempDir::new().unwrap();
+    std::fs::write(
+        dest.path().join("settings.json"),
+        r#"{"app":{"currency":"USD"}}"#,
+    )
+    .unwrap();
+
+    SyncBundle::extract(&bundle, dest.path()).unwrap();
+
+    let merged: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dest.path().join("settings.json")).unwrap())
+            .unwrap();
+    assert_eq!(merged["app"]["currency"], "EUR");
+}
+
+#[test]
+fn test_extract_settings_device_path_preserves_local_when_set() {
+    // Both sides have a theme; theme is per-device → local wins.
+    let src = TempDir::new().unwrap();
+    let _repo = create_test_repo(&src);
+    std::fs::write(
+        src.path().join("settings.json"),
+        r#"{"app":{"theme":"light"}}"#,
+    )
+    .unwrap();
+    let bundle = bundle_from(src.path());
+
+    let dest = TempDir::new().unwrap();
+    std::fs::write(
+        dest.path().join("settings.json"),
+        r#"{"app":{"theme":"dark"}}"#,
+    )
+    .unwrap();
+
+    SyncBundle::extract(&bundle, dest.path()).unwrap();
+
+    let merged: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dest.path().join("settings.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        merged["app"]["theme"], "dark",
+        "per-device theme must stay local when already set"
+    );
+}
+
+#[test]
+fn test_extract_settings_device_path_bootstraps_when_local_missing() {
+    // Local has no theme key. Bundle has theme=light. Bootstrap fills it in.
+    let src = TempDir::new().unwrap();
+    let _repo = create_test_repo(&src);
+    std::fs::write(
+        src.path().join("settings.json"),
+        r#"{"app":{"theme":"light","currency":"EUR"}}"#,
+    )
+    .unwrap();
+    let bundle = bundle_from(src.path());
+
+    let dest = TempDir::new().unwrap();
+    std::fs::write(
+        dest.path().join("settings.json"),
+        r#"{"app":{"currency":"USD"}}"#,
+    )
+    .unwrap();
+
+    SyncBundle::extract(&bundle, dest.path()).unwrap();
+
+    let merged: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dest.path().join("settings.json")).unwrap())
+            .unwrap();
+    assert_eq!(merged["app"]["theme"], "light", "theme bootstrapped from bundle");
+    assert_eq!(merged["app"]["currency"], "EUR", "shared currency overridden");
+}
+
+#[test]
+fn test_extract_settings_bootstraps_entire_file_when_local_missing() {
+    // No local settings.json; bundle has one — adopt it wholesale.
+    let src = TempDir::new().unwrap();
+    let _repo = create_test_repo(&src);
+    std::fs::write(
+        src.path().join("settings.json"),
+        r#"{"app":{"theme":"dark","currency":"USD"}}"#,
+    )
+    .unwrap();
+    let bundle = bundle_from(src.path());
+
+    let dest = TempDir::new().unwrap();
+    SyncBundle::extract(&bundle, dest.path()).unwrap();
+
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dest.path().join("settings.json")).unwrap())
+            .unwrap();
+    assert_eq!(written["app"]["theme"], "dark");
+    assert_eq!(written["app"]["currency"], "USD");
+}
+
+#[test]
+fn test_extract_settings_preserves_local_only_plugin_config() {
+    // Local has plugins.goals.x=1; bundle has plugins.budget.y=2.
+    // Plugins is shared but uses leaf-level merge → both survive.
+    let src = TempDir::new().unwrap();
+    let _repo = create_test_repo(&src);
+    std::fs::write(
+        src.path().join("settings.json"),
+        r#"{"plugins":{"budget":{"y":2}}}"#,
+    )
+    .unwrap();
+    let bundle = bundle_from(src.path());
+
+    let dest = TempDir::new().unwrap();
+    std::fs::write(
+        dest.path().join("settings.json"),
+        r#"{"plugins":{"goals":{"x":1}}}"#,
+    )
+    .unwrap();
+
+    SyncBundle::extract(&bundle, dest.path()).unwrap();
+
+    let merged: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dest.path().join("settings.json")).unwrap())
+            .unwrap();
+    assert_eq!(merged["plugins"]["budget"]["y"], 2, "bundle's plugin config applied");
+    assert_eq!(
+        merged["plugins"]["goals"]["x"], 1,
+        "local-only plugin config must survive — bundle didn't mention goals"
+    );
+}
+
+#[test]
+fn test_extract_rejects_path_traversal() {
+    // Manually craft a zip with a `..` entry; verify nothing escapes.
+    use std::io::Cursor;
+    use zip::write::SimpleFileOptions;
+    use zip::ZipWriter;
+
+    let mut buf = Vec::new();
+    {
+        let mut zip = ZipWriter::new(Cursor::new(&mut buf));
+        let opts = SimpleFileOptions::default();
+        zip.start_file("../escape.txt", opts).unwrap();
+        zip.write_all(b"should not land outside dest").unwrap();
+        zip.finish().unwrap();
+    }
+
+    let dest_parent = TempDir::new().unwrap();
+    let dest = dest_parent.path().join("dest");
+    std::fs::create_dir_all(&dest).unwrap();
+
+    SyncBundle::extract(&buf, &dest).unwrap();
+
+    assert!(
+        !dest_parent.path().join("escape.txt").exists(),
+        "path traversal entry must be rejected"
+    );
+}
+
+#[test]
+fn test_extract_rejects_denylisted_paths() {
+    // Manually craft a bundle that includes hub.json — receiver must skip it
+    // (defense in depth — a correct producer would never include it).
+    use std::io::Cursor;
+    use zip::write::SimpleFileOptions;
+    use zip::ZipWriter;
+
+    let mut buf = Vec::new();
+    {
+        let mut zip = ZipWriter::new(Cursor::new(&mut buf));
+        let opts = SimpleFileOptions::default();
+        zip.start_file("hub.json", opts).unwrap();
+        zip.write_all(br#"{"url":"http://malicious"}"#).unwrap();
+        zip.finish().unwrap();
+    }
+
+    let dest = TempDir::new().unwrap();
+    SyncBundle::extract(&buf, dest.path()).unwrap();
+
+    assert!(
+        !dest.path().join("hub.json").exists(),
+        "denylisted hub.json must not be written"
+    );
 }

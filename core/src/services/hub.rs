@@ -23,12 +23,45 @@ use zip::write::SimpleFileOptions;
 
 use crate::services::BackupService;
 
-/// Files included in sync bundles (allowlist).
-/// These are the files that define a Treeline instance's state.
+/// Files the producer includes in sync bundles.
+/// These are the files that define a Treeline instance's state. The receiver
+/// does NOT enforce a positive allowlist — see `is_safe_path` /
+/// `DEVICE_LOCAL_DENYLIST` for what the receiver rejects.
 const SYNC_FILES: &[&str] = &["treeline.duckdb", "encryption.json", "settings.json"];
 
-/// Directories included in sync bundles (recursive, allowlist).
+/// Directories the producer includes in sync bundles (recursive).
 const SYNC_DIRS: &[&str] = &["skills", "plugins"];
+
+/// `settings.json` paths whose values sync across devices ("bundle wins" on
+/// receive). Anything not under one of these prefixes is treated as
+/// per-device: kept local if already set, bootstrapped from the bundle only
+/// when the local key is missing.
+///
+/// **When adding a new shared setting**, add its path here. Otherwise the
+/// new field defaults to per-device behavior. See `SettingsFile` in
+/// `core/src/config.rs`.
+const SHARED_SETTING_PATHS: &[&str] = &[
+    "app.currency",
+    "app.experimentalFeatures",
+    "app.lastSyncDate",
+    "plugins",
+    "disabledPlugins",
+    "importProfiles",
+];
+
+/// Files that must never be overwritten by a bundle, regardless of what the
+/// producer chose to include. These are device-local: hub credentials, the
+/// hub's own sync metadata, the DuckDB lock file, the local 3-way-merge
+/// snapshot, and per-device logs. Defense in depth — a correct producer
+/// won't include any of these, but the receiver enforces it anyway.
+const DEVICE_LOCAL_DENYLIST: &[&str] = &[
+    "hub.json",
+    "hub-token",
+    "hub-sync.json",
+    "treeline.duckdb.lock",
+    ".treeline.base.duckdb",
+    "logs.duckdb",
+];
 
 /// Hub service for managing database sync
 pub struct HubService {
@@ -100,13 +133,33 @@ impl SyncBundle {
 
     /// Extract a sync bundle into a treeline directory.
     ///
+    /// **Receive semantics (asymmetric vs. the producer):**
+    ///
+    /// - **Top-level files**: the receiver writes whatever the bundle
+    ///   contains; it never deletes a top-level file the bundle omits. Path
+    ///   safety + `DEVICE_LOCAL_DENYLIST` are enforced.
+    /// - **`settings.json`**: special-cased. Shared paths
+    ///   (`SHARED_SETTING_PATHS`) overwrite the local value; per-device paths
+    ///   are kept locally and only bootstrapped from the bundle when the
+    ///   local key is missing. If `settings.json` doesn't exist locally, the
+    ///   bundle's bytes are written verbatim (first-pull bootstrap).
+    /// - **`skills/`**: mirror semantics. If the bundle contains any
+    ///   `skills/` entries, the local `skills/` directory is cleared before
+    ///   extraction. Deletes propagate.
+    /// - **`plugins/<id>/`**: per-plugin replacement. For each plugin id
+    ///   present in the bundle, the local `plugins/<id>/` directory is
+    ///   cleared before extraction (so upgrades don't leak old files). Local
+    ///   plugin directories that aren't in the bundle are left alone —
+    ///   uninstalls do NOT propagate. The reasoning: plugins are software
+    ///   that may legitimately differ across devices (one spouse uses Goals,
+    ///   the other doesn't), unlike skills which are user-authored content
+    ///   where deletes are deliberate.
+    ///
     /// Acquires the DuckDB filesystem lock (`treeline.duckdb.lock`) for the
-    /// duration of the extraction. This prevents `treeline.duckdb` from being
-    /// overwritten while another process holds a DuckDB operation against it
-    /// (e.g. the desktop app mid-query, or `tl hub watch` running alongside
-    /// an open app). The lock file and naming convention match
-    /// `DuckDbRepository::acquire_lock`, so extract serializes with all
-    /// DuckDB operations on the same directory.
+    /// duration of the extraction. This prevents `treeline.duckdb` from
+    /// being overwritten while another process holds a DuckDB operation
+    /// against it (e.g. the desktop app mid-query, or `tl hub watch` running
+    /// alongside an open app).
     pub fn extract(data: &[u8], treeline_dir: &Path) -> Result<()> {
         fs::create_dir_all(treeline_dir)?;
         let _lock = acquire_db_lock(treeline_dir)?;
@@ -115,28 +168,82 @@ impl SyncBundle {
         let mut archive = zip::ZipArchive::new(cursor)
             .context("Failed to read sync bundle")?;
 
+        // First pass: scan the bundle to figure out which directories to
+        // clear before writing entries. We need this up front so that
+        // pre-existing local files don't survive a per-plugin replace or a
+        // skills mirror.
+        let mut bundle_has_skills = false;
+        let mut bundle_plugin_ids: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        for i in 0..archive.len() {
+            let entry = archive.by_index(i)?;
+            let name = entry.name();
+            if !is_safe_path(name) || is_denylisted(name) {
+                continue;
+            }
+            if let Some(rest) = name.strip_prefix("skills/") {
+                if !rest.is_empty() {
+                    bundle_has_skills = true;
+                }
+            }
+            if let Some(rest) = name.strip_prefix("plugins/") {
+                if let Some(slash) = rest.find('/') {
+                    let plugin_id = &rest[..slash];
+                    if !plugin_id.is_empty() {
+                        bundle_plugin_ids.insert(plugin_id.to_string());
+                    }
+                }
+            }
+        }
+
+        // Pre-extract cleanup: skills mirror, per-plugin replace.
+        if bundle_has_skills {
+            let skills_dir = treeline_dir.join("skills");
+            if skills_dir.exists() {
+                fs::remove_dir_all(&skills_dir)
+                    .with_context(|| format!("Failed to clear {}", skills_dir.display()))?;
+            }
+        }
+        for plugin_id in &bundle_plugin_ids {
+            let plugin_dir = treeline_dir.join("plugins").join(plugin_id);
+            if plugin_dir.exists() {
+                fs::remove_dir_all(&plugin_dir)
+                    .with_context(|| format!("Failed to clear {}", plugin_dir.display()))?;
+            }
+        }
+
+        // Second pass: write entries. Defer settings.json — accumulate the
+        // bundle's bytes and apply the merge at the end.
+        let mut bundled_settings: Option<Vec<u8>> = None;
         for i in 0..archive.len() {
             let mut file = archive.by_index(i)?;
             let name = file.name().to_string();
 
-            // Validate the path is within our allowlist
-            if !is_allowed_path(&name) {
+            if !is_safe_path(&name) || is_denylisted(&name) {
+                continue;
+            }
+
+            if name == "settings.json" {
+                let mut buf = Vec::new();
+                file.read_to_end(&mut buf)?;
+                bundled_settings = Some(buf);
                 continue;
             }
 
             let target = treeline_dir.join(&name);
-
-            // Create parent directories if needed
             if let Some(parent) = target.parent() {
                 fs::create_dir_all(parent)?;
             }
-
             if file.is_dir() {
                 fs::create_dir_all(&target)?;
             } else {
                 let mut outfile = fs::File::create(&target)?;
                 std::io::copy(&mut file, &mut outfile)?;
             }
+        }
+
+        if let Some(bytes) = bundled_settings {
+            merge_settings_into_local(&bytes, treeline_dir)?;
         }
 
         Ok(())
@@ -162,21 +269,105 @@ fn acquire_db_lock(treeline_dir: &Path) -> Result<fs::File> {
     Ok(lock_file)
 }
 
-/// Check if a path from a zip is within the sync allowlist
-fn is_allowed_path(path: &str) -> bool {
-    // Direct files
-    for f in SYNC_FILES {
-        if path == *f {
-            return true;
+/// Reject paths that would escape the destination directory (zip slip) or
+/// that are absolute. The receiver trusts the producer's contents but never
+/// the structure of the paths inside the zip.
+fn is_safe_path(path: &str) -> bool {
+    if path.is_empty() {
+        return false;
+    }
+    if std::path::Path::new(path).is_absolute() {
+        return false;
+    }
+    // Reject `..` components in either separator. Zip entries are usually
+    // forward-slash, but some producers emit backslashes on Windows.
+    for component in path.split(|c| c == '/' || c == '\\') {
+        if component == ".." {
+            return false;
         }
     }
-    // Files within allowed directories
-    for d in SYNC_DIRS {
-        if path.starts_with(&format!("{}/", d)) || path == *d {
-            return true;
+    true
+}
+
+/// Reject paths that point at device-local files (hub credentials, sync
+/// metadata, locks, logs). Defense in depth — a correct producer never
+/// includes any of these.
+fn is_denylisted(path: &str) -> bool {
+    DEVICE_LOCAL_DENYLIST.iter().any(|d| path == *d)
+}
+
+/// Apply a `settings.json` from a bundle onto the local one.
+///
+/// - First-pull bootstrap: if the local file doesn't exist, write the
+///   bundle's bytes verbatim.
+/// - Otherwise: walk the bundle's JSON tree leaf by leaf. For each leaf,
+///   "shared" paths (under `SHARED_SETTING_PATHS`) overwrite the local
+///   value; "per-device" paths bootstrap into local only when local doesn't
+///   already have the key.
+fn merge_settings_into_local(bundle_bytes: &[u8], treeline_dir: &Path) -> Result<()> {
+    let local_path = treeline_dir.join("settings.json");
+
+    if !local_path.exists() {
+        fs::write(&local_path, bundle_bytes)
+            .context("Failed to bootstrap settings.json from bundle")?;
+        return Ok(());
+    }
+
+    let bundle_json: serde_json::Value = serde_json::from_slice(bundle_bytes)
+        .context("settings.json in bundle is not valid JSON")?;
+
+    let local_text = fs::read_to_string(&local_path)?;
+    let mut local_json: serde_json::Value = serde_json::from_str(&local_text)
+        .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+
+    apply_bundle_to_local(&bundle_json, &mut local_json, "");
+
+    let merged = serde_json::to_string_pretty(&local_json)?;
+    fs::write(&local_path, merged).context("Failed to write merged settings.json")?;
+    Ok(())
+}
+
+/// Recursively walk `bundle` and apply leaves to `local`. `prefix` is the
+/// current dotted path from the root of settings.json (e.g.,
+/// `"app.experimentalFeatures"`). Both arguments must be JSON objects at
+/// the root for any work to happen.
+fn apply_bundle_to_local(
+    bundle: &serde_json::Value,
+    local: &mut serde_json::Value,
+    prefix: &str,
+) {
+    let (Some(bundle_obj), Some(local_obj)) = (bundle.as_object(), local.as_object_mut()) else {
+        return;
+    };
+
+    for (k, v) in bundle_obj {
+        let path = if prefix.is_empty() {
+            k.clone()
+        } else {
+            format!("{}.{}", prefix, k)
+        };
+
+        if v.is_object() {
+            // Descend. Ensure local has an object at this key first.
+            if !local_obj.get(k).map(|x| x.is_object()).unwrap_or(false) {
+                local_obj.insert(k.clone(), serde_json::Value::Object(serde_json::Map::new()));
+            }
+            let local_child = local_obj.get_mut(k).expect("just inserted");
+            apply_bundle_to_local(v, local_child, &path);
+        } else if path_under_shared(&path) {
+            // Shared leaf — bundle wins.
+            local_obj.insert(k.clone(), v.clone());
+        } else if !local_obj.contains_key(k) {
+            // Per-device leaf — bootstrap only when local has no value.
+            local_obj.insert(k.clone(), v.clone());
         }
     }
-    false
+}
+
+fn path_under_shared(path: &str) -> bool {
+    SHARED_SETTING_PATHS
+        .iter()
+        .any(|p| path == *p || path.starts_with(&format!("{}.", p)))
 }
 
 /// Recursively add a directory to a zip archive
