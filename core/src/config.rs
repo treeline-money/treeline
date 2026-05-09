@@ -84,10 +84,14 @@ pub struct HubConfig {
     /// overwritten with the hub's direct URL (via the `hub_url` extension on
     /// `/token`), so this field is the only signal that says "this was
     /// a Pro link." Used by the desktop UI to label the connection.
-    /// Optional for backward compat with hub.json files written before
-    /// this field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link_origin: Option<String>,
+    /// Forward-compat: any unknown fields read from `hub.json` are preserved
+    /// here and re-serialized on save. This means a stale build round-tripping
+    /// the file (e.g., on a 401-driven token refresh) won't silently strip
+    /// fields a newer build added.
+    #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl HubConfig {
@@ -282,6 +286,7 @@ mod tests {
             last_pull: None,
             base_hash: None,
             link_origin: None,
+            extra: Default::default(),
         };
         hub.save(temp_dir.path()).unwrap();
 
@@ -307,6 +312,7 @@ mod tests {
             last_pull: Some(now),
             base_hash: None,
             link_origin: None,
+            extra: Default::default(),
         };
         hub.save(temp_dir.path()).unwrap();
 
@@ -328,6 +334,7 @@ mod tests {
             last_pull: None,
             base_hash: None,
             link_origin: None,
+            extra: Default::default(),
         };
         hub.save(temp_dir.path()).unwrap();
         assert!(HubConfig::load(temp_dir.path()).unwrap().is_some());
@@ -354,6 +361,7 @@ mod tests {
             last_pull: None,
             base_hash: None,
             link_origin: None,
+            extra: Default::default(),
         };
         hub.save(temp_dir.path()).unwrap();
 

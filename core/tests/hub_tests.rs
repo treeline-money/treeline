@@ -146,6 +146,7 @@ fn test_hub_config_separate_from_settings() {
         last_pull: None,
         base_hash: None,
         link_origin: None,
+        extra: Default::default(),
     };
     hub.save(temp_dir.path()).unwrap();
 
@@ -156,6 +157,34 @@ fn test_hub_config_separate_from_settings() {
     // Remove
     HubConfig::remove(temp_dir.path()).unwrap();
     assert!(HubConfig::load(temp_dir.path()).unwrap().is_none());
+}
+
+#[test]
+fn test_hub_config_roundtrips_unknown_fields() {
+    // Write a hub.json with fields the current `HubConfig` struct doesn't
+    // declare (simulating a future build adding new fields). Load + save
+    // through the typed struct must preserve them verbatim — that's what
+    // keeps a future-feature flag from being silently stripped if a stale
+    // build round-trips the file (e.g. on a 401-driven token refresh).
+    let temp_dir = TempDir::new().unwrap();
+    let raw = r#"{
+  "url": "http://example.com:4242",
+  "accessToken": "tok",
+  "refreshToken": "ref",
+  "deviceName": "dev",
+  "futureFlag": "yes",
+  "futureNested": { "n": 42, "list": [1, 2, 3] }
+}"#;
+    std::fs::write(temp_dir.path().join("hub.json"), raw).unwrap();
+
+    let loaded = HubConfig::load(temp_dir.path()).unwrap().unwrap();
+    loaded.save(temp_dir.path()).unwrap();
+
+    let after = std::fs::read_to_string(temp_dir.path().join("hub.json")).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&after).unwrap();
+    assert_eq!(v["futureFlag"], "yes", "unknown scalar must round-trip");
+    assert_eq!(v["futureNested"]["n"], 42, "unknown nested object must round-trip");
+    assert_eq!(v["futureNested"]["list"][2], 3, "unknown nested array must round-trip");
 }
 
 // ============================================================================

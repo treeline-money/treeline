@@ -288,6 +288,7 @@ impl DeviceCodeLink {
                 // direct URL (so sync can bypass Pro), which loses the signal
                 // that this was a Pro-orchestrated link.
                 link_origin: Some(self.url.clone()),
+                extra: Default::default(),
             };
             std::fs::create_dir_all(treeline_dir)
                 .with_context(|| format!("Failed to create {}", treeline_dir.display()))?;
