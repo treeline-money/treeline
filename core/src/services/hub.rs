@@ -164,6 +164,13 @@ impl SyncBundle {
         fs::create_dir_all(treeline_dir)?;
         let _lock = acquire_db_lock(treeline_dir)?;
 
+        // Sweep any orphan `.incoming` files left by a prior crashed extract.
+        // Any *.incoming in treeline_dir is ours — produced by `atomic_write`
+        // and only deleted on the rename step. If we see one, the previous
+        // extract didn't reach commit; the live file is the old, intact copy
+        // and the staging file should be discarded.
+        cleanup_orphan_incoming(treeline_dir);
+
         let cursor = std::io::Cursor::new(data);
         let mut archive = zip::ZipArchive::new(cursor)
             .context("Failed to read sync bundle")?;
@@ -213,7 +220,10 @@ impl SyncBundle {
         }
 
         // Second pass: write entries. Defer settings.json — accumulate the
-        // bundle's bytes and apply the merge at the end.
+        // bundle's bytes and apply the merge at the end. Top-level files
+        // (treeline.duckdb, encryption.json, …) are written atomically:
+        // a crash mid-write leaves the live file intact and an orphan
+        // `.incoming` for the next extract to sweep up.
         let mut bundled_settings: Option<Vec<u8>> = None;
         for i in 0..archive.len() {
             let mut file = archive.by_index(i)?;
@@ -231,12 +241,17 @@ impl SyncBundle {
             }
 
             let target = treeline_dir.join(&name);
-            if let Some(parent) = target.parent() {
-                fs::create_dir_all(parent)?;
-            }
+            let is_top_level = !name.contains('/');
             if file.is_dir() {
                 fs::create_dir_all(&target)?;
+            } else if is_top_level {
+                let mut buf = Vec::new();
+                file.read_to_end(&mut buf)?;
+                atomic_write(&target, &buf)?;
             } else {
+                if let Some(parent) = target.parent() {
+                    fs::create_dir_all(parent)?;
+                }
                 let mut outfile = fs::File::create(&target)?;
                 std::io::copy(&mut file, &mut outfile)?;
             }
@@ -267,6 +282,71 @@ fn acquire_db_lock(treeline_dir: &Path) -> Result<fs::File> {
         .lock_exclusive()
         .context("Failed to acquire treeline.duckdb.lock for bundle extract")?;
     Ok(lock_file)
+}
+
+/// Build the staging path used for atomic writes (`<target>.incoming`).
+/// Same filesystem as the target so the final `rename` is atomic on
+/// Linux/macOS/Windows.
+fn incoming_path(target: &Path) -> PathBuf {
+    let mut s = target.as_os_str().to_owned();
+    s.push(".incoming");
+    PathBuf::from(s)
+}
+
+/// Write `contents` to `target` atomically: stage to `<target>.incoming`,
+/// fsync, then rename. `std::fs::rename` is an atomic file replacement on
+/// all three platforms when source and destination are on the same
+/// filesystem (we always stage inside `treeline_dir`).
+///
+/// On crash before the rename, the live file at `target` is untouched.
+/// The orphan staging file is swept up by `cleanup_orphan_incoming` at
+/// the start of the next extract.
+fn atomic_write(target: &Path, contents: &[u8]) -> Result<()> {
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let staging = incoming_path(target);
+    {
+        let mut f = fs::File::create(&staging)
+            .with_context(|| format!("Failed to create staging file {}", staging.display()))?;
+        f.write_all(contents)
+            .with_context(|| format!("Failed to write staging file {}", staging.display()))?;
+        f.sync_all()
+            .with_context(|| format!("Failed to fsync staging file {}", staging.display()))?;
+    }
+    fs::rename(&staging, target).with_context(|| {
+        format!(
+            "Failed to atomically rename {} → {}",
+            staging.display(),
+            target.display()
+        )
+    })?;
+    Ok(())
+}
+
+/// Remove any `*.incoming` entries directly under `treeline_dir`. These
+/// only come from a prior crashed `atomic_write`. Best-effort: errors are
+/// swallowed because we'd rather proceed with the new extract than abort
+/// over a stale staging file.
+fn cleanup_orphan_incoming(treeline_dir: &Path) {
+    let Ok(entries) = fs::read_dir(treeline_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name_str) = name.to_str() else {
+            continue;
+        };
+        if !name_str.ends_with(".incoming") {
+            continue;
+        }
+        let path = entry.path();
+        let _ = if path.is_dir() {
+            fs::remove_dir_all(&path)
+        } else {
+            fs::remove_file(&path)
+        };
+    }
 }
 
 /// Reject paths that would escape the destination directory (zip slip) or
@@ -308,7 +388,7 @@ fn merge_settings_into_local(bundle_bytes: &[u8], treeline_dir: &Path) -> Result
     let local_path = treeline_dir.join("settings.json");
 
     if !local_path.exists() {
-        fs::write(&local_path, bundle_bytes)
+        atomic_write(&local_path, bundle_bytes)
             .context("Failed to bootstrap settings.json from bundle")?;
         return Ok(());
     }
@@ -323,7 +403,8 @@ fn merge_settings_into_local(bundle_bytes: &[u8], treeline_dir: &Path) -> Result
     apply_bundle_to_local(&bundle_json, &mut local_json, "");
 
     let merged = serde_json::to_string_pretty(&local_json)?;
-    fs::write(&local_path, merged).context("Failed to write merged settings.json")?;
+    atomic_write(&local_path, merged.as_bytes())
+        .context("Failed to write merged settings.json")?;
     Ok(())
 }
 

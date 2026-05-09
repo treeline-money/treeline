@@ -786,6 +786,65 @@ fn test_extract_rejects_path_traversal() {
 }
 
 #[test]
+fn test_extract_no_staging_files_left_after_success() {
+    // After a successful extract, no `.incoming` files should remain.
+    let src = TempDir::new().unwrap();
+    let _repo = create_test_repo(&src);
+    let bundle = bundle_from(src.path());
+
+    let dest = TempDir::new().unwrap();
+    SyncBundle::extract(&bundle, dest.path()).unwrap();
+
+    for entry in std::fs::read_dir(dest.path()).unwrap() {
+        let name = entry.unwrap().file_name().into_string().unwrap();
+        assert!(
+            !name.ends_with(".incoming"),
+            "found leftover staging file after extract: {name}"
+        );
+    }
+}
+
+#[test]
+fn test_extract_cleans_up_orphan_staging_from_prior_crash() {
+    // Simulate a previous extract that crashed: an orphan
+    // `treeline.duckdb.incoming` with junk bytes is sitting around.
+    // The next extract must remove it and write the bundle's DB cleanly.
+    let src = TempDir::new().unwrap();
+    let _repo = create_test_repo(&src);
+    let bundle = bundle_from(src.path());
+
+    let dest = TempDir::new().unwrap();
+    std::fs::write(dest.path().join("treeline.duckdb.incoming"), b"junk-from-prior-crash").unwrap();
+
+    SyncBundle::extract(&bundle, dest.path()).unwrap();
+
+    assert!(
+        !dest.path().join("treeline.duckdb.incoming").exists(),
+        "orphan staging file should be cleaned up"
+    );
+    assert!(dest.path().join("treeline.duckdb").exists());
+    let written = std::fs::read(dest.path().join("treeline.duckdb")).unwrap();
+    assert_ne!(
+        written, b"junk-from-prior-crash",
+        "treeline.duckdb must reflect the bundle, not the orphan staging file"
+    );
+}
+
+#[test]
+fn test_extract_preserves_existing_db_on_invalid_bundle() {
+    // Extract is called with bytes that aren't a valid zip. The pre-existing
+    // local treeline.duckdb must be untouched — that's the whole point of
+    // atomic writes (intermediate failures don't corrupt the live file).
+    let dest = TempDir::new().unwrap();
+    std::fs::write(dest.path().join("treeline.duckdb"), b"existing-good-db").unwrap();
+
+    let _ = SyncBundle::extract(b"not a zip at all", dest.path());
+
+    let after = std::fs::read(dest.path().join("treeline.duckdb")).unwrap();
+    assert_eq!(after, b"existing-good-db", "DB must survive a bad bundle");
+}
+
+#[test]
 fn test_extract_rejects_denylisted_paths() {
     // Manually craft a bundle that includes hub.json — receiver must skip it
     // (defense in depth — a correct producer would never include it).
