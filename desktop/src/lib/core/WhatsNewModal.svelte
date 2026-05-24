@@ -73,7 +73,19 @@
     }
   }
 
-  // Simple markdown-like rendering (headers and bullets)
+  // Intercept clicks on rendered links so they open in the system browser
+  // via `openUrl` instead of navigating the Tauri webview.
+  function handleNotesClick(event: MouseEvent) {
+    const anchor = (event.target as HTMLElement | null)?.closest(
+      "a.notes-link"
+    ) as HTMLAnchorElement | null;
+    if (anchor?.href) {
+      event.preventDefault();
+      openUrl(anchor.href);
+    }
+  }
+
+  // Simple markdown-like rendering (headers, bullets, links).
   function renderNotes(notes: string): string {
     return (
       notes
@@ -89,9 +101,15 @@
         })
         // Convert **bold** to strong
         .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-        // Convert URLs to links
+        // Markdown links [text](url) — must run BEFORE the bare-URL pass so
+        // the URL inside doesn't get double-wrapped.
         .replace(
-          /(https?:\/\/[^\s<]+)/g,
+          /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+          '<a href="$2" class="notes-link">$1</a>'
+        )
+        // Bare URLs not already inside an href attribute.
+        .replace(
+          /(?<!href=")(https?:\/\/[^\s<"]+)/g,
           '<a href="$1" class="notes-link">$1</a>'
         )
         // Convert double newlines to paragraph breaks
@@ -120,7 +138,7 @@
           </button>
         {/if}
       </div>
-      <div class="release-notes">
+      <div class="release-notes" onclick={handleNotesClick}>
         {@html renderNotes(releaseNotes)}
       </div>
     {/if}
