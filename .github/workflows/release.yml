@@ -32,6 +32,8 @@ jobs:
     name: Create Release
     runs-on: ubuntu-latest
     environment: npm
+    outputs:
+      version: ${{ steps.version.outputs.version }}
 
     steps:
       - uses: actions/checkout@v4
@@ -495,3 +497,21 @@ jobs:
                 \"footer\": {\"text\": \"Release Candidate - Test with ~/.treeline/use-staging-updates then run /promote\"}
               }]
             }"
+
+  # Build and push the versioned hub image (ghcr.io/.../treeline-hub:<version>)
+  # as part of the release run. This is the only path that publishes a
+  # versioned hub image: the release: event can't trigger it because the
+  # release is created with GITHUB_TOKEN, and workflow_dispatch can't be
+  # cascaded from a GITHUB_TOKEN job either. A reusable-workflow call runs
+  # inline in this run, sidestepping both limits — no PAT needed.
+  publish-hub-image:
+    name: Publish versioned hub image
+    needs: release
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/publish-hub-image.yml
+    with:
+      version: ${{ needs.release.outputs.version }}
+      ref: ${{ needs.release.outputs.version }}
+    secrets: inherit

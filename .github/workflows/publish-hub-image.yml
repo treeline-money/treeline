@@ -17,11 +17,40 @@ on:
       - '.github/workflows/publish-hub-image.yml'
   release:
     types: [published]
+  # Called by release.yml so each release publishes its versioned image in
+  # the same run. workflow_call executes inline, so it isn't subject to the
+  # "events from GITHUB_TOKEN don't trigger workflows" rule that keeps the
+  # release: trigger above from ever firing (releases are cut with
+  # GITHUB_TOKEN).
+  workflow_call:
+    inputs:
+      version:
+        description: 'Version tag for the image (CalVer, e.g. 26.5.2402)'
+        required: true
+        type: string
+      ref:
+        description: 'Git ref/tag to build from (defaults to the triggering ref)'
+        required: false
+        type: string
+        default: ''
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag to publish (e.g. 26.5.2402). Empty = only :latest + :sha-<sha>.'
+        required: false
+        type: string
+        default: ''
+      ref:
+        description: 'Git ref/tag to build from (defaults to the triggering ref)'
+        required: false
+        type: string
+        default: ''
 
 # One run per ref — stale builds get cancelled when a newer commit lands.
+# Versioned publishes get their own group so a routine main push can't
+# cancel a release's image build (and vice versa).
 concurrency:
-  group: publish-hub-image-${{ github.ref }}
+  group: publish-hub-image-${{ github.ref }}-${{ inputs.version || '' }}
   cancel-in-progress: true
 
 permissions:
@@ -40,6 +69,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Empty on push/dispatch-without-ref → checkout's default (the
+          # triggering ref). release.yml passes the version tag so the image
+          # is built from exactly the released commit.
+          ref: ${{ inputs.ref }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -56,25 +90,30 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
+          VERSION_INPUT: ${{ inputs.version }}
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           SHORT_SHA="${SHA:0:7}"
           IMAGE="${REGISTRY}/${IMAGE_NAME}"
-          TAGS=()
 
-          case "$EVENT_NAME" in
-            release)
-              # Versioned tag from the release tag name (CalVer YY.M.DDRR).
-              # Also bump :latest so existing pulls reflect the new release.
-              TAGS+=("${IMAGE}:${RELEASE_TAG}")
-              TAGS+=("${IMAGE}:latest")
-              ;;
-            push|workflow_dispatch)
-              TAGS+=("${IMAGE}:latest")
-              TAGS+=("${IMAGE}:sha-${SHORT_SHA}")
-              ;;
-          esac
+          # A version passed in (release flow via workflow_call, or a manual
+          # dispatch) wins; otherwise fall back to the release tag name.
+          VERSION="${VERSION_INPUT:-}"
+          if [ -z "$VERSION" ] && [ "$EVENT_NAME" = "release" ]; then
+            VERSION="$RELEASE_TAG"
+          fi
+
+          TAGS=()
+          if [ -n "$VERSION" ]; then
+            # Strip a leading v (v26.5.2402 → 26.5.2402). Tag the version and
+            # bump :latest so existing pulls reflect the new release.
+            TAGS+=("${IMAGE}:${VERSION#v}")
+            TAGS+=("${IMAGE}:latest")
+          else
+            TAGS+=("${IMAGE}:latest")
+            TAGS+=("${IMAGE}:sha-${SHORT_SHA}")
+          fi
 
           # Join with newlines for build-push-action's `tags:` input.
           {
@@ -89,14 +128,16 @@ jobs:
       # reflects the release tag, not the stale Cargo.toml at the SHA.
       # Build-time mutation only — not committed. Only applies on release;
       # push/workflow_dispatch builds keep using HEAD's Cargo.toml.
-      - name: Update version in Cargo.toml (release only)
-        if: github.event_name == 'release'
+      - name: Update version in Cargo.toml (versioned builds)
+        if: inputs.version != '' || github.event_name == 'release'
         shell: bash
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
+          VERSION_INPUT: ${{ inputs.version }}
         run: |
           # Strip a leading `v` if present so e.g. `v26.4.2901` → `26.4.2901`.
-          VERSION="${RELEASE_TAG#v}"
+          RAW="${VERSION_INPUT:-$RELEASE_TAG}"
+          VERSION="${RAW#v}"
           echo "Setting workspace version to $VERSION"
           sed -i 's/^version = .*/version = "'"$VERSION"'"/' Cargo.toml
 
