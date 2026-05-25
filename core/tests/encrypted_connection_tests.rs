@@ -36,12 +36,9 @@ fn create_encrypted_db() -> (TempDir, std::path::PathBuf, String) {
     drop(repo);
 
     // Encrypt
-    let encryption_service =
-        EncryptionService::new(temp_dir.path().to_path_buf(), db_path.clone());
-    let backup_service = BackupService::new(
-        temp_dir.path().to_path_buf(),
-        "treeline.duckdb".to_string(),
-    );
+    let encryption_service = EncryptionService::new(temp_dir.path().to_path_buf(), db_path.clone());
+    let backup_service =
+        BackupService::new(temp_dir.path().to_path_buf(), "treeline.duckdb".to_string());
     encryption_service
         .encrypt(password, &backup_service)
         .unwrap();
@@ -86,10 +83,7 @@ fn test_open_encrypted_db_with_wrong_key() {
     // Try to open with a wrong key (valid hex, but not the right key)
     let wrong_key = "0000000000000000000000000000000000000000000000000000000000000000";
     let result = DuckDbRepository::new(&db_path, Some(wrong_key));
-    assert!(
-        result.is_err(),
-        "Should fail to open with wrong key"
-    );
+    assert!(result.is_err(), "Should fail to open with wrong key");
 }
 
 #[test]
@@ -111,9 +105,7 @@ fn test_open_encrypted_db_readonly() {
     // Open in read-only mode via execute_query_readonly
     let repo = DuckDbRepository::new(&db_path, Some(&key_hex)).unwrap();
 
-    let result = repo.execute_query_readonly(
-        "SELECT COUNT(*) AS cnt FROM sys_accounts",
-    );
+    let result = repo.execute_query_readonly("SELECT COUNT(*) AS cnt FROM sys_accounts");
     assert!(
         result.is_ok(),
         "Read-only query should work: {:?}",
@@ -133,11 +125,7 @@ fn test_open_encrypted_db_readwrite() {
         "INSERT INTO sys_accounts (account_id, name, created_at, updated_at) \
          VALUES ('00000000-0000-0000-0000-000000000002', 'Savings', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
     );
-    assert!(
-        result.is_ok(),
-        "Write should succeed: {:?}",
-        result.err()
-    );
+    assert!(result.is_ok(), "Write should succeed: {:?}", result.err());
 
     // Verify the inserted data
     let result = repo
@@ -181,12 +169,9 @@ fn test_encrypted_db_data_integrity() {
     }
 
     // Encrypt
-    let encryption_service =
-        EncryptionService::new(temp_dir.path().to_path_buf(), db_path.clone());
-    let backup_service = BackupService::new(
-        temp_dir.path().to_path_buf(),
-        "treeline.duckdb".to_string(),
-    );
+    let encryption_service = EncryptionService::new(temp_dir.path().to_path_buf(), db_path.clone());
+    let backup_service =
+        BackupService::new(temp_dir.path().to_path_buf(), "treeline.duckdb".to_string());
     encryption_service
         .encrypt(password, &backup_service)
         .unwrap();

@@ -6,7 +6,12 @@ use treeline_core::LogEvent;
 
 use super::{get_context, get_logger, log_event};
 
-pub fn run(integration: Option<String>, dry_run: bool, json: bool, lookback_days: Option<i64>) -> Result<()> {
+pub fn run(
+    integration: Option<String>,
+    dry_run: bool,
+    json: bool,
+    lookback_days: Option<i64>,
+) -> Result<()> {
     let logger = get_logger();
     log_event(&logger, LogEvent::new("sync_started").with_command("sync"));
 

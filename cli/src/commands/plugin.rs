@@ -73,10 +73,7 @@ pub fn run(command: PluginCommands) -> Result<()> {
             println!("  2. npm install");
             println!("  3. npm run build");
             println!("  4. tl plugin install .");
-            println!(
-                "\n{}:",
-                "Then develop with hot-reload".cyan()
-            );
+            println!("\n{}:", "Then develop with hot-reload".cyan());
             println!("  5. Enable hot-reload in Treeline: Settings > Plugin Hot-Reload > On");
             println!("  6. npm run dev\n");
         }

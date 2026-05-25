@@ -115,7 +115,9 @@ pub enum ExchangeError {
     UnknownCode,
     #[error("PKCE verification failed")]
     PkceFailed,
-    #[error("code_verifier is required when the authorization code was issued with a code_challenge")]
+    #[error(
+        "code_verifier is required when the authorization code was issued with a code_challenge"
+    )]
     MissingVerifier,
     #[error("authorization code has expired")]
     Expired,
@@ -281,11 +283,7 @@ impl OAuthStore {
     }
 
     /// Construct with explicit TTLs — primarily for tests.
-    pub fn with_ttls(
-        treeline_dir: PathBuf,
-        access_ttl: Duration,
-        refresh_ttl: Duration,
-    ) -> Self {
+    pub fn with_ttls(treeline_dir: PathBuf, access_ttl: Duration, refresh_ttl: Duration) -> Self {
         Self {
             treeline_dir,
             access_ttl,
@@ -393,7 +391,9 @@ impl OAuthStore {
         let record = state.authorization_codes.remove(pos);
 
         // Expired (belt-and-suspenders — prune already dropped these).
-        if Utc::now().signed_duration_since(record.created_at).num_seconds()
+        if Utc::now()
+            .signed_duration_since(record.created_at)
+            .num_seconds()
             > AUTH_CODE_LIFETIME_SECS
         {
             self.save_state(&state)
@@ -638,16 +638,18 @@ impl OAuthStore {
     /// /authorize HTML page to render which client and scopes are pending.
     /// Returns `None` if no pending session matches (expired, unknown, or
     /// already consumed).
-    pub fn find_pending_device_session(&self, user_code: &str) -> Result<Option<DeviceSessionInfo>> {
+    pub fn find_pending_device_session(
+        &self,
+        user_code: &str,
+    ) -> Result<Option<DeviceSessionInfo>> {
         let _guard = self.lock.lock().unwrap();
         let mut state = self.load_state()?;
         prune_expired_device_sessions(&mut state);
 
         let normalized = normalize_user_code(user_code);
-        let session = state
-            .device_sessions
-            .iter()
-            .find(|s| s.user_code == normalized && matches!(s.status, DeviceSessionStatus::Pending));
+        let session = state.device_sessions.iter().find(|s| {
+            s.user_code == normalized && matches!(s.status, DeviceSessionStatus::Pending)
+        });
 
         let info = session.map(|s| {
             let client_name = state
@@ -670,11 +672,7 @@ impl OAuthStore {
 
     /// Step 3 — browser-side authorization completed. Mint tokens for the
     /// session matching `user_code`. Returns Err if no pending session.
-    pub fn authorize_device_session(
-        &self,
-        user_code: &str,
-        scopes: Vec<String>,
-    ) -> Result<()> {
+    pub fn authorize_device_session(&self, user_code: &str, scopes: Vec<String>) -> Result<()> {
         let _guard = self.lock.lock().unwrap();
         let mut state = self.load_state()?;
         prune_expired_device_sessions(&mut state);
@@ -683,7 +681,9 @@ impl OAuthStore {
         let pos = state
             .device_sessions
             .iter()
-            .position(|s| s.user_code == normalized && matches!(s.status, DeviceSessionStatus::Pending))
+            .position(|s| {
+                s.user_code == normalized && matches!(s.status, DeviceSessionStatus::Pending)
+            })
             .ok_or_else(|| anyhow::anyhow!("Unknown or expired device session"))?;
 
         let session = state.device_sessions[pos].clone();
@@ -729,7 +729,9 @@ impl OAuthStore {
         device_code: &str,
     ) -> std::result::Result<TokenPair, DeviceCodeError> {
         let _guard = self.lock.lock().unwrap();
-        let mut state = self.load_state().map_err(|e| DeviceCodeError::Io(e.to_string()))?;
+        let mut state = self
+            .load_state()
+            .map_err(|e| DeviceCodeError::Io(e.to_string()))?;
         prune_expired_device_sessions(&mut state);
 
         let pos = state

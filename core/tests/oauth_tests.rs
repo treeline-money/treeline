@@ -21,11 +21,7 @@ fn make_store(temp_dir: &TempDir) -> OAuthStore {
     )
 }
 
-fn make_store_with_ttls(
-    temp_dir: &TempDir,
-    access: Duration,
-    refresh: Duration,
-) -> OAuthStore {
+fn make_store_with_ttls(temp_dir: &TempDir, access: Duration, refresh: Duration) -> OAuthStore {
     OAuthStore::with_ttls(temp_dir.path().to_path_buf(), access, refresh)
 }
 
@@ -289,7 +285,9 @@ fn test_refresh_token_issues_new_access_token() {
         .exchange_authorization_code(&code, Some(&verifier))
         .unwrap();
 
-    let refreshed = store.refresh_access_token(&initial_pair.refresh_token).unwrap();
+    let refreshed = store
+        .refresh_access_token(&initial_pair.refresh_token)
+        .unwrap();
 
     assert_ne!(refreshed.access_token, initial_pair.access_token);
     assert_eq!(refreshed.scopes, default_scopes());
@@ -430,7 +428,13 @@ fn test_store_survives_process_restart() {
         let pair = store
             .exchange_authorization_code(&code, Some(&verifier))
             .unwrap();
-        (client.client_id, pair.access_token, pair.refresh_token, verifier, challenge)
+        (
+            client.client_id,
+            pair.access_token,
+            pair.refresh_token,
+            verifier,
+            challenge,
+        )
     };
 
     // Drop and recreate — simulates server restart.
@@ -516,17 +520,10 @@ fn test_issue_code_without_pkce_is_allowed_and_no_verifier_required() {
         .register_client(vec!["http://a/cb".into()], None)
         .unwrap();
     let code = store
-        .issue_authorization_code(
-            &client.client_id,
-            "http://a/cb",
-            None,
-            default_scopes(),
-        )
+        .issue_authorization_code(&client.client_id, "http://a/cb", None, default_scopes())
         .unwrap();
 
-    let pair = store
-        .exchange_authorization_code(&code, None)
-        .unwrap();
+    let pair = store.exchange_authorization_code(&code, None).unwrap();
     assert!(!pair.access_token.is_empty());
 }
 
@@ -571,4 +568,3 @@ fn test_revoke_access_token_by_prefix_no_match_returns_zero() {
     let n = store.revoke_access_token_by_prefix("zzzzzzzz").unwrap();
     assert_eq!(n, 0);
 }
-

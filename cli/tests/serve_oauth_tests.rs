@@ -102,8 +102,7 @@ fn pkce_pair() -> (String, String) {
     use base64::Engine;
     use sha2::{Digest, Sha256};
 
-    let verifier =
-        "abc123_this_is_a_pkce_code_verifier_that_is_at_least_43_characters_long_yes";
+    let verifier = "abc123_this_is_a_pkce_code_verifier_that_is_at_least_43_characters_long_yes";
     let mut hasher = Sha256::new();
     hasher.update(verifier.as_bytes());
     let hash = hasher.finalize();
@@ -506,7 +505,10 @@ async fn api_push_with_master_token_is_now_rejected() {
 async fn oauth_metadata_endpoints_are_reachable() {
     let hub = spawn_hub().await;
     let resp = reqwest::Client::new()
-        .get(format!("{}/.well-known/oauth-authorization-server", hub.base_url))
+        .get(format!(
+            "{}/.well-known/oauth-authorization-server",
+            hub.base_url
+        ))
         .send()
         .await
         .unwrap();
@@ -528,11 +530,7 @@ async fn oauth_metadata_endpoints_are_reachable() {
 // non-DB tools (e.g. `version`) keep working.
 // ============================================================================
 
-async fn mcp_post(
-    hub: &TestHub,
-    token: &str,
-    body: serde_json::Value,
-) -> reqwest::Response {
+async fn mcp_post(hub: &TestHub, token: &str, body: serde_json::Value) -> reqwest::Response {
     reqwest::Client::new()
         .post(format!("{}/mcp", hub.base_url))
         .bearer_auth(token)
@@ -672,10 +670,7 @@ async fn mcp_malformed_json_returns_parse_error_at_http_200() {
 
 /// Drive the device-code dance against `hub`, simulating what `tl hub link`
 /// does. Returns (access_token, refresh_token, scopes).
-async fn full_device_code_flow(
-    hub: &TestHub,
-    scope: &str,
-) -> (String, String, Vec<String>) {
+async fn full_device_code_flow(hub: &TestHub, scope: &str) -> (String, String, Vec<String>) {
     let c = reqwest::Client::new();
 
     // Step 1: CLI initiates.
@@ -758,10 +753,7 @@ async fn device_code_poll_returns_authorization_pending_before_user_authorizes()
     // Poll immediately — no one authorized yet.
     let resp = c
         .post(format!("{}/token", hub.base_url))
-        .form(&[
-            ("grant_type", "device_code"),
-            ("device_code", device_code),
-        ])
+        .form(&[("grant_type", "device_code"), ("device_code", device_code)])
         .send()
         .await
         .unwrap();
@@ -1099,7 +1091,12 @@ async fn api_clients_lists_devices_and_apps_with_kind() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body: serde_json::Value = resp.json().await.unwrap();
     let clients = body["clients"].as_array().expect("clients array");
-    assert_eq!(clients.len(), 2, "expected 1 device + 1 app, got {:?}", clients);
+    assert_eq!(
+        clients.len(),
+        2,
+        "expected 1 device + 1 app, got {:?}",
+        clients
+    );
 
     let kinds: Vec<&str> = clients.iter().filter_map(|c| c["kind"].as_str()).collect();
     assert!(kinds.contains(&"device"), "kinds: {:?}", kinds);

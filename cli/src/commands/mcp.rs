@@ -91,8 +91,7 @@ fn build_instructions() -> String {
     }
 
     // Check if we have a usable key
-    let has_env_key =
-        std::env::var("TL_DB_KEY").is_ok() || std::env::var("TL_DB_PASSWORD").is_ok();
+    let has_env_key = std::env::var("TL_DB_KEY").is_ok() || std::env::var("TL_DB_PASSWORD").is_ok();
     let has_keychain_key = KeychainService::get_key().unwrap_or(None).is_some();
 
     if has_env_key || has_keychain_key {
@@ -405,7 +404,10 @@ pub fn execute_tool(name: &str, args: &Value) -> Result<Value, String> {
         }
         "sync" => {
             let integration = args.get("integration").and_then(|v| v.as_str());
-            let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+            let dry_run = args
+                .get("dry_run")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             let lookback_days = args.get("lookback_days").and_then(|v| v.as_i64());
             tool_sync(integration, dry_run, lookback_days)
         }
@@ -422,7 +424,10 @@ pub fn execute_tool(name: &str, args: &Value) -> Result<Value, String> {
                 .filter_map(|v| v.as_str())
                 .map(|s| s.to_string())
                 .collect::<Vec<_>>();
-            let replace = args.get("replace").and_then(|v| v.as_bool()).unwrap_or(false);
+            let replace = args
+                .get("replace")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             tool_tag(tags, ids, replace)
         }
         "doctor" => tool_doctor(),
@@ -435,7 +440,10 @@ pub fn execute_tool(name: &str, args: &Value) -> Result<Value, String> {
         }
         "schema" => {
             let table = args.get("table").and_then(|v| v.as_str());
-            let plugins = args.get("plugins").and_then(|v| v.as_bool()).unwrap_or(false);
+            let plugins = args
+                .get("plugins")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             tool_schema(table, plugins)
         }
         "encryption_status" => tool_encryption_status(),
@@ -482,7 +490,11 @@ fn tool_query(sql: &str, allow_writes: bool) -> Result<Value, String> {
     serde_json::to_value(&result).map_err(|e| e.to_string())
 }
 
-fn tool_sync(integration: Option<&str>, dry_run: bool, lookback_days: Option<i64>) -> Result<Value, String> {
+fn tool_sync(
+    integration: Option<&str>,
+    dry_run: bool,
+    lookback_days: Option<i64>,
+) -> Result<Value, String> {
     let ctx = get_context().map_err(|e| e.to_string())?;
     let result = ctx
         .sync_service
@@ -543,7 +555,10 @@ fn tool_schema(table: Option<&str>, plugins: bool) -> Result<Value, String> {
             .to_string()
     };
 
-    let tables_result = ctx.query_service.execute_readonly(&schema_sql).map_err(|e| e.to_string())?;
+    let tables_result = ctx
+        .query_service
+        .execute_readonly(&schema_sql)
+        .map_err(|e| e.to_string())?;
     let show_schema = plugins || schema_filter.is_some();
 
     let mut tables = Vec::new();
@@ -563,15 +578,22 @@ fn tool_schema(table: Option<&str>, plugins: bool) -> Result<Value, String> {
              FROM information_schema.columns WHERE table_schema = '{}' AND table_name = '{}' ORDER BY ordinal_position",
             tbl_schema, name
         );
-        let columns_result = ctx.query_service.execute_readonly(&describe_sql).map_err(|e| e.to_string())?;
+        let columns_result = ctx
+            .query_service
+            .execute_readonly(&describe_sql)
+            .map_err(|e| e.to_string())?;
 
-        let columns: Vec<Value> = columns_result.rows.iter().map(|row| {
-            json!({
-                "name": row[0].as_str().unwrap_or_default(),
-                "type": row[1].as_str().unwrap_or_default(),
-                "nullable": row[2].as_bool().unwrap_or(true)
+        let columns: Vec<Value> = columns_result
+            .rows
+            .iter()
+            .map(|row| {
+                json!({
+                    "name": row[0].as_str().unwrap_or_default(),
+                    "type": row[1].as_str().unwrap_or_default(),
+                    "nullable": row[2].as_bool().unwrap_or(true)
+                })
             })
-        }).collect();
+            .collect();
 
         let mut entry = json!({
             "name": name,
@@ -579,13 +601,19 @@ fn tool_schema(table: Option<&str>, plugins: bool) -> Result<Value, String> {
             "columns": columns
         });
         if show_schema {
-            entry.as_object_mut().unwrap().insert("schema".to_string(), json!(tbl_schema));
+            entry
+                .as_object_mut()
+                .unwrap()
+                .insert("schema".to_string(), json!(tbl_schema));
         }
         tables.push(entry);
     }
 
     if table_filter.is_some() && tables.is_empty() {
-        return Err(format!("Table or view '{}' not found", table.unwrap_or_default()));
+        return Err(format!(
+            "Table or view '{}' not found",
+            table.unwrap_or_default()
+        ));
     }
 
     Ok(json!({ "tables": tables }))
@@ -673,7 +701,10 @@ fn tool_demo(action: &str) -> Result<Value, String> {
             let enabled = demo_service.is_enabled().map_err(|e| e.to_string())?;
             Ok(json!({"enabled": enabled}))
         }
-        _ => Err(format!("Unknown demo action: {}. Use on, off, or status.", action)),
+        _ => Err(format!(
+            "Unknown demo action: {}. Use on, off, or status.",
+            action
+        )),
     }
 }
 
@@ -708,15 +739,10 @@ pub fn handle_request(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
             ))
         }
 
-        "tools/list" => {
-            Some(JsonRpcResponse::success(id, tool_definitions()))
-        }
+        "tools/list" => Some(JsonRpcResponse::success(id, tool_definitions())),
 
         "tools/call" => {
-            let tool_name = params
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let tool_name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
             let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
             match execute_tool(tool_name, &arguments) {
@@ -744,7 +770,11 @@ pub fn handle_request(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
 
         _ => {
             // Unknown method — return method not found per JSON-RPC spec
-            Some(JsonRpcResponse::error(id, -32601, format!("Method not found: {}", req.method)))
+            Some(JsonRpcResponse::error(
+                id,
+                -32601,
+                format!("Method not found: {}", req.method),
+            ))
         }
     }
 }
@@ -772,11 +802,8 @@ pub fn run() -> Result<()> {
             Ok(req) => req,
             Err(e) => {
                 // Parse error
-                let resp = JsonRpcResponse::error(
-                    Value::Null,
-                    -32700,
-                    format!("Parse error: {}", e),
-                );
+                let resp =
+                    JsonRpcResponse::error(Value::Null, -32700, format!("Parse error: {}", e));
                 let output = serde_json::to_string(&resp)?;
                 writeln!(stdout, "{}", output)?;
                 stdout.flush()?;

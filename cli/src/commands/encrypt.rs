@@ -108,9 +108,7 @@ pub fn run(command: Option<EncryptCommands>, password: Option<String>, json: boo
                 // locked = encrypted AND no key in keychain AND no env vars set
                 let has_env_key =
                     env::var("TL_DB_KEY").is_ok() || env::var("TL_DB_PASSWORD").is_ok();
-                let has_keychain_key = KeychainService::get_key()
-                    .unwrap_or(None)
-                    .is_some();
+                let has_keychain_key = KeychainService::get_key().unwrap_or(None).is_some();
                 status.locked = Some(!has_env_key && !has_keychain_key);
             } else {
                 status.locked = Some(false);
@@ -165,10 +163,7 @@ pub fn run(command: Option<EncryptCommands>, password: Option<String>, json: boo
                 );
             } else {
                 println!("{}", "Database unlocked".green());
-                println!(
-                    "  {}",
-                    "Encryption key stored in OS keychain".dimmed()
-                );
+                println!("  {}", "Encryption key stored in OS keychain".dimmed());
             }
         }
         Some(EncryptCommands::Lock) => {
@@ -186,10 +181,7 @@ pub fn run(command: Option<EncryptCommands>, password: Option<String>, json: boo
                 );
             } else {
                 println!("{}", "Database locked".green());
-                println!(
-                    "  {}",
-                    "Encryption key cleared from OS keychain".dimmed()
-                );
+                println!("  {}", "Encryption key cleared from OS keychain".dimmed());
             }
         }
         None => {
@@ -241,10 +233,7 @@ pub fn run(command: Option<EncryptCommands>, password: Option<String>, json: boo
                         if let Some(backup_name) = result.backup_name {
                             println!("  Backup created: {}", backup_name);
                         }
-                        println!(
-                            "  {}",
-                            "Encryption key stored in OS keychain".dimmed()
-                        );
+                        println!("  {}", "Encryption key stored in OS keychain".dimmed());
                     }
                 }
                 Err(e) => {

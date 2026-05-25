@@ -36,9 +36,8 @@ fn setup_test_env() -> (TempDir, Arc<DuckDbRepository>, PathBuf) {
     let treeline_dir = temp_dir.path().to_path_buf();
     let db_path = treeline_dir.join("data.duckdb");
 
-    let repo = Arc::new(
-        DuckDbRepository::new(&db_path, None).expect("Failed to create repository"),
-    );
+    let repo =
+        Arc::new(DuckDbRepository::new(&db_path, None).expect("Failed to create repository"));
     repo.ensure_schema().expect("Failed to run migrations");
 
     (temp_dir, repo, treeline_dir)
@@ -78,7 +77,8 @@ fn create_test_account(repo: &DuckDbRepository, name: &str) -> Uuid {
         lf_currency: None,
         lf_status: None,
     };
-    repo.upsert_account(&account).expect("Failed to create account");
+    repo.upsert_account(&account)
+        .expect("Failed to create account");
     account.id
 }
 
@@ -86,7 +86,8 @@ fn create_test_account(repo: &DuckDbRepository, name: &str) -> Uuid {
 fn create_csv_file(dir: &std::path::Path, filename: &str, content: &str) -> PathBuf {
     let path = dir.join(filename);
     let mut file = std::fs::File::create(&path).expect("Failed to create CSV file");
-    file.write_all(content.as_bytes()).expect("Failed to write CSV");
+    file.write_all(content.as_bytes())
+        .expect("Failed to write CSV");
     path
 }
 
@@ -123,10 +124,19 @@ fn test_csv_import_no_duplicates_on_reimport() {
 
     // First import
     let result1 = import_service
-        .import(&csv_path, &account_id.to_string(), &mappings, &options, false)
+        .import(
+            &csv_path,
+            &account_id.to_string(),
+            &mappings,
+            &options,
+            false,
+        )
         .expect("First import failed");
 
-    assert_eq!(result1.imported, 5, "First import should import 5 transactions");
+    assert_eq!(
+        result1.imported, 5,
+        "First import should import 5 transactions"
+    );
 
     // Get transaction count
     let count_after_first = repo.get_transaction_count().expect("Failed to get count");
@@ -134,10 +144,19 @@ fn test_csv_import_no_duplicates_on_reimport() {
 
     // Second import of the same file - should not create duplicates
     let result2 = import_service
-        .import(&csv_path, &account_id.to_string(), &mappings, &options, false)
+        .import(
+            &csv_path,
+            &account_id.to_string(),
+            &mappings,
+            &options,
+            false,
+        )
         .expect("Second import failed");
 
-    assert_eq!(result2.imported, 0, "Second import should import 0 (all duplicates)");
+    assert_eq!(
+        result2.imported, 0,
+        "Second import should import 0 (all duplicates)"
+    );
     assert_eq!(result2.skipped, 5, "Second import should skip 5 duplicates");
 
     // Verify total count unchanged
@@ -181,13 +200,25 @@ fn test_csv_import_partial_overlap() {
 
     // First import
     let result1 = import_service
-        .import(&csv1_path, &account_id.to_string(), &mappings, &options, false)
+        .import(
+            &csv1_path,
+            &account_id.to_string(),
+            &mappings,
+            &options,
+            false,
+        )
         .expect("First import failed");
     assert_eq!(result1.imported, 3);
 
     // Second import - should only add 2 new ones
     let result2 = import_service
-        .import(&csv2_path, &account_id.to_string(), &mappings, &options, false)
+        .import(
+            &csv2_path,
+            &account_id.to_string(),
+            &mappings,
+            &options,
+            false,
+        )
         .expect("Second import failed");
 
     assert_eq!(result2.imported, 2, "Should only import 2 new transactions");
@@ -261,7 +292,8 @@ fn test_get_existing_sf_ids() {
         tx.sf_id = Some(format!("existing_sf_{}", i));
         transactions.push(tx);
     }
-    repo.bulk_insert_transactions(&transactions).expect("Insert failed");
+    repo.bulk_insert_transactions(&transactions)
+        .expect("Insert failed");
 
     // Query for a mix of existing and non-existing IDs
     let query_ids: Vec<String> = (0..15)
@@ -274,9 +306,7 @@ fn test_get_existing_sf_ids() {
         })
         .collect();
 
-    let existing = repo
-        .get_existing_sf_ids(&query_ids)
-        .expect("Query failed");
+    let existing = repo.get_existing_sf_ids(&query_ids).expect("Query failed");
 
     assert_eq!(existing.len(), 10, "Should find 10 existing IDs");
 
@@ -314,7 +344,8 @@ fn test_get_existing_lf_ids() {
         tx.lf_id = Some(format!("existing_lf_{}", i));
         transactions.push(tx);
     }
-    repo.bulk_insert_transactions(&transactions).expect("Insert failed");
+    repo.bulk_insert_transactions(&transactions)
+        .expect("Insert failed");
 
     // Query for a mix of existing and non-existing IDs
     let query_ids: Vec<String> = (0..15)
@@ -327,9 +358,7 @@ fn test_get_existing_lf_ids() {
         })
         .collect();
 
-    let existing = repo
-        .get_existing_lf_ids(&query_ids)
-        .expect("Query failed");
+    let existing = repo.get_existing_lf_ids(&query_ids).expect("Query failed");
 
     assert_eq!(existing.len(), 10, "Should find 10 existing IDs");
 }
@@ -381,7 +410,9 @@ fn test_bulk_dedup_workflow() {
     let incoming_sf_ids: Vec<String> = (0..50).map(|i| format!("sf_tx_{}", i)).collect();
 
     // First sync - all are new
-    let existing = repo.get_existing_sf_ids(&incoming_sf_ids).expect("Query failed");
+    let existing = repo
+        .get_existing_sf_ids(&incoming_sf_ids)
+        .expect("Query failed");
     assert_eq!(existing.len(), 0, "No transactions should exist yet");
 
     // Create and insert the transactions
@@ -401,11 +432,15 @@ fn test_bulk_dedup_workflow() {
         })
         .collect();
 
-    let inserted = repo.bulk_insert_transactions(&transactions).expect("Insert failed");
+    let inserted = repo
+        .bulk_insert_transactions(&transactions)
+        .expect("Insert failed");
     assert_eq!(inserted, 50);
 
     // Second sync - simulate same transactions coming in again
-    let existing_after = repo.get_existing_sf_ids(&incoming_sf_ids).expect("Query failed");
+    let existing_after = repo
+        .get_existing_sf_ids(&incoming_sf_ids)
+        .expect("Query failed");
     assert_eq!(existing_after.len(), 50, "All 50 should now exist");
 
     // Filter to new only (should be none)
@@ -443,20 +478,18 @@ fn test_get_existing_sf_ids_large_batch() {
             Uuid::new_v4(),
             account_id,
             Decimal::new(100, 2),
-            NaiveDate::from_ymd_opt(2024, 1, 1).unwrap()
-                + chrono::Duration::days(i % 365),
+            NaiveDate::from_ymd_opt(2024, 1, 1).unwrap() + chrono::Duration::days(i % 365),
         );
         tx.sf_id = Some(format!("sf_{:04}", i));
         transactions.push(tx);
     }
-    repo.bulk_insert_transactions(&transactions).expect("Insert failed");
+    repo.bulk_insert_transactions(&transactions)
+        .expect("Insert failed");
 
     // Query all 600 plus 100 new ones
     let query_ids: Vec<String> = (0..700).map(|i| format!("sf_{:04}", i)).collect();
 
-    let existing = repo
-        .get_existing_sf_ids(&query_ids)
-        .expect("Query failed");
+    let existing = repo.get_existing_sf_ids(&query_ids).expect("Query failed");
 
     assert_eq!(
         existing.len(),
@@ -478,20 +511,18 @@ fn test_get_existing_lf_ids_large_batch() {
             Uuid::new_v4(),
             account_id,
             Decimal::new(100, 2),
-            NaiveDate::from_ymd_opt(2024, 1, 1).unwrap()
-                + chrono::Duration::days(i % 365),
+            NaiveDate::from_ymd_opt(2024, 1, 1).unwrap() + chrono::Duration::days(i % 365),
         );
         tx.lf_id = Some(format!("lf_{:04}", i));
         transactions.push(tx);
     }
-    repo.bulk_insert_transactions(&transactions).expect("Insert failed");
+    repo.bulk_insert_transactions(&transactions)
+        .expect("Insert failed");
 
     // Query all 600 plus 100 new ones
     let query_ids: Vec<String> = (0..700).map(|i| format!("lf_{:04}", i)).collect();
 
-    let existing = repo
-        .get_existing_lf_ids(&query_ids)
-        .expect("Query failed");
+    let existing = repo.get_existing_lf_ids(&query_ids).expect("Query failed");
 
     assert_eq!(
         existing.len(),
@@ -519,11 +550,8 @@ fn test_simplefin_sync_no_duplicates() {
 
     // Set up SimpleFin integration directly with access URL
     // (bypass setup_simplefin which expects a setup token)
-    repo.upsert_integration(
-        "simplefin",
-        &json!({ "accessUrl": access_url }),
-    )
-    .expect("Failed to setup SimpleFin integration");
+    repo.upsert_integration("simplefin", &json!({ "accessUrl": access_url }))
+        .expect("Failed to setup SimpleFin integration");
 
     // First sync
     let result1 = sync_service
@@ -581,11 +609,8 @@ fn test_simplefin_rapid_sync_no_duplicates() {
     let sync_service = SyncService::new(repo.clone(), treeline_dir.clone());
 
     // Set up SimpleFin integration directly with access URL
-    repo.upsert_integration(
-        "simplefin",
-        &json!({ "accessUrl": access_url }),
-    )
-    .expect("Failed to setup SimpleFin integration");
+    repo.upsert_integration("simplefin", &json!({ "accessUrl": access_url }))
+        .expect("Failed to setup SimpleFin integration");
 
     // Run 5 syncs rapidly
     for i in 0..5 {
@@ -595,9 +620,7 @@ fn test_simplefin_rapid_sync_no_duplicates() {
 
         println!(
             "Sync {}: {} new, {} skipped",
-            i,
-            result.results[0].transaction_stats.new,
-            result.results[0].transaction_stats.skipped
+            i, result.results[0].transaction_stats.new, result.results[0].transaction_stats.skipped
         );
     }
 
@@ -689,9 +712,7 @@ fn test_lunchflow_rapid_sync_no_duplicates() {
 
         println!(
             "Lunchflow sync {}: {} new, {} skipped",
-            i,
-            result.results[0].transaction_stats.new,
-            result.results[0].transaction_stats.skipped
+            i, result.results[0].transaction_stats.new, result.results[0].transaction_stats.skipped
         );
     }
 
@@ -807,10 +828,19 @@ fn test_csv_import_identical_rows_all_imported() {
     let options = ImportOptions::default();
 
     let result = import_service
-        .import(&csv_path, &account_id.to_string(), &mappings, &options, false)
+        .import(
+            &csv_path,
+            &account_id.to_string(),
+            &mappings,
+            &options,
+            false,
+        )
         .expect("Import failed");
 
-    assert_eq!(result.imported, 3, "All 3 identical rows should be imported");
+    assert_eq!(
+        result.imported, 3,
+        "All 3 identical rows should be imported"
+    );
 
     let count = repo.get_transaction_count().expect("Failed to get count");
     assert_eq!(count, 3, "DB should have 3 transactions");
@@ -843,7 +873,13 @@ fn test_csv_import_reimport_after_delete() {
 
     // First import: all 3
     let result1 = import_service
-        .import(&csv_path, &account_id.to_string(), &mappings, &options, false)
+        .import(
+            &csv_path,
+            &account_id.to_string(),
+            &mappings,
+            &options,
+            false,
+        )
         .expect("First import failed");
     assert_eq!(result1.imported, 3);
 
@@ -855,14 +891,26 @@ fn test_csv_import_reimport_after_delete() {
     .expect("Delete failed");
 
     let count_after_delete = repo.get_transaction_count().expect("Failed to get count");
-    assert_eq!(count_after_delete, 1, "Should have 1 remaining after deleting 2");
+    assert_eq!(
+        count_after_delete, 1,
+        "Should have 1 remaining after deleting 2"
+    );
 
     // Re-import same CSV: should add 2 back (csv has 3, db has 1 → import 2)
     let result2 = import_service
-        .import(&csv_path, &account_id.to_string(), &mappings, &options, false)
+        .import(
+            &csv_path,
+            &account_id.to_string(),
+            &mappings,
+            &options,
+            false,
+        )
         .expect("Re-import failed");
 
-    assert_eq!(result2.imported, 2, "Should re-import 2 deleted transactions");
+    assert_eq!(
+        result2.imported, 2,
+        "Should re-import 2 deleted transactions"
+    );
     assert_eq!(result2.skipped, 1, "Should skip 1 that still exists");
 
     let final_count = repo.get_transaction_count().expect("Failed to get count");
@@ -896,13 +944,25 @@ fn test_csv_import_reimport_no_delete() {
 
     // First import
     let result1 = import_service
-        .import(&csv_path, &account_id.to_string(), &mappings, &options, false)
+        .import(
+            &csv_path,
+            &account_id.to_string(),
+            &mappings,
+            &options,
+            false,
+        )
         .expect("First import failed");
     assert_eq!(result1.imported, 3);
 
     // Re-import without deleting anything
     let result2 = import_service
-        .import(&csv_path, &account_id.to_string(), &mappings, &options, false)
+        .import(
+            &csv_path,
+            &account_id.to_string(),
+            &mappings,
+            &options,
+            false,
+        )
         .expect("Re-import failed");
 
     assert_eq!(result2.imported, 0, "Should import 0 on re-import");
@@ -944,15 +1004,32 @@ fn test_csv_fingerprint_counts() {
     unique_tx.csv_batch_id = Some("batch_1".to_string());
     transactions.push(unique_tx);
 
-    repo.bulk_insert_transactions(&transactions).expect("Insert failed");
+    repo.bulk_insert_transactions(&transactions)
+        .expect("Insert failed");
 
     let counts = repo
-        .get_csv_fingerprint_counts(&["same_fp".to_string(), "unique_fp".to_string(), "missing_fp".to_string()])
+        .get_csv_fingerprint_counts(&[
+            "same_fp".to_string(),
+            "unique_fp".to_string(),
+            "missing_fp".to_string(),
+        ])
         .expect("Count query failed");
 
-    assert_eq!(counts.get("same_fp"), Some(&3), "same_fp should have count 3");
-    assert_eq!(counts.get("unique_fp"), Some(&1), "unique_fp should have count 1");
-    assert_eq!(counts.get("missing_fp"), None, "missing_fp should not be present");
+    assert_eq!(
+        counts.get("same_fp"),
+        Some(&3),
+        "same_fp should have count 3"
+    );
+    assert_eq!(
+        counts.get("unique_fp"),
+        Some(&1),
+        "unique_fp should have count 1"
+    );
+    assert_eq!(
+        counts.get("missing_fp"),
+        None,
+        "missing_fp should not be present"
+    );
 }
 
 // =============================================================================
@@ -1033,8 +1110,7 @@ fn test_get_existing_csv_fingerprints_large_batch() {
             Uuid::new_v4(),
             account_id,
             Decimal::new((i + 1) * 10, 2),
-            NaiveDate::from_ymd_opt(2024, 1, 1).unwrap()
-                + chrono::Duration::days(i % 365),
+            NaiveDate::from_ymd_opt(2024, 1, 1).unwrap() + chrono::Duration::days(i % 365),
         );
         tx.csv_fingerprint = Some(format!("fp_{:04}", i));
         tx.csv_batch_id = Some("batch_large".to_string());
@@ -1044,9 +1120,7 @@ fn test_get_existing_csv_fingerprints_large_batch() {
         .expect("Insert failed");
 
     // Query all 600 plus 100 new ones
-    let query_fps: Vec<String> = (0..700)
-        .map(|i| format!("fp_{:04}", i))
-        .collect();
+    let query_fps: Vec<String> = (0..700).map(|i| format!("fp_{:04}", i)).collect();
 
     let existing = repo
         .get_existing_csv_fingerprints(&query_fps)
@@ -1069,8 +1143,7 @@ fn test_bulk_insert_balance_snapshots() {
     // Create balance snapshots for 30 days
     let mut snapshots: Vec<BalanceSnapshot> = Vec::new();
     for i in 0..30 {
-        let date = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap()
-            + chrono::Duration::days(i);
+        let date = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap() + chrono::Duration::days(i);
         let snapshot_time = chrono::NaiveDateTime::new(
             date,
             chrono::NaiveTime::from_hms_micro_opt(23, 59, 59, 999999).unwrap(),
@@ -1212,9 +1285,12 @@ fn test_multiple_providers_no_cross_contamination() {
         })
         .collect();
 
-    repo.bulk_insert_transactions(&sf_transactions).expect("SF insert failed");
-    repo.bulk_insert_transactions(&lf_transactions).expect("LF insert failed");
-    repo.bulk_insert_transactions(&csv_transactions).expect("CSV insert failed");
+    repo.bulk_insert_transactions(&sf_transactions)
+        .expect("SF insert failed");
+    repo.bulk_insert_transactions(&lf_transactions)
+        .expect("LF insert failed");
+    repo.bulk_insert_transactions(&csv_transactions)
+        .expect("CSV insert failed");
 
     // Verify counts
     let total = repo.get_transaction_count().expect("Count failed");
@@ -1231,6 +1307,12 @@ fn test_multiple_providers_no_cross_contamination() {
     assert_eq!(existing_lf.len(), 10);
 
     // Verify no duplicates
-    assert!(repo.check_duplicate_sf_ids().expect("Check failed").is_empty());
-    assert!(repo.check_duplicate_lf_ids().expect("Check failed").is_empty());
+    assert!(repo
+        .check_duplicate_sf_ids()
+        .expect("Check failed")
+        .is_empty());
+    assert!(repo
+        .check_duplicate_lf_ids()
+        .expect("Check failed")
+        .is_empty());
 }

@@ -92,9 +92,30 @@ fn test_encrypt_autoload_disabled() {
     println!("\n=== ENCRYPTION DIAGNOSTIC SUMMARY ===");
     println!("Platform: {}", std::env::consts::OS);
     println!("Arch: {}", std::env::consts::ARCH);
-    println!("Autoload disabled:              {}", if autoload_disabled_works { "WORKS" } else { "BROKEN" });
-    println!("Autoload enabled:               {}", if autoload_enabled_works { "WORKS" } else { "BROKEN" });
-    println!("Explicit INSTALL+LOAD httpfs:    {}", if explicit_httpfs_works { "WORKS" } else { "BROKEN" });
+    println!(
+        "Autoload disabled:              {}",
+        if autoload_disabled_works {
+            "WORKS"
+        } else {
+            "BROKEN"
+        }
+    );
+    println!(
+        "Autoload enabled:               {}",
+        if autoload_enabled_works {
+            "WORKS"
+        } else {
+            "BROKEN"
+        }
+    );
+    println!(
+        "Explicit INSTALL+LOAD httpfs:    {}",
+        if explicit_httpfs_works {
+            "WORKS"
+        } else {
+            "BROKEN"
+        }
+    );
 
     if !autoload_disabled_works && explicit_httpfs_works {
         println!("DIAGNOSIS: Fix is to explicitly INSTALL+LOAD httpfs before encryption");

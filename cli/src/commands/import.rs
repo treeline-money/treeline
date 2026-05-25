@@ -51,13 +51,11 @@ pub fn run(
     let account_id = match ctx.import_service.resolve_account(account) {
         Ok(id) => id,
         Err(_) if create_if_not_exists => {
-            let id = ctx.import_service.create_account(account, account_type, currency)?;
+            let id = ctx
+                .import_service
+                .create_account(account, account_type, currency)?;
             if !json {
-                println!(
-                    "{} account '{}'",
-                    "Created".green(),
-                    account
-                );
+                println!("{} account '{}'", "Created".green(), account);
             }
             id
         }
@@ -124,8 +122,7 @@ pub fn run(
         0
     };
 
-    let effective_flip_signs =
-        flip_signs || profile_opts.map(|o| o.flip_signs).unwrap_or(false);
+    let effective_flip_signs = flip_signs || profile_opts.map(|o| o.flip_signs).unwrap_or(false);
     let effective_debit_negative =
         debit_negative || profile_opts.map(|o| o.debit_negative).unwrap_or(false);
 
@@ -246,10 +243,7 @@ pub fn run(
         );
         println!();
         println!("  Discovered:  {} transactions", result.discovered);
-        println!(
-            "  Skipped:     {} (duplicates/invalid)",
-            result.skipped
-        );
+        println!("  Skipped:     {} (duplicates/invalid)", result.skipped);
         println!("  Imported:    {} transactions", result.imported);
         if result.balance_snapshots_created > 0 {
             println!(
@@ -279,8 +273,7 @@ fn resolve_file(file: &str) -> Result<PathBuf> {
 
         let tmp_dir = std::env::temp_dir();
         let tmp_path = tmp_dir.join("treeline_import_stdin.csv");
-        std::fs::write(&tmp_path, &buffer)
-            .context("Failed to write stdin to temp file")?;
+        std::fs::write(&tmp_path, &buffer).context("Failed to write stdin to temp file")?;
         Ok(tmp_path)
     } else {
         let path = Path::new(file);

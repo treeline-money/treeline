@@ -83,7 +83,7 @@ pub struct HubConfig {
     /// for self-hosted hubs. After Pro's link flow completes, `url` gets
     /// overwritten with the hub's direct URL (via the `hub_url` extension on
     /// `/token`), so this field is the only signal that says "this was
-    /// a Pro link." Used by the desktop UI to label the connection.
+    /// a Pro link."
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link_origin: Option<String>,
     /// Forward-compat: any unknown fields read from `hub.json` are preserved
@@ -366,8 +366,7 @@ mod tests {
         hub.save(temp_dir.path()).unwrap();
 
         // settings.json should be untouched
-        let content =
-            std::fs::read_to_string(temp_dir.path().join("settings.json")).unwrap();
+        let content = std::fs::read_to_string(temp_dir.path().join("settings.json")).unwrap();
         let v: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(v["app"]["demoMode"], true);
         assert!(v.get("hub").is_none());

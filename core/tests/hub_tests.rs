@@ -25,10 +25,7 @@ fn create_test_repo(temp_dir: &TempDir) -> Arc<DuckDbRepository> {
 
 /// Create a hub service for testing
 fn create_hub_service(temp_dir: &TempDir) -> HubService {
-    HubService::new(
-        temp_dir.path().to_path_buf(),
-        "treeline.duckdb".to_string(),
-    )
+    HubService::new(temp_dir.path().to_path_buf(), "treeline.duckdb".to_string())
 }
 
 // ============================================================================
@@ -183,8 +180,14 @@ fn test_hub_config_roundtrips_unknown_fields() {
     let after = std::fs::read_to_string(temp_dir.path().join("hub.json")).unwrap();
     let v: serde_json::Value = serde_json::from_str(&after).unwrap();
     assert_eq!(v["futureFlag"], "yes", "unknown scalar must round-trip");
-    assert_eq!(v["futureNested"]["n"], 42, "unknown nested object must round-trip");
-    assert_eq!(v["futureNested"]["list"][2], 3, "unknown nested array must round-trip");
+    assert_eq!(
+        v["futureNested"]["n"], 42,
+        "unknown nested object must round-trip"
+    );
+    assert_eq!(
+        v["futureNested"]["list"][2], 3,
+        "unknown nested array must round-trip"
+    );
 }
 
 // ============================================================================
@@ -325,7 +328,11 @@ fn test_first_push_to_empty_hub() {
     // First push — no base_hash
     let result = hub_service.accept_push(&bundle, None).unwrap();
     match result {
-        treeline_core::services::PushOutcome::Accepted { backup_name, bytes_received, new_hash } => {
+        treeline_core::services::PushOutcome::Accepted {
+            backup_name,
+            bytes_received,
+            new_hash,
+        } => {
             assert!(bytes_received > 0);
             assert!(backup_name.is_none()); // No backup on first push
             assert!(!new_hash.is_empty());
@@ -373,7 +380,9 @@ fn test_push_accepted_when_hash_matches() {
 
     // Second push with matching base_hash
     let bundle2 = SyncBundle::create(source_dir.path()).unwrap();
-    let result = hub_service.accept_push(&bundle2, Some(&first_hash)).unwrap();
+    let result = hub_service
+        .accept_push(&bundle2, Some(&first_hash))
+        .unwrap();
     match result {
         treeline_core::services::PushOutcome::Accepted { .. } => {}
         _ => panic!("Expected Accepted when hash matches"),
@@ -392,7 +401,9 @@ fn test_push_conflict_when_hash_mismatches() {
     hub_service.accept_push(&bundle, None).unwrap();
 
     // Try to push with a stale hash
-    let result = hub_service.accept_push(&bundle, Some("stale_hash_abc")).unwrap();
+    let result = hub_service
+        .accept_push(&bundle, Some("stale_hash_abc"))
+        .unwrap();
     match result {
         treeline_core::services::PushOutcome::Conflict { hub_hash } => {
             assert!(!hub_hash.is_empty());
@@ -446,7 +457,10 @@ fn test_pull_fails_on_empty_hub() {
 
     let result = hub_service.get_bundle_for_pull();
     assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("Push a database first"));
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("Push a database first"));
 }
 
 #[test]
@@ -529,7 +543,11 @@ fn test_extract_preserves_top_level_files_not_in_bundle() {
     let bundle = bundle_with_only_db();
 
     let dest = TempDir::new().unwrap();
-    std::fs::write(dest.path().join("settings.json"), r#"{"app":{"theme":"dark"}}"#).unwrap();
+    std::fs::write(
+        dest.path().join("settings.json"),
+        r#"{"app":{"theme":"dark"}}"#,
+    )
+    .unwrap();
     std::fs::write(
         dest.path().join("encryption.json"),
         r#"{"encrypted":false}"#,
@@ -728,8 +746,14 @@ fn test_extract_settings_device_path_bootstraps_when_local_missing() {
     let merged: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(dest.path().join("settings.json")).unwrap())
             .unwrap();
-    assert_eq!(merged["app"]["theme"], "light", "theme bootstrapped from bundle");
-    assert_eq!(merged["app"]["currency"], "EUR", "shared currency overridden");
+    assert_eq!(
+        merged["app"]["theme"], "light",
+        "theme bootstrapped from bundle"
+    );
+    assert_eq!(
+        merged["app"]["currency"], "EUR",
+        "shared currency overridden"
+    );
 }
 
 #[test]
@@ -779,7 +803,10 @@ fn test_extract_settings_preserves_local_only_plugin_config() {
     let merged: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(dest.path().join("settings.json")).unwrap())
             .unwrap();
-    assert_eq!(merged["plugins"]["budget"]["y"], 2, "bundle's plugin config applied");
+    assert_eq!(
+        merged["plugins"]["budget"]["y"], 2,
+        "bundle's plugin config applied"
+    );
     assert_eq!(
         merged["plugins"]["goals"]["x"], 1,
         "local-only plugin config must survive — bundle didn't mention goals"
@@ -843,7 +870,11 @@ fn test_extract_cleans_up_orphan_staging_from_prior_crash() {
     let bundle = bundle_from(src.path());
 
     let dest = TempDir::new().unwrap();
-    std::fs::write(dest.path().join("treeline.duckdb.incoming"), b"junk-from-prior-crash").unwrap();
+    std::fs::write(
+        dest.path().join("treeline.duckdb.incoming"),
+        b"junk-from-prior-crash",
+    )
+    .unwrap();
 
     SyncBundle::extract(&bundle, dest.path()).unwrap();
 

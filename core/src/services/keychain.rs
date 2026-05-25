@@ -25,8 +25,7 @@ impl KeychainService {
     ///
     /// Overwrites any previously stored key.
     pub fn store_key(key_hex: &str) -> Result<()> {
-        let entry = keyring::Entry::new(SERVICE, USER)
-            .context("Failed to access OS keychain")?;
+        let entry = keyring::Entry::new(SERVICE, USER).context("Failed to access OS keychain")?;
         entry
             .set_password(key_hex)
             .context("Failed to store key in OS keychain")?;
@@ -54,12 +53,14 @@ impl KeychainService {
     ///
     /// Silently succeeds if no key was stored (NoEntry is not an error).
     pub fn delete_key() -> Result<()> {
-        let entry = keyring::Entry::new(SERVICE, USER)
-            .context("Failed to access OS keychain")?;
+        let entry = keyring::Entry::new(SERVICE, USER).context("Failed to access OS keychain")?;
         match entry.delete_credential() {
             Ok(()) => Ok(()),
             Err(keyring::Error::NoEntry) => Ok(()), // Already gone
-            Err(e) => Err(anyhow::anyhow!("Failed to delete key from OS keychain: {}", e)),
+            Err(e) => Err(anyhow::anyhow!(
+                "Failed to delete key from OS keychain: {}",
+                e
+            )),
         }
     }
 

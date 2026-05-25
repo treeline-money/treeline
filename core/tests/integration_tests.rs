@@ -893,7 +893,10 @@ fn test_backfill_replaces_existing_snapshots() {
         )
         .unwrap();
     assert_eq!(result2.snapshots_created, 1);
-    assert_eq!(result2.snapshots_updated, 1, "Should have replaced 1 existing snapshot");
+    assert_eq!(
+        result2.snapshots_updated, 1,
+        "Should have replaced 1 existing snapshot"
+    );
 
     // Verify only one snapshot with the corrected balance
     let snapshots = repo
@@ -920,9 +923,15 @@ fn test_bulk_apply_tags_to_matching() {
     let date = NaiveDate::from_ymd_opt(2024, 6, 1).unwrap();
     let mut tx_ids = Vec::new();
 
-    for (i, desc) in ["Walmart groceries", "Amazon purchase", "Walmart supplies", "Coffee shop", "Walmart return"]
-        .iter()
-        .enumerate()
+    for (i, desc) in [
+        "Walmart groceries",
+        "Amazon purchase",
+        "Walmart supplies",
+        "Coffee shop",
+        "Walmart return",
+    ]
+    .iter()
+    .enumerate()
     {
         let mut tx = create_test_transaction(account.id, (i as i64 + 1) * -1000, date);
         tx.description = Some(desc.to_string());
@@ -990,8 +999,14 @@ fn test_bulk_apply_tags_additive() {
         .get_transaction_by_id(&tx.id.to_string())
         .unwrap()
         .unwrap();
-    assert!(updated.tags.contains(&"existing-tag".to_string()), "Should keep existing tag");
-    assert!(updated.tags.contains(&"new-tag".to_string()), "Should add new tag");
+    assert!(
+        updated.tags.contains(&"existing-tag".to_string()),
+        "Should keep existing tag"
+    );
+    assert!(
+        updated.tags.contains(&"new-tag".to_string()),
+        "Should add new tag"
+    );
 }
 
 /// Test apply_auto_tag_rules end-to-end with rules in the database
@@ -1026,7 +1041,10 @@ fn test_apply_auto_tag_rules_bulk() {
 
     assert_eq!(result.rules_evaluated, 1);
     assert_eq!(result.rules_matched, 1);
-    assert_eq!(result.transactions_tagged, 2, "Should tag 2 grocery transactions");
+    assert_eq!(
+        result.transactions_tagged, 2,
+        "Should tag 2 grocery transactions"
+    );
     assert!(result.failed_rules.is_empty());
 }
 
@@ -1041,7 +1059,11 @@ fn test_readonly_allows_select() {
     let repo = create_test_repo(&temp_dir);
 
     let result = repo.execute_query_readonly("SELECT 1 AS value");
-    assert!(result.is_ok(), "SELECT should work in readonly: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "SELECT should work in readonly: {:?}",
+        result.err()
+    );
     let qr = result.unwrap();
     assert_eq!(qr.columns, vec!["value"]);
     assert_eq!(qr.row_count, 1);
@@ -1056,7 +1078,11 @@ fn test_readonly_allows_cte() {
     let result = repo.execute_query_readonly(
         "WITH nums AS (SELECT 1 AS n UNION ALL SELECT 2) SELECT * FROM nums",
     );
-    assert!(result.is_ok(), "CTE should work in readonly: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "CTE should work in readonly: {:?}",
+        result.err()
+    );
     assert_eq!(result.unwrap().row_count, 2);
 }
 
@@ -1071,9 +1097,10 @@ fn test_readonly_reads_table_data() {
     repo.upsert_account(&account).unwrap();
 
     // Read via readonly path
-    let result = repo.execute_query_readonly(
-        &format!("SELECT name FROM accounts WHERE account_id = '{}'", account.id),
-    );
+    let result = repo.execute_query_readonly(&format!(
+        "SELECT name FROM accounts WHERE account_id = '{}'",
+        account.id
+    ));
     assert!(result.is_ok());
     let qr = result.unwrap();
     assert_eq!(qr.row_count, 1);

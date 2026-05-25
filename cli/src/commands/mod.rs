@@ -157,7 +157,11 @@ pub fn get_context_non_interactive() -> Result<TreelineContext> {
         Some(key)
     } else if let Ok(password) = std::env::var("TL_DB_PASSWORD") {
         let config = treeline_core::config::Config::load(&treeline_dir).unwrap_or_default();
-        let db_filename = if config.demo_mode { "demo.duckdb" } else { "treeline.duckdb" };
+        let db_filename = if config.demo_mode {
+            "demo.duckdb"
+        } else {
+            "treeline.duckdb"
+        };
         let db_path = treeline_dir.join(db_filename);
 
         let encryption_service = EncryptionService::new(treeline_dir.clone(), db_path);
@@ -171,7 +175,11 @@ pub fn get_context_non_interactive() -> Result<TreelineContext> {
         }
     } else {
         let config = treeline_core::config::Config::load(&treeline_dir).unwrap_or_default();
-        let db_filename = if config.demo_mode { "demo.duckdb" } else { "treeline.duckdb" };
+        let db_filename = if config.demo_mode {
+            "demo.duckdb"
+        } else {
+            "treeline.duckdb"
+        };
         let db_path = treeline_dir.join(db_filename);
 
         let encryption_service = EncryptionService::new(treeline_dir.clone(), db_path);

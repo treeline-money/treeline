@@ -519,7 +519,8 @@ impl ImportService {
         let new_tx_ids: Vec<Uuid> = new_transactions.iter().map(|tx| tx.id).collect();
 
         // Bulk insert all new transactions (single connection, single checkpoint)
-        self.repository.bulk_insert_transactions(&new_transactions)?;
+        self.repository
+            .bulk_insert_transactions(&new_transactions)?;
 
         // Apply auto-tag rules to newly imported transactions
         if !new_tx_ids.is_empty() {
@@ -704,7 +705,12 @@ impl ImportService {
     }
 
     /// Create a new account with the given name and return its UUID string.
-    pub fn create_account(&self, name: &str, account_type: Option<&str>, currency: Option<&str>) -> Result<String> {
+    pub fn create_account(
+        &self,
+        name: &str,
+        account_type: Option<&str>,
+        currency: Option<&str>,
+    ) -> Result<String> {
         let mut account = Account::new(Uuid::new_v4(), name);
         if let Some(t) = account_type {
             account.account_type = Some(t.to_string());

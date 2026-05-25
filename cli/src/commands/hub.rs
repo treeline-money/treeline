@@ -1,21 +1,21 @@
 //! Hub commands - link, unlink, push, pull, status
 //!
-//! Manages remote hub connections for database sync.
+//! Manages remote hub connections for database push/pull.
 
 use anyhow::{Context, Result};
 use clap::Subcommand;
 use colored::Colorize;
 
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use std::time::Duration;
 
 use treeline_core::config::HubConfig;
-use treeline_core::services::HubClient;
 use treeline_core::services::hub_client::{
     ConflictDescription, ConflictKind, DeviceCodeLink, DeviceCodeLinkOutcome, PullOutcome,
     PushOutcome, WatchEvent, WatchObserver, WatchOptions,
 };
+use treeline_core::services::HubClient;
 
 use super::{get_context, get_treeline_dir};
 
@@ -24,17 +24,14 @@ pub enum HubCommands {
     /// Link this device to a hub.
     ///
     /// Uses the device-code OAuth flow: prints a verification URL that you
-    /// open in a browser, sign in (or master-paste if self-hosting), and
+    /// open in a browser, paste your hub's master token to authorize, and
     /// the CLI finishes automatically. This device gets its own scoped
     /// device token; nothing privileged is stored locally.
-    ///
-    /// With no `--url`, defaults to Treeline Cloud
-    /// (https://pro.treeline.money). Override via the TREELINE_PRO_URL
-    /// env var or pass `--url <hub-url>` for a self-hosted hub.
     Link {
-        /// Hub URL. Optional — defaults to Treeline Cloud.
+        /// URL of the hub to link to
+        /// (e.g. https://my-hub.fly.dev or http://localhost:4242).
         #[arg(long)]
-        url: Option<String>,
+        url: String,
         /// Override the device name (defaults to the OS hostname).
         #[arg(long)]
         name: Option<String>,
@@ -67,7 +64,7 @@ pub enum HubCommands {
         json: bool,
     },
 
-    /// Watch for local changes and auto-sync with the hub
+    /// Watch for local changes and push/pull automatically
     Watch {
         /// Seconds to wait after last change before pushing (default: 5)
         #[arg(long, default_value = "5")]
@@ -103,23 +100,9 @@ pub enum TokensCommands {
     },
 }
 
-/// Compile-time default for `tl hub link` when no `--url` is supplied.
-/// Override at runtime with `TREELINE_PRO_URL`.
-const DEFAULT_PRO_URL: &str = "https://pro.treeline.money";
-
-fn resolve_link_url(arg_url: Option<&str>) -> String {
-    if let Some(u) = arg_url {
-        return u.to_string();
-    }
-    std::env::var("TREELINE_PRO_URL").unwrap_or_else(|_| DEFAULT_PRO_URL.to_string())
-}
-
 pub fn run(command: HubCommands) -> Result<()> {
     match command {
-        HubCommands::Link { url, name } => {
-            let url = resolve_link_url(url.as_deref());
-            run_link(&url, name.as_deref())
-        }
+        HubCommands::Link { url, name } => run_link(&url, name.as_deref()),
         HubCommands::Unlink => run_unlink(),
         HubCommands::Push { json, force } => run_push(json, force),
         HubCommands::Pull { json } => run_pull(json),
@@ -154,13 +137,7 @@ fn run_tokens_list(json: bool) -> Result<()> {
 
     use comfy_table::{Cell, Table};
     let mut table = Table::new();
-    table.set_header(vec![
-        "Prefix",
-        "Client",
-        "Scopes",
-        "Issued",
-        "Expires",
-    ]);
+    table.set_header(vec!["Prefix", "Client", "Scopes", "Issued", "Expires"]);
     for t in &tokens {
         table.add_row(vec![
             Cell::new(&t.access_token_prefix),
@@ -186,9 +163,7 @@ fn run_tokens_revoke(prefix: &str, json: bool) -> Result<()> {
     if json {
         println!(
             "{}",
-            serde_json::to_string_pretty(
-                &serde_json::json!({ "revoked": n, "prefix": prefix })
-            )?
+            serde_json::to_string_pretty(&serde_json::json!({ "revoked": n, "prefix": prefix }))?
         );
         return Ok(());
     }
@@ -297,22 +272,33 @@ fn run_push(json: bool, force: bool) -> Result<()> {
     match outcome {
         PushOutcome::Pushed { bytes, hash } => {
             if json {
-                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-                    "status": "ok",
-                    "bytes_uploaded": bytes,
-                    "hash": hash,
-                }))?);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "status": "ok",
+                        "bytes_uploaded": bytes,
+                        "hash": hash,
+                    }))?
+                );
             } else {
-                eprintln!("{} Pushed {} to {}", "✓".green(), format_bytes(bytes), hub_url);
+                eprintln!(
+                    "{} Pushed {} to {}",
+                    "✓".green(),
+                    format_bytes(bytes),
+                    hub_url
+                );
             }
         }
         PushOutcome::AutoMerged { bytes, hash } => {
             if json {
-                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-                    "status": "auto_merged",
-                    "bytes_uploaded": bytes,
-                    "hash": hash,
-                }))?);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "status": "auto_merged",
+                        "bytes_uploaded": bytes,
+                        "hash": hash,
+                    }))?
+                );
             } else {
                 eprintln!(
                     "{} Hub had diverged — auto-merged and pushed {} to {}",
@@ -322,13 +308,19 @@ fn run_push(json: bool, force: bool) -> Result<()> {
                 );
             }
         }
-        PushOutcome::Conflict { hub_hash, conflicts } => {
+        PushOutcome::Conflict {
+            hub_hash,
+            conflicts,
+        } => {
             if json {
-                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-                    "status": "conflict",
-                    "hub_hash": hub_hash,
-                    "conflicts": conflicts,
-                }))?);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "status": "conflict",
+                        "hub_hash": hub_hash,
+                        "conflicts": conflicts,
+                    }))?
+                );
             } else {
                 print_conflicts(&conflicts);
                 eprintln!();
@@ -339,13 +331,16 @@ fn run_push(json: bool, force: bool) -> Result<()> {
         }
         PushOutcome::NoBaseSnapshot { hub_hash } => {
             if json {
-                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-                    "status": "no_base_snapshot",
-                    "hub_hash": hub_hash,
-                }))?);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "status": "no_base_snapshot",
+                        "hub_hash": hub_hash,
+                    }))?
+                );
             } else {
                 eprintln!(
-                    "{} Hub has changed since your last sync, but there's no base snapshot for a three-way merge.",
+                    "{} Hub has changed since your last push/pull, but there's no base snapshot for a three-way merge.",
                     "Conflict!".yellow().bold()
                 );
                 eprintln!("Choose one version:");
@@ -355,9 +350,12 @@ fn run_push(json: bool, force: bool) -> Result<()> {
         }
         PushOutcome::NoChanges => {
             if json {
-                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-                    "status": "no_changes",
-                }))?);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "status": "no_changes",
+                    }))?
+                );
             } else {
                 eprintln!("{} Already up to date.", "✓".green());
             }
@@ -381,12 +379,20 @@ fn run_pull(json: bool) -> Result<()> {
         .unwrap_or_default();
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-            "status": "ok",
-            "bytes_downloaded": bytes,
-        }))?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "status": "ok",
+                "bytes_downloaded": bytes,
+            }))?
+        );
     } else {
-        eprintln!("{} Pulled {} from {}", "✓".green(), format_bytes(bytes), hub_url);
+        eprintln!(
+            "{} Pulled {} from {}",
+            "✓".green(),
+            format_bytes(bytes),
+            hub_url
+        );
     }
 
     Ok(())
@@ -540,7 +546,10 @@ impl WatchObserver for StderrWatchObserver {
             WatchEvent::Pulled { bytes } => {
                 eprintln!("[watch] {} Pulled {}", "✓".green(), format_bytes(bytes));
             }
-            WatchEvent::Conflict { hub_hash, conflicts } => {
+            WatchEvent::Conflict {
+                hub_hash,
+                conflicts,
+            } => {
                 eprintln!(
                     "[watch] {} {} conflicts vs hub hash {}. Resolve via 'tl hub push --force' or 'tl hub pull'.",
                     "Conflict:".red().bold(),

@@ -11,8 +11,8 @@
 //! Tauri events.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -20,9 +20,9 @@ use diffy_duck::{DatabaseConfig, Diff3ChangeOrigin, Diff3RowChange, DiffOptions,
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
-use crate::TreelineContext;
 use crate::config::HubConfig;
-use crate::services::hub::{SyncBundle, compute_file_hash};
+use crate::services::hub::{compute_file_hash, SyncBundle};
+use crate::TreelineContext;
 
 /// Outcome of a `push` call. The caller decides how to surface each variant
 /// (CLI prints, desktop emits an event).
@@ -98,17 +98,32 @@ impl Default for WatchOptions {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WatchEvent {
-    Started { hub_url: String },
+    Started {
+        hub_url: String,
+    },
     LocalChangeDetected,
     Pushing,
-    Pushed { bytes: u64 },
-    AutoMerged { bytes: u64 },
+    Pushed {
+        bytes: u64,
+    },
+    AutoMerged {
+        bytes: u64,
+    },
     Pulling,
-    Pulled { bytes: u64 },
-    Conflict { hub_hash: String, conflicts: usize },
-    NoBaseSnapshot { hub_hash: String },
+    Pulled {
+        bytes: u64,
+    },
+    Conflict {
+        hub_hash: String,
+        conflicts: usize,
+    },
+    NoBaseSnapshot {
+        hub_hash: String,
+    },
     /// Push or poll failed — watch keeps running.
-    Error { message: String },
+    Error {
+        message: String,
+    },
     Stopped,
 }
 
@@ -157,7 +172,10 @@ pub enum DeviceCodeLinkOutcome {
     /// Hub asked us to back off — caller should add `interval` to the wait.
     SlowDown,
     /// Linked — `hub.json` was written to the supplied `treeline_dir`.
-    Linked { hub_url: String, device_name: String },
+    Linked {
+        hub_url: String,
+        device_name: String,
+    },
     /// Device code expired before authorization completed — caller restarts.
     Expired,
     /// User explicitly denied the authorization.
@@ -202,8 +220,9 @@ impl DeviceCodeLink {
             anyhow::bail!("Hub rejected device code request ({}): {}", status, body);
         }
 
-        let body: serde_json::Value =
-            resp.json().context("Failed to parse device code response")?;
+        let body: serde_json::Value = resp
+            .json()
+            .context("Failed to parse device code response")?;
         let device_code = body["device_code"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Hub response missing device_code"))?
@@ -255,8 +274,7 @@ impl DeviceCodeLink {
             .context("Failed to poll /token")?;
 
         if resp.status().is_success() {
-            let pair: serde_json::Value =
-                resp.json().context("Failed to parse token response")?;
+            let pair: serde_json::Value = resp.json().context("Failed to parse token response")?;
             let access_token = pair["access_token"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("Token response missing access_token"))?
@@ -351,9 +369,7 @@ impl HubClient {
     /// `Conflict` with a structured summary.
     pub fn push(&self, ctx: &TreelineContext, force: bool) -> Result<PushOutcome> {
         let mut hub = HubConfig::load(&self.treeline_dir)?
-            .ok_or_else(|| anyhow::anyhow!(
-                "Not linked to a hub. Run 'tl hub link' first."
-            ))?;
+            .ok_or_else(|| anyhow::anyhow!("Not linked to a hub. Run 'tl hub link' first."))?;
 
         // Compact + checkpoint so we ship the smallest, most-consistent file.
         ctx.compact_service.compact()?;
@@ -375,12 +391,11 @@ impl HubClient {
                 .send()
         };
 
-        let mut resp = send(&hub.access_token, bundle.clone())
-            .context("Failed to connect to hub")?;
+        let mut resp =
+            send(&hub.access_token, bundle.clone()).context("Failed to connect to hub")?;
         if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
             self.refresh_access_token(&mut hub)?;
-            resp = send(&hub.access_token, bundle.clone())
-                .context("Failed to connect to hub")?;
+            resp = send(&hub.access_token, bundle.clone()).context("Failed to connect to hub")?;
         }
 
         let status = resp.status();
@@ -402,15 +417,16 @@ impl HubClient {
         hub.save(&self.treeline_dir)?;
         save_base_snapshot(&self.treeline_dir)?;
 
-        Ok(PushOutcome::Pushed { bytes: size, hash: new_hash })
+        Ok(PushOutcome::Pushed {
+            bytes: size,
+            hash: new_hash,
+        })
     }
 
     /// Pull the hub's DB to local. Backs up current local state first.
     pub fn pull(&self) -> Result<PullOutcome> {
         let mut hub = HubConfig::load(&self.treeline_dir)?
-            .ok_or_else(|| anyhow::anyhow!(
-                "Not linked to a hub. Run 'tl hub link' first."
-            ))?;
+            .ok_or_else(|| anyhow::anyhow!("Not linked to a hub. Run 'tl hub link' first."))?;
 
         let pull_url = format!("{}/api/pull", hub.url);
         let send = |access_token: &str| {
@@ -460,7 +476,10 @@ impl HubClient {
         hub.base_hash = new_hash.clone();
         hub.save(&self.treeline_dir)?;
 
-        Ok(PullOutcome { bytes: size, hash: new_hash })
+        Ok(PullOutcome {
+            bytes: size,
+            hash: new_hash,
+        })
     }
 
     /// Best-effort RFC 7009 revoke of this device's refresh token. The hub
@@ -498,7 +517,8 @@ impl HubClient {
             None => return Ok(None),
         };
 
-        let resp = self.http
+        let resp = self
+            .http
             .get(format!("{}/api/hash", hub.url))
             .header("Authorization", format!("Bearer {}", hub.access_token))
             .timeout(Duration::from_secs(5))
@@ -531,14 +551,14 @@ impl HubClient {
         stop: Arc<AtomicBool>,
     ) -> Result<()> {
         let hub = HubConfig::load(&self.treeline_dir)?
-            .ok_or_else(|| anyhow::anyhow!(
-                "Not linked to a hub. Run 'tl hub link' first."
-            ))?;
+            .ok_or_else(|| anyhow::anyhow!("Not linked to a hub. Run 'tl hub link' first."))?;
 
         let _lock = WatchLock::acquire(&self.treeline_dir)
             .context("Another watcher is already running for this directory")?;
 
-        observer.on_event(WatchEvent::Started { hub_url: hub.url.clone() });
+        observer.on_event(WatchEvent::Started {
+            hub_url: hub.url.clone(),
+        });
 
         let db_path = self.treeline_dir.join("treeline.duckdb");
         let mut last_mtime = db_path.metadata().and_then(|m| m.modified()).ok();
@@ -591,7 +611,10 @@ impl HubClient {
                     Ok(PushOutcome::AutoMerged { bytes, .. }) => {
                         observer.on_event(WatchEvent::AutoMerged { bytes });
                     }
-                    Ok(PushOutcome::Conflict { hub_hash, conflicts }) => {
+                    Ok(PushOutcome::Conflict {
+                        hub_hash,
+                        conflicts,
+                    }) => {
                         observer.on_event(WatchEvent::Conflict {
                             hub_hash,
                             conflicts: conflicts.len(),
@@ -602,7 +625,9 @@ impl HubClient {
                     }
                     Ok(PushOutcome::NoChanges) => {}
                     Err(e) => {
-                        observer.on_event(WatchEvent::Error { message: e.to_string() });
+                        observer.on_event(WatchEvent::Error {
+                            message: e.to_string(),
+                        });
                     }
                 }
                 last_poll = Instant::now();
@@ -652,7 +677,10 @@ impl HubClient {
                         Ok(PushOutcome::AutoMerged { bytes, .. }) => {
                             observer.on_event(WatchEvent::AutoMerged { bytes });
                         }
-                        Ok(PushOutcome::Conflict { hub_hash, conflicts }) => {
+                        Ok(PushOutcome::Conflict {
+                            hub_hash,
+                            conflicts,
+                        }) => {
                             observer.on_event(WatchEvent::Conflict {
                                 hub_hash,
                                 conflicts: conflicts.len(),
@@ -663,14 +691,18 @@ impl HubClient {
                         }
                         Ok(PushOutcome::NoChanges) => {}
                         Err(e) => {
-                            observer.on_event(WatchEvent::Error { message: e.to_string() });
+                            observer.on_event(WatchEvent::Error {
+                                message: e.to_string(),
+                            });
                         }
                     }
                 } else {
                     observer.on_event(WatchEvent::Pulling);
                     match self.pull() {
                         Ok(out) => observer.on_event(WatchEvent::Pulled { bytes: out.bytes }),
-                        Err(e) => observer.on_event(WatchEvent::Error { message: e.to_string() }),
+                        Err(e) => observer.on_event(WatchEvent::Error {
+                            message: e.to_string(),
+                        }),
                     }
                 }
 
@@ -684,7 +716,8 @@ impl HubClient {
 
     /// Refresh `hub.access_token` using its `refresh_token` and persist.
     fn refresh_access_token(&self, hub: &mut HubConfig) -> Result<()> {
-        let resp = self.http
+        let resp = self
+            .http
             .post(format!("{}/token", hub.url))
             .form(&[
                 ("grant_type", "refresh_token"),
@@ -733,7 +766,8 @@ impl HubClient {
         }
 
         // Download the hub's current bundle into a temp dir.
-        let pull_resp = self.http
+        let pull_resp = self
+            .http
             .get(format!("{}/api/pull", hub.url))
             .header("Authorization", format!("Bearer {}", hub.access_token))
             .timeout(Duration::from_secs(300))
@@ -765,14 +799,17 @@ impl HubClient {
         }
 
         let diff3_report = diffy_duck::diff3(
-            &ancestor_config, &local_config, &hub_config, &DiffOptions::default(),
+            &ancestor_config,
+            &local_config,
+            &hub_config,
+            &DiffOptions::default(),
         )
         .map_err(|e| anyhow::anyhow!("Failed to diff databases: {}", e))?;
 
-        let total_changes = diff3_report.summary.total_non_conflicting
-            + diff3_report.summary.total_conflicts;
-        let has_new_tables = !diff3_report.a_only_tables.is_empty()
-            || !diff3_report.b_only_tables.is_empty();
+        let total_changes =
+            diff3_report.summary.total_non_conflicting + diff3_report.summary.total_conflicts;
+        let has_new_tables =
+            !diff3_report.a_only_tables.is_empty() || !diff3_report.b_only_tables.is_empty();
 
         if total_changes == 0 && !has_new_tables {
             return Ok(PushOutcome::NoChanges);
@@ -780,7 +817,10 @@ impl HubClient {
 
         if diff3_report.summary.total_conflicts > 0 {
             let conflicts = collect_conflicts(&diff3_report);
-            return Ok(PushOutcome::Conflict { hub_hash, conflicts });
+            return Ok(PushOutcome::Conflict {
+                hub_hash,
+                conflicts,
+            });
         }
 
         // No conflicts — auto-merge against a copy of the base, push the result.
@@ -794,7 +834,10 @@ impl HubClient {
         }
 
         diffy_duck::merge3(
-            &merge_ancestor, &local_config, &hub_config, &Merge3Strategy::FailOnConflict,
+            &merge_ancestor,
+            &local_config,
+            &hub_config,
+            &Merge3Strategy::FailOnConflict,
         )
         .map_err(|e| anyhow::anyhow!("Failed to merge: {}", e))?;
 
@@ -803,7 +846,8 @@ impl HubClient {
         let merged_bundle = SyncBundle::create(&self.treeline_dir)?;
         let size = merged_bundle.len() as u64;
 
-        let resp = self.http
+        let resp = self
+            .http
             .post(format!("{}/api/push", hub.url))
             .header("Authorization", format!("Bearer {}", hub.access_token))
             .header("Content-Type", "application/octet-stream")
@@ -825,7 +869,10 @@ impl HubClient {
         hub.save(&self.treeline_dir)?;
         save_base_snapshot(&self.treeline_dir)?;
 
-        Ok(PushOutcome::AutoMerged { bytes: size, hash: new_hash })
+        Ok(PushOutcome::AutoMerged {
+            bytes: size,
+            hash: new_hash,
+        })
     }
 }
 
@@ -856,14 +903,20 @@ fn collect_conflicts(report: &diffy_duck::Diff3Report) -> Vec<ConflictDescriptio
                         detail: format!("columns: {}", cols.join(", ")),
                     });
                 }
-                Diff3RowChange::Added { origin: Diff3ChangeOrigin::Conflict, .. } => {
+                Diff3RowChange::Added {
+                    origin: Diff3ChangeOrigin::Conflict,
+                    ..
+                } => {
                     out.push(ConflictDescription {
                         table: table_diff.table.to_string(),
                         kind: ConflictKind::BothAdded,
                         detail: "both sides added a row with the same key".to_string(),
                     });
                 }
-                Diff3RowChange::Removed { origin: Diff3ChangeOrigin::Conflict, .. } => {
+                Diff3RowChange::Removed {
+                    origin: Diff3ChangeOrigin::Conflict,
+                    ..
+                } => {
                     out.push(ConflictDescription {
                         table: table_diff.table.to_string(),
                         kind: ConflictKind::DeletedVsModified,
@@ -881,8 +934,7 @@ fn save_base_snapshot(treeline_dir: &Path) -> Result<()> {
     let db_path = treeline_dir.join("treeline.duckdb");
     let base_path = treeline_dir.join(".treeline.base.duckdb");
     if db_path.exists() {
-        std::fs::copy(&db_path, &base_path)
-            .context("Failed to save base snapshot")?;
+        std::fs::copy(&db_path, &base_path).context("Failed to save base snapshot")?;
     }
     Ok(())
 }

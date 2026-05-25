@@ -176,8 +176,8 @@ impl PluginService {
             .replace("hello_world", &table_safe_name);
 
         // Customize the Svelte view component
-        let customized_view = embedded_template::SRC_VIEW_SVELTE
-            .replace("Hello World", &display_name);
+        let customized_view =
+            embedded_template::SRC_VIEW_SVELTE.replace("Hello World", &display_name);
 
         // Write other template files as-is
         fs::write(
@@ -197,10 +197,7 @@ impl PluginService {
             embedded_template::SVELTE_CONFIG_JS,
         )?;
         fs::write(plugin_dir.join(".gitignore"), embedded_template::GITIGNORE)?;
-        fs::write(
-            plugin_dir.join("src/index.ts"),
-            customized_index,
-        )?;
+        fs::write(plugin_dir.join("src/index.ts"), customized_index)?;
         fs::write(
             plugin_dir.join(&format!("src/{}View.svelte", pascal_name)),
             customized_view,

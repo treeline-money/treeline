@@ -84,7 +84,13 @@ impl SyncService {
         }
 
         for int in integrations_to_sync {
-            let result = self.sync_integration(&int.name, &int.settings, dry_run, balances_only, lookback_days)?;
+            let result = self.sync_integration(
+                &int.name,
+                &int.settings,
+                dry_run,
+                balances_only,
+                lookback_days,
+            )?;
             results.push(result);
         }
 
@@ -150,7 +156,10 @@ impl SyncService {
         let max_tx_date = self.repository.get_max_transaction_date()?;
         let (start_date, is_incremental) = if let Some(days) = lookback_days {
             let is_incremental = max_tx_date.is_some();
-            ((now - Duration::days(days)).naive_utc().date(), is_incremental)
+            (
+                (now - Duration::days(days)).naive_utc().date(),
+                is_incremental,
+            )
         } else {
             match max_tx_date {
                 Some(max_date) => (max_date - Duration::days(7), true),

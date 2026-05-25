@@ -82,9 +82,7 @@ pub enum PushOutcome {
     },
     /// Push rejected — hub has changed since client last synced
     #[serde(rename = "conflict")]
-    Conflict {
-        hub_hash: String,
-    },
+    Conflict { hub_hash: String },
 }
 
 /// Hub sync metadata — stored in hub-sync.json on the hub
@@ -103,8 +101,8 @@ impl SyncBundle {
         let mut buf = Vec::new();
         {
             let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
-            let options = SimpleFileOptions::default()
-                .compression_method(zip::CompressionMethod::Deflated);
+            let options =
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
             // Add individual files
             for filename in SYNC_FILES {
@@ -172,8 +170,7 @@ impl SyncBundle {
         cleanup_orphan_incoming(treeline_dir);
 
         let cursor = std::io::Cursor::new(data);
-        let mut archive = zip::ZipArchive::new(cursor)
-            .context("Failed to read sync bundle")?;
+        let mut archive = zip::ZipArchive::new(cursor).context("Failed to read sync bundle")?;
 
         // First pass: scan the bundle to figure out which directories to
         // clear before writing entries. We need this up front so that
@@ -403,8 +400,7 @@ fn merge_settings_into_local(bundle_bytes: &[u8], treeline_dir: &Path) -> Result
     apply_bundle_to_local(&bundle_json, &mut local_json, "");
 
     let merged = serde_json::to_string_pretty(&local_json)?;
-    atomic_write(&local_path, merged.as_bytes())
-        .context("Failed to write merged settings.json")?;
+    atomic_write(&local_path, merged.as_bytes()).context("Failed to write merged settings.json")?;
     Ok(())
 }
 
@@ -412,11 +408,7 @@ fn merge_settings_into_local(bundle_bytes: &[u8], treeline_dir: &Path) -> Result
 /// current dotted path from the root of settings.json (e.g.,
 /// `"app.experimentalFeatures"`). Both arguments must be JSON objects at
 /// the root for any work to happen.
-fn apply_bundle_to_local(
-    bundle: &serde_json::Value,
-    local: &mut serde_json::Value,
-    prefix: &str,
-) {
+fn apply_bundle_to_local(bundle: &serde_json::Value, local: &mut serde_json::Value, prefix: &str) {
     let (Some(bundle_obj), Some(local_obj)) = (bundle.as_object(), local.as_object_mut()) else {
         return;
     };
@@ -461,11 +453,7 @@ fn add_dir_to_zip<W: Write + std::io::Seek>(
     for entry in fs::read_dir(dir_path)? {
         let entry = entry?;
         let path = entry.path();
-        let name = format!(
-            "{}/{}",
-            prefix,
-            entry.file_name().to_string_lossy()
-        );
+        let name = format!("{}/{}", prefix, entry.file_name().to_string_lossy());
 
         if path.is_dir() {
             add_dir_to_zip(zip, &path, &name, options)?;
@@ -574,10 +562,8 @@ impl HubService {
 
         // Back up current database before replacing (if one exists)
         let backup_name = if db_path.exists() {
-            let backup_service = BackupService::new(
-                self.treeline_dir.clone(),
-                self.db_filename.clone(),
-            );
+            let backup_service =
+                BackupService::new(self.treeline_dir.clone(), self.db_filename.clone());
             match backup_service.create(Some(20)) {
                 Ok(backup) => Some(backup.name),
                 Err(e) => {

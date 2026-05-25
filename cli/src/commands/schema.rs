@@ -73,9 +73,7 @@ pub fn run(table: Option<&str>, plugins: bool, json: bool) -> Result<()> {
 
     let tables_result = ctx.query_service.execute_readonly(&schema_sql)?;
 
-    let mut output = SchemaOutput {
-        tables: Vec::new(),
-    };
+    let mut output = SchemaOutput { tables: Vec::new() };
 
     let show_schema = plugins || schema_filter.is_some();
 
@@ -122,8 +120,7 @@ pub fn run(table: Option<&str>, plugins: bool, json: bool) -> Result<()> {
     }
 
     if table_filter.is_some() && output.tables.is_empty() {
-        let filter_display = table
-            .unwrap_or_default();
+        let filter_display = table.unwrap_or_default();
         anyhow::bail!("Table or view '{}' not found", filter_display);
     }
 

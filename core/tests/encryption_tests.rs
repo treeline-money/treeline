@@ -39,12 +39,9 @@ fn setup_test_env() -> (TempDir, EncryptionService, BackupService) {
     // Drop the repo so the DB file is not locked
     drop(repo);
 
-    let encryption_service =
-        EncryptionService::new(temp_dir.path().to_path_buf(), db_path.clone());
-    let backup_service = BackupService::new(
-        temp_dir.path().to_path_buf(),
-        "treeline.duckdb".to_string(),
-    );
+    let encryption_service = EncryptionService::new(temp_dir.path().to_path_buf(), db_path.clone());
+    let backup_service =
+        BackupService::new(temp_dir.path().to_path_buf(), "treeline.duckdb".to_string());
 
     (temp_dir, encryption_service, backup_service)
 }
@@ -163,7 +160,10 @@ fn test_decrypt_not_encrypted() {
 
     // Try to decrypt a non-encrypted database
     let result = encryption_service.decrypt("password", &backup_service);
-    assert!(result.is_err(), "Should not allow decrypting unencrypted DB");
+    assert!(
+        result.is_err(),
+        "Should not allow decrypting unencrypted DB"
+    );
     assert!(
         result.unwrap_err().to_string().contains("not encrypted"),
         "Error should mention not encrypted"
@@ -225,10 +225,7 @@ fn test_wrong_password() {
 
     // Attempting to open the database with the wrong key should fail
     let result = DuckDbRepository::new(&db_path, Some(&wrong_key));
-    assert!(
-        result.is_err(),
-        "Opening with wrong key should fail"
-    );
+    assert!(result.is_err(), "Opening with wrong key should fail");
 }
 
 #[test]
@@ -241,8 +238,7 @@ fn test_is_encrypted_no_metadata() {
     repo.ensure_schema().unwrap();
     drop(repo);
 
-    let encryption_service =
-        EncryptionService::new(temp_dir.path().to_path_buf(), db_path);
+    let encryption_service = EncryptionService::new(temp_dir.path().to_path_buf(), db_path);
 
     assert!(
         !encryption_service.is_encrypted().unwrap(),
@@ -316,10 +312,7 @@ fn test_decrypt_wrong_password_fails() {
     let result = encryption_service.decrypt("wrong-password", &backup_service);
     assert!(result.is_err(), "Decrypt with wrong password should fail");
     assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("Invalid password"),
+        result.unwrap_err().to_string().contains("Invalid password"),
         "Error should mention invalid password"
     );
 }

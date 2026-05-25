@@ -250,13 +250,13 @@ enum Commands {
     /// Start MCP (Model Context Protocol) server on STDIO
     Mcp,
 
-    /// Manage hub connection for remote sync
+    /// Link to a hub and push/pull your database between devices
     Hub {
         #[command(subcommand)]
         command: hub::HubCommands,
     },
 
-    /// Start the hub server (HTTP API for sync and queries)
+    /// Run a hub: HTTP server for device push/pull and remote MCP
     Serve {
         /// Host to bind to
         #[arg(long, default_value = "127.0.0.1")]

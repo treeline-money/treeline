@@ -29,11 +29,7 @@ fn make_bundle(source_dir: &TempDir) -> Vec<u8> {
 fn extract_blocks_while_db_lock_is_held_then_completes_when_released() {
     let hub_dir = TempDir::new().unwrap();
     // Seed hub dir with an empty db so the lock file path exists.
-    let _seed = DuckDbRepository::new(
-        &hub_dir.path().join("treeline.duckdb"),
-        None,
-    )
-    .unwrap();
+    let _seed = DuckDbRepository::new(&hub_dir.path().join("treeline.duckdb"), None).unwrap();
     drop(_seed);
 
     let source = TempDir::new().unwrap();
@@ -88,11 +84,8 @@ fn extract_releases_lock_so_subsequent_db_ops_work() {
 
     // A brand-new repo against the extracted path must be able to acquire
     // its own lock. If extract leaked the lock, this would hang.
-    let repo = DuckDbRepository::new(
-        &hub_dir.path().join("treeline.duckdb"),
-        None,
-    )
-    .expect("must be able to open extracted DB");
+    let repo = DuckDbRepository::new(&hub_dir.path().join("treeline.duckdb"), None)
+        .expect("must be able to open extracted DB");
     let accounts = repo.get_accounts().expect("query");
     assert_eq!(accounts.len(), 0);
 }

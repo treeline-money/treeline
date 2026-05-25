@@ -79,10 +79,7 @@ fn run_list(skills_dir: &Path, json: bool) -> Result<()> {
             continue;
         }
 
-        let name = entry
-            .file_name()
-            .to_string_lossy()
-            .to_string();
+        let name = entry.file_name().to_string_lossy().to_string();
 
         let description = parse_description(&skill_md_path).unwrap_or_default();
 
@@ -253,8 +250,7 @@ pub fn mcp_read(path: &str) -> Result<String, String> {
         return Err("Path must be within the skills directory".to_string());
     }
 
-    fs::read_to_string(&canonical_requested)
-        .map_err(|e| format!("Failed to read {}: {}", path, e))
+    fs::read_to_string(&canonical_requested).map_err(|e| format!("Failed to read {}: {}", path, e))
 }
 
 /// Write a file to a skill directory for MCP tool call
@@ -267,7 +263,9 @@ pub fn mcp_write(path: &str, content: &str) -> Result<String, String> {
     // Validate path: must have at least skill_name/filename
     let components: Vec<&str> = path.split('/').collect();
     if components.len() < 2 {
-        return Err("Path must include skill name and filename (e.g. 'my-skill/SKILL.md')".to_string());
+        return Err(
+            "Path must include skill name and filename (e.g. 'my-skill/SKILL.md')".to_string(),
+        );
     }
 
     // Block path traversal
@@ -280,8 +278,7 @@ pub fn mcp_write(path: &str, content: &str) -> Result<String, String> {
     // Double-check resolved path is within skills dir
     // (can't canonicalize yet since file may not exist, so check parent)
     if let Some(parent) = target.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create directory: {}", e))?;
+        fs::create_dir_all(parent).map_err(|e| format!("Failed to create directory: {}", e))?;
         let canonical_skills = skills_dir
             .canonicalize()
             .unwrap_or_else(|_| skills_dir.to_path_buf());
@@ -293,8 +290,7 @@ pub fn mcp_write(path: &str, content: &str) -> Result<String, String> {
         }
     }
 
-    fs::write(&target, content)
-        .map_err(|e| format!("Failed to write {}: {}", path, e))?;
+    fs::write(&target, content).map_err(|e| format!("Failed to write {}: {}", path, e))?;
 
     Ok(format!("Wrote {}", path))
 }

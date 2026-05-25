@@ -36,11 +36,12 @@ pub fn ensure_encryption_support(conn: &Connection) -> Result<()> {
     // on systems where the crypto module is already available (e.g., macOS with
     // cached extensions).
     let _ = conn.execute_batch("INSTALL httpfs");
-    conn.execute_batch("LOAD httpfs")
-        .context("Failed to load httpfs extension for encryption support. \
+    conn.execute_batch("LOAD httpfs").context(
+        "Failed to load httpfs extension for encryption support. \
                   DuckDB requires the httpfs extension for database encryption. \
                   Ensure you have network access for the initial download, or \
-                  install it manually with: duckdb -c 'INSTALL httpfs'")?;
+                  install it manually with: duckdb -c 'INSTALL httpfs'",
+    )?;
     Ok(())
 }
 
@@ -1047,7 +1048,10 @@ impl DuckDbRepository {
     ///
     /// Returns a HashSet of sf_ids that already exist in the database.
     /// Used for bulk deduplication during sync.
-    pub fn get_existing_sf_ids(&self, sf_ids: &[String]) -> Result<std::collections::HashSet<String>> {
+    pub fn get_existing_sf_ids(
+        &self,
+        sf_ids: &[String],
+    ) -> Result<std::collections::HashSet<String>> {
         use std::collections::HashSet;
 
         if sf_ids.is_empty() {
@@ -1066,10 +1070,8 @@ impl DuckDbRepository {
 
                 let mut stmt = conn.prepare(&sql)?;
 
-                let params: Vec<&dyn duckdb::ToSql> = chunk
-                    .iter()
-                    .map(|s| s as &dyn duckdb::ToSql)
-                    .collect();
+                let params: Vec<&dyn duckdb::ToSql> =
+                    chunk.iter().map(|s| s as &dyn duckdb::ToSql).collect();
 
                 let rows = stmt.query_map(params.as_slice(), |row| {
                     let sf_id: String = row.get(0)?;
@@ -1091,7 +1093,10 @@ impl DuckDbRepository {
     ///
     /// Returns a HashSet of lf_ids that already exist in the database.
     /// Used for bulk deduplication during sync.
-    pub fn get_existing_lf_ids(&self, lf_ids: &[String]) -> Result<std::collections::HashSet<String>> {
+    pub fn get_existing_lf_ids(
+        &self,
+        lf_ids: &[String],
+    ) -> Result<std::collections::HashSet<String>> {
         use std::collections::HashSet;
 
         if lf_ids.is_empty() {
@@ -1110,10 +1115,8 @@ impl DuckDbRepository {
 
                 let mut stmt = conn.prepare(&sql)?;
 
-                let params: Vec<&dyn duckdb::ToSql> = chunk
-                    .iter()
-                    .map(|s| s as &dyn duckdb::ToSql)
-                    .collect();
+                let params: Vec<&dyn duckdb::ToSql> =
+                    chunk.iter().map(|s| s as &dyn duckdb::ToSql).collect();
 
                 let rows = stmt.query_map(params.as_slice(), |row| {
                     let lf_id: String = row.get(0)?;
@@ -1222,7 +1225,7 @@ impl DuckDbRepository {
             let mut stmt = conn.prepare(
                 "SELECT sf_id FROM sys_transactions
                  WHERE sf_id IS NOT NULL
-                 GROUP BY sf_id HAVING COUNT(*) > 1"
+                 GROUP BY sf_id HAVING COUNT(*) > 1",
             )?;
 
             let duplicates: Vec<String> = stmt
@@ -1242,7 +1245,7 @@ impl DuckDbRepository {
             let mut stmt = conn.prepare(
                 "SELECT lf_id FROM sys_transactions
                  WHERE lf_id IS NOT NULL
-                 GROUP BY lf_id HAVING COUNT(*) > 1"
+                 GROUP BY lf_id HAVING COUNT(*) > 1",
             )?;
 
             let duplicates: Vec<String> = stmt

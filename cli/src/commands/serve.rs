@@ -70,8 +70,15 @@ const WRITE_TOOLS: &[&str] = &["query_write", "sync", "tag", "demo", "skills_wri
 /// with no `treeline.duckdb` yet returns a JSON-RPC isError result rather than
 /// silently creating an empty DB. Tools not in this list (`version`,
 /// `encryption_status`, `skills_*`, `demo`) work without a database.
-const TOOLS_REQUIRING_DB: &[&str] =
-    &["status", "query", "query_write", "sync", "tag", "doctor", "schema"];
+const TOOLS_REQUIRING_DB: &[&str] = &[
+    "status",
+    "query",
+    "query_write",
+    "sync",
+    "tag",
+    "doctor",
+    "schema",
+];
 
 fn has_scope(scopes: &[String], needed: &str) -> bool {
     scopes.iter().any(|s| s == needed)
@@ -91,7 +98,9 @@ enum ScopeFamily {
 
 fn scope_family(scopes: &[String]) -> ScopeFamily {
     let has_mcp = scopes.iter().any(|s| MCP_SCOPES.contains(&s.as_str()));
-    let has_replicate = scopes.iter().any(|s| REPLICATE_SCOPES.contains(&s.as_str()));
+    let has_replicate = scopes
+        .iter()
+        .any(|s| REPLICATE_SCOPES.contains(&s.as_str()));
     match (has_mcp, has_replicate) {
         (true, false) => ScopeFamily::Mcp,
         (false, true) => ScopeFamily::Replicate,
@@ -308,10 +317,7 @@ async fn handle_pull(
     match state.hub_service.get_bundle_for_pull() {
         Ok(bytes) => (
             StatusCode::OK,
-            [(
-                axum::http::header::CONTENT_TYPE,
-                "application/octet-stream",
-            )],
+            [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
             bytes,
         )
             .into_response(),
@@ -371,9 +377,7 @@ async fn handle_mcp(
     if is_write && !has_scope(&validated.scopes, SCOPE_WRITE) {
         return insufficient_scope_response(SCOPE_WRITE);
     }
-    if !has_scope(&validated.scopes, SCOPE_READ)
-        && !has_scope(&validated.scopes, SCOPE_WRITE)
-    {
+    if !has_scope(&validated.scopes, SCOPE_READ) && !has_scope(&validated.scopes, SCOPE_WRITE) {
         return insufficient_scope_response(SCOPE_READ);
     }
 
@@ -626,7 +630,7 @@ fn authorize_copy_for_family(family: ScopeFamily) -> (&'static str, &'static str
         ),
         ScopeFamily::Replicate => (
             "Link a device",
-            "A Treeline device wants to sync with this hub. Authorize it by pasting your hub token below.",
+            "A Treeline device wants to push and pull data with this hub. Authorize it by pasting your hub token below.",
         ),
         ScopeFamily::Unknown => (
             "Authorize",
@@ -755,8 +759,7 @@ async fn handle_oauth_authorize_submit(
     let wants_json = wants_json_response(&headers);
 
     // Validate the master hub token. This is what proves the user owns the hub.
-    let valid =
-        HubService::validate_token(&state.treeline_dir, &form.hub_token).unwrap_or(false);
+    let valid = HubService::validate_token(&state.treeline_dir, &form.hub_token).unwrap_or(false);
 
     if !valid {
         if wants_json {
@@ -771,7 +774,7 @@ async fn handle_oauth_authorize_submit(
         }
         let body = r#"<h1 class="error-heading">Invalid token</h1>
 <p class="lead">The hub token you entered is incorrect. Double-check it and try again.</p>
-<p class="hint">Retrieve your token with <code>fly ssh console -a treeline-hub -C "cat /data/hub-token"</code> or from your local <code>~/.treeline/hub-token</code> if you're self-hosting.</p>
+<p class="hint">Your master token is the value of <code>TL_HUB_TOKEN</code>, or the token printed when the hub started. It's stored at <code>~/.treeline/hub-token</code> (<code>/root/.treeline/hub-token</code> in the container image).</p>
 <p><a class="backlink" href="javascript:history.back()">← Go back</a></p>"#;
         return Html(render_page("Authorization failed", body)).into_response();
     }
@@ -780,7 +783,13 @@ async fn handle_oauth_authorize_submit(
     // (so the device shows up under a friendly name in `/api/clients`),
     // mints tokens, and tells the user to switch back to their terminal.
     if let Some(user_code) = form.user_code.as_deref().filter(|s| !s.is_empty()) {
-        return complete_device_authorization(state, user_code, form.client_name.clone(), wants_json).await;
+        return complete_device_authorization(
+            state,
+            user_code,
+            form.client_name.clone(),
+            wants_json,
+        )
+        .await;
     }
 
     // Resolve the client_id. If the thin client didn't register (some OAuth
@@ -788,10 +797,10 @@ async fn handle_oauth_authorize_submit(
     let client_id = match form.client_id.as_deref() {
         Some(id) if !id.is_empty() => id.to_string(),
         _ => {
-            match state.oauth_store.register_client(
-                vec![form.redirect_uri.clone()],
-                form.client_name.clone(),
-            ) {
+            match state
+                .oauth_store
+                .register_client(vec![form.redirect_uri.clone()], form.client_name.clone())
+            {
                 Ok(c) => c.client_id,
                 Err(e) => {
                     return (
@@ -822,13 +831,21 @@ async fn handle_oauth_authorize_submit(
         }
     };
 
-    let separator = if form.redirect_uri.contains('?') { "&" } else { "?" };
+    let separator = if form.redirect_uri.contains('?') {
+        "&"
+    } else {
+        "?"
+    };
     let redirect_url = format!(
         "{}{}code={}&state={}",
         form.redirect_uri, separator, code, form.state
     );
 
-    (StatusCode::FOUND, [(axum::http::header::LOCATION, redirect_url)]).into_response()
+    (
+        StatusCode::FOUND,
+        [(axum::http::header::LOCATION, redirect_url)],
+    )
+        .into_response()
 }
 
 /// Authorize a CLI's pending device-code session. Looks up the session,
@@ -871,7 +888,11 @@ async fn complete_device_authorization(
 
     // Rename the client if the user provided a fresh name. Skip if it's
     // the same we suggested (just trim/empty checks).
-    if let Some(name) = client_name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+    if let Some(name) = client_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+    {
         if Some(name) != info.client_name.as_deref() {
             if let Err(e) = state.oauth_store.set_client_name(&info.client_id, name) {
                 tracing::warn!("failed to rename client {}: {}", info.client_id, e);
@@ -891,11 +912,7 @@ async fn complete_device_authorization(
     }
 
     if wants_json {
-        return (
-            StatusCode::OK,
-            Json(json!({"status": "linked"})),
-        )
-            .into_response();
+        return (StatusCode::OK, Json(json!({"status": "linked"}))).into_response();
     }
     let body = r#"<h1>Device linked</h1>
 <p class="lead">You can close this tab — the terminal will finish automatically.</p>"#;
@@ -1576,7 +1593,8 @@ fn require_oauth_token(
     store: &OAuthStore,
     headers: &HeaderMap,
 ) -> std::result::Result<ValidatedToken, axum::response::Response> {
-    let token = bearer_token(headers).ok_or_else(|| unauthorized_response("Missing bearer token"))?;
+    let token =
+        bearer_token(headers).ok_or_else(|| unauthorized_response("Missing bearer token"))?;
     match store.validate_access_token(token) {
         Ok(v) => Ok(v),
         Err(ValidateError::Unknown) => Err(unauthorized_response("Unknown access token")),
@@ -1612,7 +1630,10 @@ fn unauthorized_response(description: &str) -> axum::response::Response {
         StatusCode::UNAUTHORIZED,
         [(
             axum::http::header::WWW_AUTHENTICATE,
-            format!(r#"Bearer error="invalid_token", error_description="{}""#, description),
+            format!(
+                r#"Bearer error="invalid_token", error_description="{}""#,
+                description
+            ),
         )],
         Json(json!({"error": "invalid_token", "error_description": description})),
     )
@@ -1624,10 +1645,7 @@ fn insufficient_scope_response(needed: &str) -> axum::response::Response {
         StatusCode::FORBIDDEN,
         [(
             axum::http::header::WWW_AUTHENTICATE,
-            format!(
-                r#"Bearer error="insufficient_scope", scope="{}""#,
-                needed
-            ),
+            format!(r#"Bearer error="insufficient_scope", scope="{}""#, needed),
         )],
         Json(json!({
             "error": "insufficient_scope",
