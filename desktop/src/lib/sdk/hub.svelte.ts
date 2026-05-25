@@ -198,10 +198,10 @@ export interface HubLinkStatus {
   device_name: string;
   last_push: string | null;
   last_pull: string | null;
-  /** The URL the user originally pointed at when linking (e.g.
-   *  `https://pro.treeline.money` for Cloud links). Distinct from `url`
-   *  because Pro overwrites `url` with the hub's direct URL after link.
-   *  Null for legacy hub.json files written before this field existed. */
+  /** The URL the user originally pointed at when linking. Can differ from
+   *  `url` if the hub redirects the device to a different address after the
+   *  link completes. Null for legacy hub.json files written before this
+   *  field existed. */
   link_origin: string | null;
 }
 
