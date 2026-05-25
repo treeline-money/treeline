@@ -68,6 +68,16 @@ export default defineConfig({
 					],
 				},
 				{
+					label: 'Remote Access',
+					badge: { text: 'Experimental', variant: 'caution' },
+					items: [
+						{ label: "What's a Hub?", slug: 'remote-access' },
+						{ label: 'Run a Hub on Your Machine', slug: 'remote-access/on-your-machine' },
+						{ label: 'Run an Always-On Hub', slug: 'remote-access/always-on' },
+						{ label: 'Connect & Manage', slug: 'remote-access/connect' },
+					],
+				},
+				{
 					label: 'Reference',
 					items: [
 						{ label: 'Database Schema', slug: 'reference/database-schema' },

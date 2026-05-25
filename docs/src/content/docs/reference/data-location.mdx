@@ -133,6 +133,17 @@ App settings, plugin configurations, and import profiles are stored in `settings
 
 **Encryption:** When database encryption is enabled, encryption metadata is stored in `~/.treeline/encryption.json`. The main database file is encrypted at rest. Use `tl encrypt` and `tl decrypt` to manage encryption.
 
+## Hub Files
+
+These appear only once you run a hub or link a device — see [Remote Access](/remote-access/). On a fully local install, none of them exist.
+
+| File | Where | Purpose |
+|------|-------|---------|
+| `hub-token` | On the hub | Master token used to authorize new devices and agents |
+| `oauth.json` | On the hub | Registered clients and issued access/refresh tokens |
+| `hub.json` | On a linked device | Which hub this device is linked to, plus last push/pull times |
+| `hub-sync.json` | On a linked device | Replication state used to detect changes and conflicts |
+
 ## Database Maintenance
 
 **Compact the database:**

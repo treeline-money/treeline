@@ -1,0 +1,33 @@
+---
+title: Run a Hub on Your Machine
+description: Turn a machine you already use into a Treeline Hub with tl serve.
+---
+
+The lightest way to reach Treeline from other devices and AI agents is to serve from a machine you already use. Your laptop or home desktop becomes the Hub, serving its own Treeline data — nothing to deploy.
+
+## Start serving
+
+```sh
+tl serve
+```
+
+On first run this creates a master token at `~/.treeline/hub-token` and prints it. The token is only used to authorize new devices and agents at the `/authorize` page — you don't paste it anywhere else. (Set `TL_HUB_TOKEN` if you'd rather pin a specific value.)
+
+By default `tl serve` binds to `127.0.0.1:4242`, reachable only from this machine. To reach it from other devices on your network, bind to all interfaces:
+
+```sh
+tl serve --host 0.0.0.0 --port 4242
+```
+
+Other devices on your network can now reach `http://<this-machine-ip>:4242`. Linking still requires your master token, so it isn't open access — but treat it like any service exposed on your LAN.
+
+## Reaching it from your phone or a cloud AI
+
+Devices outside your network — and cloud agents like Claude mobile or ChatGPT — need a stable, reachable HTTPS address. How you provide that is your call: a tunnel (Tailscale, Cloudflare Tunnel, and similar) is the common approach and avoids opening ports on your router. Treeline only needs to be reachable at a URL; the networking itself is standard and up to you.
+
+## Good to know
+
+- The Hub serves the data on **this machine** — it's both your everyday Treeline and the point your other devices push to and pull from, working off the same database.
+- It's only reachable while the machine is **awake and running**. If you want a Hub that's always available, [run an always-on Hub](/remote-access/always-on/) instead.
+
+Next: [connect your devices and agents](/remote-access/connect/).

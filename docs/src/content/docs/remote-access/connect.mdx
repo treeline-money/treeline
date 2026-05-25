@@ -1,0 +1,79 @@
+---
+title: Connect & Manage
+description: Link devices to a Hub, connect AI agents over MCP, and handle tokens, updates, backups, and encryption.
+---
+
+Your Hub is running at a URL — say `https://my-treeline-hub.fly.dev` (or `http://your-machine-ip:4242` on your network). Here's how to use and maintain it.
+
+## Link your devices
+
+On each device that has Treeline, point it at your Hub:
+
+```sh
+tl hub link --url https://my-treeline-hub.fly.dev
+```
+
+The CLI prints a verification URL. Open it in a browser, **paste your master token** (the value of `TL_HUB_TOKEN`, or the one printed when you started the Hub) to authorize, and the CLI finishes automatically. Each device gets its own scoped token — nothing privileged is stored on the device.
+
+<img src="/hub-authorize-device.jpg" alt="Treeline's authorize page when linking a device, requesting Pull and Push permissions" width="420" />
+
+Devices request **pull** and **push** scopes — Treeline's replication permissions for moving your database to and from the Hub.
+
+Then push and pull:
+
+```sh
+tl hub push     # send local data up to the Hub
+tl hub pull     # pull the latest down on another device
+tl hub watch    # push and pull automatically as local data changes
+tl hub status   # check the connection
+tl hub unlink   # disconnect this device (local data is kept)
+```
+
+## Connect AI agents (remote MCP)
+
+Point any network-capable MCP client at your Hub's `/mcp` endpoint — your own Hub's address with `/mcp` on the end:
+
+```
+https://<your-hub-address>/mcp
+```
+
+For example, a Fly Hub would be `https://my-treeline-hub.fly.dev/mcp` — substitute your real address. The Hub runs its own OAuth server, so the client walks you through authorizing on first use: you'll paste your master token to approve it. This is what lets Claude on your phone, ChatGPT, or any networked MCP agent reach your finances.
+
+<img src="/hub-authorize-app.jpg" alt="Treeline's authorize page when connecting an AI agent, requesting Read and Write permissions" width="420" />
+
+Agents request **read**, plus **write** if they'll tag or edit data — you approve exactly what's shown before anything connects.
+
+For an agent on the **same machine** as your data, you don't need a Hub — use `tl mcp` directly. See [MCP Server](/ai-agents/mcp-server/).
+
+## Manage tokens
+
+Every linked device and connected agent holds its own scoped token. List and revoke them from any linked device:
+
+```sh
+tl hub tokens list
+tl hub tokens revoke <prefix>   # the first 8 characters shown by `tokens list`
+```
+
+Revoking signs that device or agent out immediately — useful if you lose a device.
+
+## Updates
+
+Updating means pulling a newer image tag and redeploying:
+
+- **Track latest:** deploy `ghcr.io/treeline-money/treeline-hub:latest` and redeploy to pick up changes.
+- **Pin a version:** deploy a specific tag like `:26.5.2402` for a stable, reproducible Hub, and bump it deliberately.
+
+On Fly: `fly deploy --image ghcr.io/treeline-money/treeline-hub:<tag> -a my-treeline-hub`. On other platforms, change the tag and redeploy. Your data is on the volume, so it survives the upgrade.
+
+## Backups
+
+Your entire financial database is a single DuckDB file in the Hub's data directory (`/root/.treeline` in a container, `~/.treeline` when serving from your own machine). Back it up like any other file — snapshot the volume, or copy `treeline.duckdb` out.
+
+## Encryption
+
+Encrypt the database at rest on the Hub by setting one of:
+
+- `TL_DB_PASSWORD` — a passphrase, or
+- `TL_DB_KEY` — a raw key
+
+Set it the same way you set `TL_HUB_TOKEN`. The key stays on **your** Hub and never leaves it — you hold it, and nobody else can read your data.

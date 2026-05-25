@@ -1,0 +1,95 @@
+---
+title: Run an Always-On Hub
+description: Run the Treeline Hub container on a homelab box, a VPS, or a provider like Fly so it's always reachable.
+---
+
+For a Hub that's reachable even when your laptop is off, run it as a container on an always-on host. Treeline publishes a Hub image, and the requirements are the same on any platform.
+
+## The generic recipe
+
+Whatever you run it on — a provider, a VPS, or your homelab — a Hub needs five things:
+
+1. **Run the image** `ghcr.io/treeline-money/treeline-hub` — track `:latest`, or pin a version like `:26.5.2402` for a reproducible deploy.
+2. **Expose port `4242`** (the port the Hub listens on).
+3. **Mount a persistent volume at `/root/.treeline`** — this holds your DuckDB database, the master token, and OAuth state.
+4. **Set `TL_HUB_TOKEN`** to a value you choose, so the master token is stable across redeploys. (Without it, one is generated into the volume and only shown in the logs.)
+5. **Put it behind HTTPS** — most providers give you a TLS domain automatically.
+
+:::caution
+Step 3 is the one people miss. Without a persistent volume, your database lives in the container's ephemeral filesystem and is **wiped on every restart or redeploy**.
+:::
+
+These map directly onto **Render**, **Railway**, a **Docker-capable VPS**, or any container platform — deploy the image, attach a disk at `/root/.treeline`, set the env var, expose 4242, and use the platform's HTTPS domain.
+
+## Example: Fly.io
+
+Fly gives you a free `*.fly.dev` HTTPS URL, a persistent volume, and scale-to-zero so an idle Hub costs almost nothing.
+
+1. Install [flyctl](https://fly.io/docs/flyctl/install/) and run `fly auth login`.
+2. Create the app, a volume, and your token secret (pick a nearby region with `fly platform regions`):
+
+   ```sh
+   fly apps create my-treeline-hub
+   fly volumes create treeline_data --size 1 -r sjc -a my-treeline-hub
+   fly secrets set TL_HUB_TOKEN=<your-token> -a my-treeline-hub
+   ```
+
+3. Save this `fly.toml` (replace the app name):
+
+   ```toml
+   app = "my-treeline-hub"
+   primary_region = "sjc"
+
+   [[mounts]]
+     source = "treeline_data"
+     destination = "/root/.treeline"
+
+   [http_service]
+     internal_port = 4242
+     force_https = true
+     auto_stop_machines = "suspend"
+     auto_start_machines = true
+     min_machines_running = 0
+
+   [[vm]]
+     cpu_kind = "shared"
+     cpus = 1
+     memory = "256mb"
+   ```
+
+4. Deploy the published image:
+
+   ```sh
+   fly deploy --image ghcr.io/treeline-money/treeline-hub:latest -a my-treeline-hub --ha=false
+   ```
+
+Your Hub is now at `https://my-treeline-hub.fly.dev`.
+
+## Your own hardware
+
+Running on a homelab box, NAS, or VPS with Docker? Use Compose:
+
+```yaml
+# docker-compose.yml
+services:
+  treeline-hub:
+    image: ghcr.io/treeline-money/treeline-hub:latest
+    restart: unless-stopped
+    ports:
+      - "4242:4242"
+    environment:
+      TL_HUB_TOKEN: "replace-with-your-token"
+    volumes:
+      - treeline-data:/root/.treeline
+
+volumes:
+  treeline-data:
+```
+
+```sh
+docker compose up -d
+```
+
+Exposing it to the internet — for mobile or cloud AI — is your standard hosting setup: front it with a reverse proxy and TLS, a tunnel, or keep it LAN-only.
+
+Next: [connect your devices and agents](/remote-access/connect/).

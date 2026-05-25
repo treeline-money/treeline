@@ -48,8 +48,8 @@ claude mcp add treeline -- tl mcp
 
 Requires the [Treeline CLI](/cli/#installation). Any client that supports the MCP STDIO transport can connect — point it at `tl mcp` as the command.
 
-:::note[ChatGPT]
-ChatGPT only supports [remote HTTP MCP servers](https://developers.openai.com/api/docs/mcp/) — not local STDIO. Since Treeline is local-first, it isn't compatible with ChatGPT's MCP implementation today.
+:::note[Networked agents — ChatGPT, Claude mobile]
+The clients above all run on the same machine over STDIO. Agents that connect over the network — ChatGPT, Claude on your phone, claude.ai — need a [remote HTTP MCP server](https://developers.openai.com/api/docs/mcp/) instead. Run a Hub (`tl serve`) to expose one; see [Remote Access](/remote-access/).
 :::
 
 ## Available Tools

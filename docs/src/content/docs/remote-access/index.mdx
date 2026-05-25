@@ -1,0 +1,41 @@
+---
+title: What's a Hub?
+description: How Treeline shares data across devices and reaches AI agents over the network — using a Hub.
+---
+
+:::caution[Experimental]
+Hubs are new and actively being tested — expect rough edges, and don't treat a Hub as your only copy of your data. [Feedback welcome](https://discord.gg/EcNvBnSft5).
+:::
+
+By default, Treeline is fully local: one `tl` binary, one DuckDB file on your machine, nothing on a network. A **Hub** is the optional layer that lets you go beyond a single machine — to use Treeline on more than one device, and to reach your finances from your phone or a cloud AI.
+
+## What a Hub is
+
+Run `tl serve` on any Treeline instance and it becomes a **Hub** — an HTTP server that:
+
+- lets your other linked Treeline instances **push and pull** their data, and
+- exposes an **MCP endpoint** (`/mcp`) so AI agents can reach your data over the network.
+
+A Hub isn't a separate app or a product you install. It's just Treeline running in serve mode. The instance you run `tl serve` on holds the copy of your data that everything else pushes to and pulls from.
+
+## Do you actually need one?
+
+If you use a single machine and your AI agent runs there too, probably not. For AI, the deciding factor is *how the agent connects*:
+
+- **Agent on the same machine** that can launch `tl` itself — Claude Desktop, Claude Code, Cursor — connects with `tl mcp` (MCP over STDIO). No Hub needed. See [MCP Server](/ai-agents/mcp-server/).
+- **Agent over the network** that can't spawn a local process — Claude on your phone, ChatGPT, claude.ai — needs an HTTP endpoint to reach. That's a Hub.
+
+And if you simply want your data on **more than one device**, a Hub is the shared point they push to and pull from.
+
+## How instances connect
+
+Your devices link to one Hub and push and pull through it — a hub-and-spokes arrangement, not peer-to-peer. One instance serves; the others run [`tl hub link`](/remote-access/connect/) and push/pull against it. A Hub is meant for a small number of linked devices — a couple of your own machines, or a household sharing one Hub — not large-scale or widespread use.
+
+## Where to run it
+
+Where you run `tl serve` is a spectrum:
+
+- **[On your own machine](/remote-access/on-your-machine/)** — your laptop or desktop serves its own data; reach it from other devices on your network or through a tunnel. Nothing to deploy, but it's only reachable while that machine is awake.
+- **[On an always-on host](/remote-access/always-on/)** — run the Hub container on a homelab box, a VPS, or a provider like Fly, so it's reachable even when your laptop is asleep.
+
+Either way, once it's running you [link your devices and connect agents](/remote-access/connect/).
