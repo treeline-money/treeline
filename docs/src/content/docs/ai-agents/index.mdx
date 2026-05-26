@@ -3,40 +3,54 @@ title: AI & Agents
 description: Use AI agents to query, analyze, and manage your finances through Treeline.
 ---
 
-Treeline is built for AI agents. Your financial data lives in a local DuckDB database that agents can query directly via SQL — no API keys, no rate limits, no cloud round-trips.
+Treeline is built for AI agents. Your financial data lives in a DuckDB database you own — not a vendor's cloud — and agents query it directly via SQL: no pre-built API to outgrow, no third party in the middle. Run your agent on the same machine, or let any AI agent that supports remote MCP servers — like ChatGPT or Claude — connect to your data over the network.
 
 ## Why Local-First Matters for Agents
 
 Most finance apps store your data on their servers. An agent has to go through a rate-limited API, wait for network round-trips, and work within whatever endpoints the app exposes.
 
-Treeline is different. Your data is a file on your machine. An agent gets:
+Treeline is different. Your data is a file you control. An agent gets:
 
 - **Full SQL access** — any query, any join, any aggregation. Not limited to pre-built API endpoints.
 - **Zero latency** — DuckDB runs in-process. Queries return in milliseconds.
 - **No rate limits** — run as many queries as needed for complex analysis.
-- **Complete privacy** — your financial data never leaves your machine (unless you choose to share query results with a cloud LLM).
+- **Your data, not a vendor's** — it's a file you hold and can query, export, or move. Agents work with it; they don't hold it hostage.
+
+This matters more as AI moves into finance. You can wire a cloud assistant to your bank through an aggregator and ask it anything — but the structured data still lives with the aggregator, not you. You're leasing access: the moment you want the underlying records, or to ask something its history window doesn't keep ("how has my net worth moved over the last three years?"), you hit the limits of what it retains. Treeline flips the ownership — your data is a file you hold, full history, structured and queryable, and any agent you trust works against it (Claude, ChatGPT, a local model, your own script).
+
+Be clear-eyed about privacy: point a cloud LLM at your data and the results you ask about go to that LLM — the same as the cloud route. The durable advantage isn't privacy, it's ownership. Privacy only becomes a real edge when you keep things local — a local model, or no LLM at all — and Treeline gives you that option; the cloud route never does.
 
 ## How Agents Connect
 
-There are three ways for an AI agent to work with Treeline:
+Agents reach Treeline in two ways: on the same machine as your data, or over the network through a hub you run.
 
-### MCP Server
+### On your machine
 
-The [Model Context Protocol](https://modelcontextprotocol.io/) lets agents discover and use Treeline's tools. Works with Claude Desktop, Claude Code, Gemini CLI, Cursor, and any MCP-compatible client.
+The agent runs where your data is and connects locally — no hub needed.
+
+#### MCP Server
+
+The [Model Context Protocol](https://modelcontextprotocol.io/) lets agents discover and use Treeline's tools over STDIO. Works with Claude Desktop, Claude Code, Gemini CLI, Cursor, and any MCP-compatible client.
 
 [Set up the MCP server &rarr;](/ai-agents/mcp-server/)
 
-### CLI
+#### CLI
 
 The `tl` command-line interface gives agents direct access to all Treeline features. Every command supports `--json` for structured output. Best for OpenClaw, Claude Code, and agent frameworks that can execute shell commands.
 
 [CLI for agents &rarr;](/ai-agents/cli-for-agents/)
 
-### OpenClaw
+#### OpenClaw
 
 The Treeline skill on ClawHub lets you chat with your finances through Discord, WhatsApp, Telegram, and more.
 
 [OpenClaw integration &rarr;](/ai-agents/openclaw/)
+
+### Over the network (via a hub)
+
+Agents that can't spawn a local process — ChatGPT, Claude on your phone, claude.ai — reach Treeline through a **hub** you run, at its `/mcp` endpoint. Same tools as the local MCP server, authorized with the scopes you approve.
+
+[Set up remote access &rarr;](/remote-access/)
 
 ## User Skills
 
