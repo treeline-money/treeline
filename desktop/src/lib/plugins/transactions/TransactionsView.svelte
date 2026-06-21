@@ -3779,9 +3779,7 @@
 
   .row-desc {
     flex: 1;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    min-width: 0;
     color: var(--text-primary);
   }
 
@@ -3805,9 +3803,13 @@
   .row-desc {
     position: relative;
     overflow: visible;
+    display: flex;
+    align-items: center;
   }
 
   .row-desc .desc-text {
+    flex: 1;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
