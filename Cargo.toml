@@ -17,7 +17,10 @@ serde_json = "1.0"
 # Database (1.4+ required for encryption support)
 # Note: ICU extension not available as Cargo feature (crates.io size limit)
 # All date functions use Rust-computed dates to avoid ICU dependency
-duckdb = { version = "1.4", features = ["bundled", "json"] }
+# Pinned to 1.4 LTS (Andium, storage v67). 1.4.5 backports the MSVC 14.51 fmt
+# fix (stdext::checked_array_iterator removed) so Windows builds. Avoid the
+# new-scheme 1.105xx.x crates — those are DuckDB 1.5.x (storage v68).
+duckdb = { version = "=1.4.5", features = ["bundled", "json"] }
 
 # Async runtime
 tokio = { version = "1.0", features = ["full"] }

@@ -645,7 +645,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "117725a109d387c937a1533ce01b450cbde6b88abceea8473c4d7a85853cda3c"
 dependencies = [
  "lazy_static",
- "windows-sys 0.59.0",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -951,9 +951,9 @@ dependencies = [
 
 [[package]]
 name = "duckdb"
-version = "1.4.3"
+version = "1.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7eeb487dde618b9f6ab26a451775ad5fac3fabe1ca2b64cbbe90b105f264ccd"
+checksum = "308602642bea7617862ce1c18634f9d03135a88535ac37811dca13e1bb642548"
 dependencies = [
  "arrow",
  "cast",
@@ -1708,9 +1708,9 @@ dependencies = [
 
 [[package]]
 name = "libduckdb-sys"
-version = "1.4.3"
+version = "1.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c8c60c2d269e63ae5197e4fe9075efffed35dfda0095a5ac8b41f3c765b18456"
+checksum = "a13883bff02d71dfa22fb62fc5cbe86be5f38837fef03055ff809569b1b1036f"
 dependencies = [
  "cc",
  "flate2",
