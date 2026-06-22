@@ -3,13 +3,17 @@ title: MCP Server
 description: Connect Treeline to Claude Desktop, Claude Code, Gemini CLI, and other MCP clients.
 ---
 
-Treeline includes a built-in [MCP](https://modelcontextprotocol.io/) (Model Context Protocol) server. This lets AI agents query your finances, sync accounts, tag transactions, and more — all from your local database.
+Treeline includes a built-in [MCP](https://modelcontextprotocol.io/) (Model Context Protocol) server. It lets AI agents query your finances, sync accounts, tag transactions, and more.
+
+It speaks MCP two ways: over **STDIO** for an agent on the same machine (`tl mcp`), and over **HTTP** for a networked agent that connects to a hub you run (`tl serve`). The tools are the same either way.
 
 ## Setup
 
-Pick the client you're using. You can use more than one — they all share the same local database.
+### On your machine (STDIO)
 
-### Claude Desktop
+For an agent running on the same machine as your data — it launches `tl mcp` itself. Pick the client you're using; you can use more than one, and they all share the same local database.
+
+#### Claude Desktop
 
 Two ways to connect, depending on whether you use the terminal.
 
@@ -36,7 +40,7 @@ The extension bundles its own copy of the CLI, so to get new features you downlo
 
 Both options work in **Chat** and **Cowork** mode.
 
-### Claude Code
+#### Claude Code
 
 Requires the [Treeline CLI](/cli/#installation).
 
@@ -44,13 +48,22 @@ Requires the [Treeline CLI](/cli/#installation).
 claude mcp add treeline -- tl mcp
 ```
 
-### Gemini CLI, Cursor, and others
+#### Gemini CLI, Cursor, and others
 
 Requires the [Treeline CLI](/cli/#installation). Any client that supports the MCP STDIO transport can connect — point it at `tl mcp` as the command.
 
-:::note[Networked agents — ChatGPT, Claude mobile]
-The clients above all run on the same machine over STDIO. Agents that connect over the network — ChatGPT, Claude on your phone, claude.ai — need a [remote HTTP MCP server](https://developers.openai.com/api/docs/mcp/) instead. Run a Hub (`tl serve`) to expose one; see [Remote Access](/remote-access/).
-:::
+### Over the network (a hub)
+
+A **hub** is any Treeline instance running `tl serve`, and it does two things:
+
+- **Replication** — your other devices push and pull the database to and from it, so your data can live on more than one machine.
+- **Remote MCP** — it exposes this MCP server over HTTP so a networked agent can reach it.
+
+(See [What's a Hub?](/remote-access/) for the full picture.)
+
+This page is about the second role. An agent that can't launch a local process — ChatGPT, Claude on your phone, or any client that supports a remote (custom) MCP server — connects to your hub's `/mcp` endpoint and makes requests over the network. Unlike push/pull, **your data isn't copied to the client** — it stays on the hub, and the agent receives only the results of the queries it runs. The hub walks the client through authorizing with the scopes you approve.
+
+[Set up a hub &rarr;](/remote-access/)
 
 ## Available Tools
 
@@ -72,6 +85,8 @@ Once connected, the agent has access to these tools:
 | `encryption_status` | Check database encryption and lock status | Read-only |
 | `version` | Get current CLI version and check for updates | Read-only |
 
+Over a hub the same tools are available, but the ones that read your database return an error until you've pushed one to it (`tl hub push`).
+
 ## Usage
 
 You don't need to mention Treeline or MCP by name. Just ask questions naturally:
@@ -86,6 +101,9 @@ The agent will choose the appropriate Treeline tool based on your question.
 
 ## Privacy
 
-The MCP server runs locally and reads directly from your Treeline database on disk. No financial data is sent to any server by the MCP server itself.
+Where your data goes depends on how the agent connects:
 
-The AI agent you're using (Claude, etc.) will see query results in order to answer your questions. The LLM provider sees the data you ask about, but not your full database.
+- **STDIO (same machine):** the server runs on your machine and reads your Treeline database on disk. Nothing is sent anywhere by the server itself.
+- **Over a hub (HTTP):** the server runs on your hub. A networked agent reaches it over HTTPS and gets back only the results of the queries it runs — your full database stays on the hub, not on the client.
+
+Either way, the agent — and the LLM behind it — sees the query results needed to answer you. With a cloud LLM, those results reach the provider (the same as any cloud assistant); with a local model, nothing leaves. The provider sees what you ask about, not your whole database.
