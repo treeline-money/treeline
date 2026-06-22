@@ -22,8 +22,9 @@ tauri-plugin-updater = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 dirs = "5"
-# DuckDB 1.4.3 LTS - pinned for stability; json statically linked (no ICU - uses Rust dates)
-duckdb = { version = "=1.4.3", features = ["bundled", "json"] }
+# DuckDB 1.4 LTS - pinned for stability; json statically linked (no ICU - uses Rust dates).
+# 1.4.5 backports the MSVC 14.51 fmt fix so Windows builds; same storage version (v67) as 1.4.3.
+duckdb = { version = "=1.4.5", features = ["bundled", "json"] }
 arrow = "56"
 chrono = "0.4"
 argon2 = "0.5"
