@@ -128,6 +128,13 @@ fn parse_requested_scopes(raw: &str) -> Vec<String> {
 // App state
 // ============================================================================
 
+/// Failed credential attempts allowed per IP per window before a lockout.
+const AUTH_RATE_MAX_FAILURES: u32 = 5;
+/// Sliding window for the lockout. In-memory is fine: a restart resetting
+/// the window is acceptable — brute force needs orders of magnitude more
+/// attempts than a restart cadence allows.
+const AUTH_RATE_WINDOW: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
 /// Shared state handed to every request handler. Constructed once at startup
 /// (or per test) and cloned via `Arc`.
 pub struct AppState {
@@ -136,6 +143,10 @@ pub struct AppState {
     /// RwLock allowing concurrent reads and exclusive writes against the DB.
     pub db_lock: RwLock<()>,
     pub oauth_store: Arc<OAuthStore>,
+    /// Overridable so tests can exercise window expiry without sleeping 15m.
+    pub auth_rate_window: std::time::Duration,
+    /// Per-IP failed credential attempts: ip -> (count, window start).
+    auth_failures: std::sync::Mutex<std::collections::HashMap<String, (u32, std::time::Instant)>>,
 }
 
 impl AppState {
@@ -149,8 +160,50 @@ impl AppState {
             treeline_dir,
             db_lock: RwLock::new(()),
             oauth_store,
+            auth_rate_window: AUTH_RATE_WINDOW,
+            auth_failures: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
+
+    /// True when this IP is currently blocked from credential attempts.
+    fn auth_rate_limited(&self, ip: &str) -> bool {
+        let mut map = self.auth_failures.lock().unwrap();
+        if let Some((count, start)) = map.get(ip) {
+            if start.elapsed() > self.auth_rate_window {
+                map.remove(ip);
+                return false;
+            }
+            return *count >= AUTH_RATE_MAX_FAILURES;
+        }
+        false
+    }
+
+    fn record_auth_failure(&self, ip: &str) {
+        let mut map = self.auth_failures.lock().unwrap();
+        let entry = map
+            .entry(ip.to_string())
+            .or_insert((0, std::time::Instant::now()));
+        if entry.1.elapsed() > self.auth_rate_window {
+            *entry = (0, std::time::Instant::now());
+        }
+        entry.0 += 1;
+    }
+
+    fn clear_auth_failures(&self, ip: &str) {
+        self.auth_failures.lock().unwrap().remove(ip);
+    }
+}
+
+/// Client IP for rate limiting. Behind Fly's proxy the socket peer is the
+/// proxy, so trust `Fly-Client-IP`, then the first `X-Forwarded-For` entry,
+/// falling back to a shared bucket for direct local connections.
+fn client_ip(headers: &HeaderMap) -> String {
+    headers
+        .get("fly-client-ip")
+        .or_else(|| headers.get("x-forwarded-for"))
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.split(',').next().unwrap_or(v).trim().to_string())
+        .unwrap_or_else(|| "local".into())
 }
 
 // ============================================================================
@@ -757,11 +810,17 @@ async fn handle_oauth_authorize_submit(
     axum::Form(form): axum::Form<AuthorizeForm>,
 ) -> axum::response::Response {
     let wants_json = wants_json_response(&headers);
+    let ip = client_ip(&headers);
+
+    if state.auth_rate_limited(&ip) {
+        return too_many_attempts_response(wants_json);
+    }
 
     // Validate the master hub token. This is what proves the user owns the hub.
     let valid = HubService::validate_token(&state.treeline_dir, &form.hub_token).unwrap_or(false);
 
     if !valid {
+        state.record_auth_failure(&ip);
         if wants_json {
             return (
                 StatusCode::UNAUTHORIZED,
@@ -778,6 +837,8 @@ async fn handle_oauth_authorize_submit(
 <p><a class="backlink" href="javascript:history.back()">← Go back</a></p>"#;
         return Html(render_page("Authorization failed", body)).into_response();
     }
+
+    state.clear_auth_failures(&ip);
 
     // Branch: device-code completion. Renames the pending session's client
     // (so the device shows up under a friendly name in `/api/clients`),
@@ -963,14 +1024,19 @@ async fn handle_oauth_token(
         Err(resp) => return resp,
     };
 
+    let ip = client_ip(&headers);
+    if state.auth_rate_limited(&ip) {
+        return too_many_attempts_response(true);
+    }
+
     match form.grant_type.as_str() {
-        "authorization_code" => handle_grant_authorization_code(state, form).await,
-        "refresh_token" => handle_grant_refresh_token(state, form).await,
+        "authorization_code" => handle_grant_authorization_code(state, form, &ip).await,
+        "refresh_token" => handle_grant_refresh_token(state, form, &ip).await,
         // RFC 8628 specifies the verbose URN form. Accept the short form
         // too — it's what most CLIs send and what's least error-prone for
         // anyone reading config / debugging.
         "urn:ietf:params:oauth:grant-type:device_code" | "device_code" => {
-            handle_grant_device_code(state, form).await
+            handle_grant_device_code(state, form, &ip).await
         }
         _ => (
             StatusCode::BAD_REQUEST,
@@ -986,6 +1052,7 @@ async fn handle_oauth_token(
 async fn handle_grant_authorization_code(
     state: Arc<AppState>,
     form: TokenRequest,
+    ip: &str,
 ) -> axum::response::Response {
     let code = match &form.code {
         Some(c) => c.clone(),
@@ -1005,33 +1072,42 @@ async fn handle_grant_authorization_code(
         .oauth_store
         .exchange_authorization_code(&code, form.code_verifier.as_deref())
     {
-        Ok(pair) => (
-            StatusCode::OK,
-            Json(json!({
-                "access_token": pair.access_token,
-                "refresh_token": pair.refresh_token,
-                "token_type": "Bearer",
-                "expires_in": pair.expires_in,
-                "scope": pair.scopes.join(" "),
-            })),
-        )
-            .into_response(),
-        Err(ExchangeError::UnknownCode) | Err(ExchangeError::Expired) => (
-            StatusCode::BAD_REQUEST,
-            Json(json!({
-                "error": "invalid_grant",
-                "error_description": "Invalid or expired authorization code",
-            })),
-        )
-            .into_response(),
-        Err(ExchangeError::MissingVerifier) | Err(ExchangeError::PkceFailed) => (
-            StatusCode::BAD_REQUEST,
-            Json(json!({
-                "error": "invalid_grant",
-                "error_description": "PKCE verification failed",
-            })),
-        )
-            .into_response(),
+        Ok(pair) => {
+            state.clear_auth_failures(ip);
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "access_token": pair.access_token,
+                    "refresh_token": pair.refresh_token,
+                    "token_type": "Bearer",
+                    "expires_in": pair.expires_in,
+                    "scope": pair.scopes.join(" "),
+                })),
+            )
+                .into_response()
+        }
+        Err(ExchangeError::UnknownCode) | Err(ExchangeError::Expired) => {
+            state.record_auth_failure(ip);
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "invalid_grant",
+                    "error_description": "Invalid or expired authorization code",
+                })),
+            )
+                .into_response()
+        }
+        Err(ExchangeError::MissingVerifier) | Err(ExchangeError::PkceFailed) => {
+            state.record_auth_failure(ip);
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "invalid_grant",
+                    "error_description": "PKCE verification failed",
+                })),
+            )
+                .into_response()
+        }
         Err(ExchangeError::Io(e)) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": "server_error", "error_description": e})),
@@ -1043,6 +1119,7 @@ async fn handle_grant_authorization_code(
 async fn handle_grant_refresh_token(
     state: Arc<AppState>,
     form: TokenRequest,
+    ip: &str,
 ) -> axum::response::Response {
     let refresh = match &form.refresh_token {
         Some(r) => r.clone(),
@@ -1059,25 +1136,31 @@ async fn handle_grant_refresh_token(
     };
 
     match state.oauth_store.refresh_access_token(&refresh) {
-        Ok(pair) => (
-            StatusCode::OK,
-            Json(json!({
-                "access_token": pair.access_token,
-                "refresh_token": pair.refresh_token,
-                "token_type": "Bearer",
-                "expires_in": pair.expires_in,
-                "scope": pair.scopes.join(" "),
-            })),
-        )
-            .into_response(),
-        Err(RefreshError::Unknown) | Err(RefreshError::Expired) => (
-            StatusCode::BAD_REQUEST,
-            Json(json!({
-                "error": "invalid_grant",
-                "error_description": "Invalid or expired refresh token",
-            })),
-        )
-            .into_response(),
+        Ok(pair) => {
+            state.clear_auth_failures(ip);
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "access_token": pair.access_token,
+                    "refresh_token": pair.refresh_token,
+                    "token_type": "Bearer",
+                    "expires_in": pair.expires_in,
+                    "scope": pair.scopes.join(" "),
+                })),
+            )
+                .into_response()
+        }
+        Err(RefreshError::Unknown) | Err(RefreshError::Expired) => {
+            state.record_auth_failure(ip);
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "invalid_grant",
+                    "error_description": "Invalid or expired refresh token",
+                })),
+            )
+                .into_response()
+        }
         Err(RefreshError::Io(e)) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": "server_error", "error_description": e})),
@@ -1089,6 +1172,7 @@ async fn handle_grant_refresh_token(
 async fn handle_grant_device_code(
     state: Arc<AppState>,
     form: TokenRequest,
+    ip: &str,
 ) -> axum::response::Response {
     let device_code = match &form.device_code {
         Some(c) => c.clone(),
@@ -1106,19 +1190,26 @@ async fn handle_grant_device_code(
 
     use treeline_core::services::oauth::DeviceCodeError;
     match state.oauth_store.poll_device_token(&device_code) {
-        Ok(pair) => (
-            StatusCode::OK,
-            Json(json!({
-                "access_token": pair.access_token,
-                "refresh_token": pair.refresh_token,
-                "token_type": "Bearer",
-                "expires_in": pair.expires_in,
-                "scope": pair.scopes.join(" "),
-            })),
-        )
-            .into_response(),
+        Ok(pair) => {
+            state.clear_auth_failures(ip);
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "access_token": pair.access_token,
+                    "refresh_token": pair.refresh_token,
+                    "token_type": "Bearer",
+                    "expires_in": pair.expires_in,
+                    "scope": pair.scopes.join(" "),
+                })),
+            )
+                .into_response()
+        }
         // RFC 8628: each is a 400 with a specific error string. CLIs key
         // off `error` (not status), so the strings are load-bearing.
+        // `authorization_pending` / `expired_token` / `access_denied` are
+        // normal poll outcomes for a *real* device code — they must not
+        // count toward the lockout or `tl hub link`'s polling would lock
+        // itself out. Only an unknown code is a guess.
         Err(DeviceCodeError::AuthorizationPending) => (
             StatusCode::BAD_REQUEST,
             Json(json!({"error": "authorization_pending"})),
@@ -1134,11 +1225,14 @@ async fn handle_grant_device_code(
             Json(json!({"error": "access_denied"})),
         )
             .into_response(),
-        Err(DeviceCodeError::Unknown) => (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "invalid_grant"})),
-        )
-            .into_response(),
+        Err(DeviceCodeError::Unknown) => {
+            state.record_auth_failure(ip);
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "invalid_grant"})),
+            )
+                .into_response()
+        }
         Err(DeviceCodeError::Io(e)) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": "server_error", "error_description": e})),
@@ -1263,7 +1357,7 @@ async fn handle_list_clients(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> axum::response::Response {
-    if let Err(e) = require_master_token(&state.treeline_dir, &headers) {
+    if let Err(e) = require_master_token(&state, &headers) {
         return e;
     }
 
@@ -1285,7 +1379,7 @@ async fn handle_revoke_client(
     headers: HeaderMap,
     Path(client_id): Path<String>,
 ) -> axum::response::Response {
-    if let Err(e) = require_master_token(&state.treeline_dir, &headers) {
+    if let Err(e) = require_master_token(&state, &headers) {
         return e;
     }
 
@@ -1565,10 +1659,17 @@ fn render_page(title: &str, body_html: &str) -> String {
 // ============================================================================
 
 /// Returns Ok(()) if the Bearer token matches the master hub token on disk.
+/// Failed guesses count toward the per-IP lockout shared with /authorize
+/// and /token; a missing header is not a guess and doesn't count.
 fn require_master_token(
-    treeline_dir: &std::path::Path,
+    state: &AppState,
     headers: &HeaderMap,
 ) -> std::result::Result<(), axum::response::Response> {
+    let ip = client_ip(headers);
+    if state.auth_rate_limited(&ip) {
+        return Err(too_many_attempts_response(true));
+    }
+
     let token = bearer_token(headers).ok_or_else(|| {
         (
             StatusCode::UNAUTHORIZED,
@@ -1577,14 +1678,42 @@ fn require_master_token(
             .into_response()
     })?;
 
-    match HubService::validate_token(treeline_dir, token) {
-        Ok(true) => Ok(()),
-        _ => Err((
-            StatusCode::UNAUTHORIZED,
-            Json(json!({"error": "Invalid master hub token"})),
-        )
-            .into_response()),
+    match HubService::validate_token(&state.treeline_dir, token) {
+        Ok(true) => {
+            state.clear_auth_failures(&ip);
+            Ok(())
+        }
+        _ => {
+            state.record_auth_failure(&ip);
+            Err((
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error": "Invalid master hub token"})),
+            )
+                .into_response())
+        }
     }
+}
+
+/// 429 for a rate-limited IP: JSON `slow_down` for programmatic callers,
+/// a branded HTML page for the /authorize browser path.
+fn too_many_attempts_response(wants_json: bool) -> axum::response::Response {
+    if wants_json {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({
+                "error": "slow_down",
+                "error_description": "Too many failed attempts. Try again in 15 minutes.",
+            })),
+        )
+            .into_response();
+    }
+    let body = r#"<h1 class="error-heading">Too many attempts</h1>
+<p class="lead">Too many failed authorization attempts from your address. Wait 15 minutes and try again.</p>"#;
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        Html(render_page("Too many attempts", body)),
+    )
+        .into_response()
 }
 
 /// Returns Ok(ValidatedToken) if the Bearer token is a valid per-client

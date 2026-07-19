@@ -33,19 +33,26 @@ async fn spawn_hub() -> TestHub {
 }
 
 async fn spawn_hub_with_ttls(access_ttl: Duration, refresh_ttl: Duration) -> TestHub {
-    spawn_hub_inner(access_ttl, refresh_ttl, true).await
+    spawn_hub_inner(access_ttl, refresh_ttl, true, None).await
 }
 
 /// Spawn a hub with no `treeline.duckdb` provisioned. Used to verify MCP
 /// `initialize` / `tools/list` succeed before any database has been pushed.
 async fn spawn_hub_without_database() -> TestHub {
-    spawn_hub_inner(Duration::days(30), Duration::days(365), false).await
+    spawn_hub_inner(Duration::days(30), Duration::days(365), false, None).await
+}
+
+/// Spawn a hub with a short auth-failure window so window-expiry tests
+/// don't have to wait 15 minutes.
+async fn spawn_hub_with_rate_window(window: std::time::Duration) -> TestHub {
+    spawn_hub_inner(Duration::days(30), Duration::days(365), true, Some(window)).await
 }
 
 async fn spawn_hub_inner(
     access_ttl: Duration,
     refresh_ttl: Duration,
     with_database: bool,
+    auth_rate_window: Option<std::time::Duration>,
 ) -> TestHub {
     let temp_dir = TempDir::new().unwrap();
     let treeline_dir = temp_dir.path().to_path_buf();
@@ -68,11 +75,11 @@ async fn spawn_hub_inner(
         refresh_ttl,
     ));
 
-    let state = Arc::new(AppState::new(
-        treeline_dir.clone(),
-        hub_service,
-        oauth_store.clone(),
-    ));
+    let mut state = AppState::new(treeline_dir.clone(), hub_service, oauth_store.clone());
+    if let Some(window) = auth_rate_window {
+        state.auth_rate_window = window;
+    }
+    let state = Arc::new(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -1220,6 +1227,348 @@ async fn revoke_client_requires_master_token() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+// ============================================================================
+// Per-IP rate limiting on credential endpoints
+//
+// 5 failed credential attempts per IP per window → 429 on /authorize,
+// /token, and the master-gated /api/clients routes. Successes clear the
+// counter; device-code pending polls never count; other IPs are unaffected.
+// Tests spoof distinct attackers via Fly-Client-IP (what the server trusts
+// behind Fly's proxy).
+// ============================================================================
+
+/// One failed hub_token guess against POST /authorize from `ip`.
+async fn bad_authorize_attempt(hub: &TestHub, ip: &str) -> reqwest::Response {
+    reqwest::Client::new()
+        .post(format!("{}/authorize", hub.base_url))
+        .header("Fly-Client-IP", ip)
+        .form(&[
+            ("hub_token", "not-the-hub-token"),
+            ("redirect_uri", "http://localhost/cb"),
+            ("state", "s"),
+            ("code_challenge", "c"),
+            ("code_challenge_method", "S256"),
+            ("scope", "read"),
+        ])
+        .send()
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn sixth_failed_authorize_attempt_is_blocked() {
+    let hub = spawn_hub().await;
+    for i in 1..=5 {
+        let resp = bad_authorize_attempt(&hub, "203.0.113.1").await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "attempt {} should get the error page, not a lockout",
+            i
+        );
+    }
+    let resp = bad_authorize_attempt(&hub, "203.0.113.1").await;
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("Too many attempts"), "body was {}", body);
+}
+
+#[tokio::test]
+async fn lockout_is_scoped_to_the_failing_ip() {
+    let hub = spawn_hub().await;
+    let c = reqwest::Client::new();
+
+    // Lock out one IP.
+    for _ in 0..6 {
+        bad_authorize_attempt(&hub, "203.0.113.2").await;
+    }
+    let resp = bad_authorize_attempt(&hub, "203.0.113.2").await;
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+
+    // A different IP completes a real device-code link during the lockout.
+    let resp = c
+        .post(format!("{}/device/code", hub.base_url))
+        .form(&[("scope", "pull push"), ("client_name", "other-laptop")])
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let device_code = body["device_code"].as_str().unwrap().to_string();
+    let user_code = body["user_code"].as_str().unwrap().to_string();
+
+    let resp = c
+        .post(format!("{}/authorize", hub.base_url))
+        .header("Fly-Client-IP", "203.0.113.3")
+        .form(&[
+            ("user_code", user_code.as_str()),
+            ("hub_token", hub.master_token.as_str()),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let resp = c
+        .post(format!("{}/token", hub.base_url))
+        .form(&[
+            ("grant_type", "device_code"),
+            ("device_code", device_code.as_str()),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn successful_auth_clears_failure_counter() {
+    let hub = spawn_hub().await;
+    let c = reqwest::Client::new();
+    let ip = "203.0.113.4";
+
+    // 4 failures, then a success (device-code completion), then 4 more
+    // failures. Without the clear-on-success, that's 8 accumulated failures
+    // and the final valid attempt would be locked out.
+    for _ in 0..4 {
+        bad_authorize_attempt(&hub, ip).await;
+    }
+
+    let start_device_session = || async {
+        let resp = c
+            .post(format!("{}/device/code", hub.base_url))
+            .form(&[("scope", "pull push"), ("client_name", "laptop")])
+            .send()
+            .await
+            .unwrap();
+        let body: serde_json::Value = resp.json().await.unwrap();
+        body["user_code"].as_str().unwrap().to_string()
+    };
+
+    let user_code = start_device_session().await;
+    let resp = c
+        .post(format!("{}/authorize", hub.base_url))
+        .header("Fly-Client-IP", ip)
+        .form(&[
+            ("user_code", user_code.as_str()),
+            ("hub_token", hub.master_token.as_str()),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    for _ in 0..4 {
+        bad_authorize_attempt(&hub, ip).await;
+    }
+
+    let user_code = start_device_session().await;
+    let resp = c
+        .post(format!("{}/authorize", hub.base_url))
+        .header("Fly-Client-IP", ip)
+        .form(&[
+            ("user_code", user_code.as_str()),
+            ("hub_token", hub.master_token.as_str()),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "counter should have reset on the earlier success"
+    );
+}
+
+#[tokio::test]
+async fn window_expiry_unblocks_a_locked_out_ip() {
+    let hub = spawn_hub_with_rate_window(std::time::Duration::from_millis(200)).await;
+    let ip = "203.0.113.5";
+
+    for _ in 0..5 {
+        bad_authorize_attempt(&hub, ip).await;
+    }
+    let resp = bad_authorize_attempt(&hub, ip).await;
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    // Window expired — attempts flow again (and still fail normally).
+    let resp = bad_authorize_attempt(&hub, ip).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn device_code_completion_failures_count_toward_lockout() {
+    let hub = spawn_hub().await;
+    let c = reqwest::Client::new();
+    let ip = "203.0.113.6";
+
+    let resp = c
+        .post(format!("{}/device/code", hub.base_url))
+        .form(&[("scope", "pull push"), ("client_name", "laptop")])
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let user_code = body["user_code"].as_str().unwrap().to_string();
+
+    // 5 wrong-master submits on the device completion path, then the 6th —
+    // even with the *correct* master — is locked out.
+    for _ in 0..5 {
+        let resp = c
+            .post(format!("{}/authorize", hub.base_url))
+            .header("Fly-Client-IP", ip)
+            .form(&[
+                ("user_code", user_code.as_str()),
+                ("hub_token", "not-the-master"),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+    let resp = c
+        .post(format!("{}/authorize", hub.base_url))
+        .header("Fly-Client-IP", ip)
+        .form(&[
+            ("user_code", user_code.as_str()),
+            ("hub_token", hub.master_token.as_str()),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn token_endpoint_blocks_after_repeated_invalid_grants() {
+    let hub = spawn_hub().await;
+    let c = reqwest::Client::new();
+    let ip = "203.0.113.7";
+
+    for i in 1..=5 {
+        let resp = c
+            .post(format!("{}/token", hub.base_url))
+            .header("Fly-Client-IP", ip)
+            .form(&[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", "guessed-refresh-token"),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "attempt {}", i);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["error"], "invalid_grant");
+    }
+
+    let resp = c
+        .post(format!("{}/token", hub.base_url))
+        .header("Fly-Client-IP", ip)
+        .form(&[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", "guessed-refresh-token"),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["error"], "slow_down");
+}
+
+#[tokio::test]
+async fn device_code_pending_polls_do_not_count_as_failures() {
+    let hub = spawn_hub().await;
+    let c = reqwest::Client::new();
+
+    let resp = c
+        .post(format!("{}/device/code", hub.base_url))
+        .form(&[("scope", "pull push"), ("client_name", "laptop")])
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let device_code = body["device_code"].as_str().unwrap().to_string();
+    let user_code = body["user_code"].as_str().unwrap().to_string();
+
+    // A real CLI polls many times while waiting for the browser step. All
+    // requests here come from the same (unspoofed → "local") IP.
+    for _ in 0..10 {
+        let resp = c
+            .post(format!("{}/token", hub.base_url))
+            .form(&[
+                ("grant_type", "device_code"),
+                ("device_code", device_code.as_str()),
+            ])
+            .send()
+            .await
+            .unwrap();
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["error"], "authorization_pending");
+    }
+
+    // The same IP can still complete the flow — polling didn't lock it out.
+    let resp = c
+        .post(format!("{}/authorize", hub.base_url))
+        .form(&[
+            ("user_code", user_code.as_str()),
+            ("hub_token", hub.master_token.as_str()),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let resp = c
+        .post(format!("{}/token", hub.base_url))
+        .form(&[
+            ("grant_type", "device_code"),
+            ("device_code", device_code.as_str()),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn api_clients_master_guesses_count_toward_lockout() {
+    let hub = spawn_hub().await;
+    let c = reqwest::Client::new();
+    let ip = "203.0.113.8";
+
+    for _ in 0..5 {
+        let resp = c
+            .get(format!("{}/api/clients", hub.base_url))
+            .header("Fly-Client-IP", ip)
+            .bearer_auth("guessed-master-token")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    let resp = c
+        .get(format!("{}/api/clients", hub.base_url))
+        .header("Fly-Client-IP", ip)
+        .bearer_auth("guessed-master-token")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+
+    // The real master from another IP is unaffected.
+    let resp = c
+        .get(format!("{}/api/clients", hub.base_url))
+        .header("Fly-Client-IP", "203.0.113.9")
+        .bearer_auth(&hub.master_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
 }
 
 #[tokio::test]

@@ -265,6 +265,17 @@ impl SyncBundle {
 
 /// Acquire the same exclusive file lock that `DuckDbRepository` takes per
 /// operation. Returns the held `File` — dropping it releases the lock.
+/// Constant-time string equality for credential checks. The xor-fold
+/// touches every byte regardless of where the first mismatch is, so timing
+/// doesn't leak how much of a guessed token was correct.
+fn ct_eq(a: &str, b: &str) -> bool {
+    a.len() == b.len()
+        && a.bytes()
+            .zip(b.bytes())
+            .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+            == 0
+}
+
 fn acquire_db_lock(treeline_dir: &Path) -> Result<fs::File> {
     use fs2::FileExt;
     let lock_path = treeline_dir.join("treeline.duckdb.lock");
@@ -532,7 +543,7 @@ impl HubService {
             .unwrap_or_default()
             .trim()
             .to_string();
-        Ok(!expected.is_empty() && expected == token)
+        Ok(!expected.is_empty() && ct_eq(&expected, token))
     }
 
     /// Accept a pushed sync bundle with conflict detection.
