@@ -127,7 +127,6 @@ If something goes wrong after promoting:
 1. Delete `latest.json` from the release:
    ```bash
    gh release delete-asset <version> latest.json --repo treeline-money/treeline
-   gh release delete-asset <version> latest.json --repo treeline-money/treeline-releases
    ```
 
 2. Users will stay on their current version until next release

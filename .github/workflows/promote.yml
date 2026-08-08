@@ -92,13 +92,6 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           gh release upload "$VERSION" /tmp/latest.json --repo treeline-money/treeline --clobber
 
-      - name: Upload to treeline-releases repo
-        env:
-          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          gh release upload "$VERSION" /tmp/latest.json --repo treeline-money/treeline-releases --clobber
-
       - name: Post to Discord #releases
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_RELEASES }}

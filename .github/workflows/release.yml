@@ -216,71 +216,12 @@ jobs:
             gh release upload "$VERSION" tl-windows-x64.exe --clobber || true
           fi
 
-      - name: Create GitHub release (treeline-releases - dual publish)
-        if: steps.check-release.outputs.exists == 'false'
+      - name: Generate latest-staging.json
         env:
-          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
           RELEASE_NOTES: ${{ inputs.release_notes }}
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          RELEASES_REPO="treeline-money/treeline-releases"
-
-          if [ -z "$RELEASE_NOTES" ]; then
-            RELEASE_NOTES="Release $VERSION"
-          fi
-
-          # Create release in treeline-releases (for existing users)
-          gh release create "$VERSION" \
-            --repo "$RELEASES_REPO" \
-            --title "Treeline $VERSION" \
-            --notes "$RELEASE_NOTES" \
-            || echo "Release may already exist"
-
-          # Copy latest.json from previous release to maintain production updates
-          PREV_RELEASE=$(gh release list --repo "$RELEASES_REPO" --limit 2 --json tagName --jq '.[1].tagName // empty')
-          if [ -n "$PREV_RELEASE" ]; then
-            echo "Copying latest.json from $PREV_RELEASE"
-            gh release download "$PREV_RELEASE" --repo "$RELEASES_REPO" --pattern "latest.json" --dir /tmp || true
-            if [ -f /tmp/latest.json ]; then
-              gh release upload "$VERSION" /tmp/latest.json --repo "$RELEASES_REPO" --clobber
-              rm /tmp/latest.json
-            fi
-          fi
-
-          # Upload desktop artifacts (macOS has nested dmg/ and macos/ subdirs)
-          # macOS ARM64
-          for f in artifacts/desktop-macos-arm64/dmg/*.dmg; do
-            [ -f "$f" ] && gh release upload "$VERSION" "$f" --repo "$RELEASES_REPO" --clobber || true
-          done
-          # Updater artifacts already renamed with arch suffix earlier
-          [ -f "Treeline_aarch64.app.tar.gz" ] && gh release upload "$VERSION" "Treeline_aarch64.app.tar.gz" --repo "$RELEASES_REPO" --clobber || true
-          [ -f "Treeline_aarch64.app.tar.gz.sig" ] && gh release upload "$VERSION" "Treeline_aarch64.app.tar.gz.sig" --repo "$RELEASES_REPO" --clobber || true
-          # macOS x64
-          for f in artifacts/desktop-macos-x64/dmg/*.dmg; do
-            [ -f "$f" ] && gh release upload "$VERSION" "$f" --repo "$RELEASES_REPO" --clobber || true
-          done
-          [ -f "Treeline_x64.app.tar.gz" ] && gh release upload "$VERSION" "Treeline_x64.app.tar.gz" --repo "$RELEASES_REPO" --clobber || true
-          [ -f "Treeline_x64.app.tar.gz.sig" ] && gh release upload "$VERSION" "Treeline_x64.app.tar.gz.sig" --repo "$RELEASES_REPO" --clobber || true
-          for f in artifacts/desktop-linux-x64/*.AppImage; do
-            [ -f "$f" ] && gh release upload "$VERSION" "$f" --repo "$RELEASES_REPO" --clobber || true
-          done
-          for f in artifacts/desktop-linux-x64/*.AppImage.sig; do
-            [ -f "$f" ] && gh release upload "$VERSION" "$f" --repo "$RELEASES_REPO" --clobber || true
-          done
-          for f in artifacts/desktop-windows-x64/*.exe; do
-            [ -f "$f" ] && gh release upload "$VERSION" "$f" --repo "$RELEASES_REPO" --clobber || true
-          done
-          for f in artifacts/desktop-windows-x64/*.exe.sig; do
-            [ -f "$f" ] && gh release upload "$VERSION" "$f" --repo "$RELEASES_REPO" --clobber || true
-          done
-
-      - name: Generate and upload latest-staging.json
-        env:
-          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
-          RELEASE_NOTES: ${{ inputs.release_notes }}
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          RELEASES_REPO="treeline-money/treeline-releases"
+          RELEASES_REPO="treeline-money/treeline"
           PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
           if [ -z "$RELEASE_NOTES" ]; then
@@ -373,9 +314,6 @@ jobs:
           echo "}" >> latest-staging.json
 
           cat latest-staging.json
-
-          # Upload to treeline-releases repo (using RELEASES_TOKEN)
-          gh release upload "$VERSION" latest-staging.json --repo "$RELEASES_REPO" --clobber
 
       - name: Upload latest-staging.json to treeline repo
         env:

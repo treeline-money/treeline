@@ -132,7 +132,7 @@ Keep notes:
 
 1. Downloads artifacts from specified CI run (version already baked in)
 2. Creates git tag at the CI run's commit SHA
-3. Creates GitHub releases in both `treeline` and `treeline-releases` (dual-publish)
+3. Creates GitHub release in `treeline`
 4. Publishes SDK to npm (with provenance)
 5. Publishes OpenClaw skill to ClawHub
 6. Uploads `latest-staging.json` (RC - not visible to users until promoted)
