@@ -524,6 +524,9 @@ impl WatchObserver for StderrWatchObserver {
             WatchEvent::Started { hub_url } => {
                 eprintln!("[watch] Hub: {}", hub_url);
             }
+            WatchEvent::Ready => {
+                eprintln!("[watch] Ready.");
+            }
             WatchEvent::LocalChangeDetected => {
                 eprintln!("[watch] Local change detected, debouncing...");
             }

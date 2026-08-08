@@ -74,7 +74,7 @@
       // Start in-process hub watcher (no-op if not linked or watch lock held
       // by an external `tl hub watch`). Runs unconditionally — the Hub
       // feature flag only gates UI surface, not the underlying watcher.
-      hubWatch.start();
+      await hubWatch.start();
 
       // Show welcome modal for first-time users
       if (!hasCompletedOnboarding) {
@@ -83,7 +83,13 @@
         // Check if we should show "What's New" (version changed since last seen)
         await checkForWhatsNew();
 
-        // Check if sync is needed (after UI is loaded so user sees the app)
+        // Check if sync is needed (after UI is loaded so user sees the app).
+        // Wait for the hub watcher's initial reconcile first: if the hub
+        // moved while the app was closed (e.g. an AI session tagged through
+        // the hub MCP overnight), pulling before the bank sync writes avoids
+        // manufacturing a two-sided divergence at startup. Timeout-capped —
+        // an unreachable hub never delays the sync for long.
+        await hubWatch.waitForReady(5000);
         checkAndRunSync();
       }
     } catch (error) {

@@ -109,6 +109,14 @@ pub enum WatchEvent {
     Started {
         hub_url: String,
     },
+    /// Initial reconcile finished: if the hub had moved while this device
+    /// was away and the local DB was clean, it has been fast-forward
+    /// pulled. App-level writers that run at startup (e.g. the desktop's
+    /// automatic bank sync) should wait for this before writing, so they
+    /// start from the hub's latest state instead of manufacturing a
+    /// two-sided divergence. Always fires, even when the hub is
+    /// unreachable — sync must never block local work indefinitely.
+    Ready,
     LocalChangeDetected,
     Pushing,
     Pushed {
@@ -572,6 +580,41 @@ impl HubClient {
         let mut last_mtime = db_path.metadata().and_then(|m| m.modified()).ok();
         let mut last_poll = Instant::now();
         let mut last_polled_hub_hash: Option<String> = None;
+
+        // Initial reconcile: fast-forward pull if the hub moved while this
+        // device was away and the local DB is clean, then signal Ready.
+        // Poll failures fall through to Ready — an unreachable hub must
+        // never block startup.
+        if let Ok(hub_hash) = self.poll_hub_hash() {
+            if hub_hash.is_some() {
+                last_polled_hub_hash = hub_hash.clone();
+                if let Ok(Some(hub_cfg)) = HubConfig::load(&self.treeline_dir) {
+                    let hub_moved = hub_hash.as_deref() != hub_cfg.base_hash.as_deref();
+                    // A missing base means we've never synced — the device is
+                    // the source of truth and must not be clobbered by a pull.
+                    let local_clean = match hub_cfg.base_hash.as_deref() {
+                        Some(base) => compute_file_hash(&db_path)
+                            .map(|h| h == base)
+                            .unwrap_or(false),
+                        None => false,
+                    };
+                    if hub_moved && local_clean {
+                        observer.on_event(WatchEvent::Pulling);
+                        match self.pull() {
+                            Ok(out) => {
+                                last_polled_hub_hash = out.hash.clone();
+                                observer.on_event(WatchEvent::Pulled { bytes: out.bytes });
+                            }
+                            Err(e) => observer.on_event(WatchEvent::Error {
+                                message: e.to_string(),
+                            }),
+                        }
+                        last_mtime = db_path.metadata().and_then(|m| m.modified()).ok();
+                    }
+                }
+            }
+        }
+        observer.on_event(WatchEvent::Ready);
 
         loop {
             if stop.load(Ordering::Relaxed) {

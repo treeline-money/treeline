@@ -14,6 +14,7 @@ import { registry } from "./registry";
 
 export type WatchEvent =
   | { kind: "started"; hub_url: string }
+  | { kind: "ready" }
   | { kind: "local_change_detected" }
   | { kind: "pushing" }
   | { kind: "pushed"; bytes: number }
@@ -43,7 +44,9 @@ class HubWatchStore {
   private _lastUpdatedAt = $state<number | null>(null);
   private _errorMessage = $state<string | null>(null);
   private _conflictCount = $state(0);
+  private _ready = $state(false);
   private _unlisten: UnlistenFn | null = null;
+  private readyWaiters: (() => void)[] = [];
 
   get running() {
     return this._running;
@@ -65,6 +68,27 @@ class HubWatchStore {
   }
   get conflictCount() {
     return this._conflictCount;
+  }
+  get ready() {
+    return this._ready;
+  }
+
+  /**
+   * Resolve once the watcher's initial reconcile is done (hub pulled if it
+   * had moved and local was clean), so startup writers like the automatic
+   * bank sync begin from the hub's latest state. Resolves immediately when
+   * no watcher is running, and after `timeoutMs` at the latest — an
+   * unreachable hub must never block local work.
+   */
+  async waitForReady(timeoutMs = 5000): Promise<void> {
+    if (!this._running || this._ready) return;
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, timeoutMs);
+      this.readyWaiters.push(() => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
   }
 
   /**
@@ -136,6 +160,11 @@ class HubWatchStore {
         this._status = "watching";
         this._errorMessage = null;
         this._conflictCount = 0;
+        this._ready = false;
+        break;
+      case "ready":
+        this._ready = true;
+        this.readyWaiters.splice(0).forEach((resolve) => resolve());
         break;
       case "local_change_detected":
       case "pushing":
@@ -172,6 +201,8 @@ class HubWatchStore {
       case "stopped":
         this._status = "stopped";
         this._running = false;
+        this._ready = false;
+        this.readyWaiters.splice(0).forEach((resolve) => resolve());
         break;
     }
   }
