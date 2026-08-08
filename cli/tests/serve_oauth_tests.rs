@@ -1383,7 +1383,10 @@ async fn successful_auth_clears_failure_counter() {
 
 #[tokio::test]
 async fn window_expiry_unblocks_a_locked_out_ip() {
-    let hub = spawn_hub_with_rate_window(std::time::Duration::from_millis(200)).await;
+    // The window must be wide enough that a slow CI runner can't take
+    // longer than it to make the 5 attempts — otherwise the window expires
+    // mid-loop, the counter resets, and the 6th attempt isn't blocked.
+    let hub = spawn_hub_with_rate_window(std::time::Duration::from_secs(3)).await;
     let ip = "203.0.113.5";
 
     for _ in 0..5 {
@@ -1392,7 +1395,7 @@ async fn window_expiry_unblocks_a_locked_out_ip() {
     let resp = bad_authorize_attempt(&hub, ip).await;
     assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
 
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(3500)).await;
 
     // Window expired — attempts flow again (and still fail normally).
     let resp = bad_authorize_attempt(&hub, ip).await;
