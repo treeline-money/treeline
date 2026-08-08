@@ -10,6 +10,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { registry } from "./registry";
 
 export type WatchEvent =
   | { kind: "started"; hub_url: string }
@@ -150,6 +151,11 @@ class HubWatchStore {
         this._lastUpdatedAt = Date.now();
         this._errorMessage = null;
         this._conflictCount = 0;
+        // Pulls and merges rewrote the local DB — views showing pre-sync
+        // data need to reload.
+        if (event.kind !== "pushed") {
+          registry.emit("data:refresh");
+        }
         break;
       case "conflict":
         this._status = "conflict";

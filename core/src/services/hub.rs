@@ -96,8 +96,14 @@ pub struct HubSyncMeta {
 pub struct SyncBundle;
 
 impl SyncBundle {
-    /// Create a sync bundle from a treeline directory
+    /// Create a sync bundle from a treeline directory.
+    ///
+    /// Holds a shared lock on `treeline.duckdb.lock` while reading, so a
+    /// concurrent DuckDB write (which takes the lock exclusively per-op)
+    /// can't checkpoint underneath us and produce a torn database inside
+    /// the bundle.
     pub fn create(treeline_dir: &Path) -> Result<Vec<u8>> {
+        let _lock = acquire_db_lock_shared(treeline_dir)?;
         let mut buf = Vec::new();
         {
             let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
@@ -127,6 +133,27 @@ impl SyncBundle {
             zip.finish()?;
         }
         Ok(buf)
+    }
+
+    /// Read the raw `treeline.duckdb` bytes out of a bundle without
+    /// extracting it. Returns `None` if the bundle carries no database.
+    /// Reading the full entry also verifies it against the zip's CRC-32,
+    /// so a torn upload fails here rather than being silently accepted.
+    pub fn db_entry_bytes(data: &[u8]) -> Result<Option<Vec<u8>>> {
+        let cursor = std::io::Cursor::new(data);
+        let mut archive = zip::ZipArchive::new(cursor).context("Failed to read sync bundle")?;
+        let result = match archive.by_name("treeline.duckdb") {
+            Ok(mut entry) => {
+                let mut buf = Vec::new();
+                entry
+                    .read_to_end(&mut buf)
+                    .context("Failed to read database entry from sync bundle")?;
+                Some(buf)
+            }
+            Err(zip::result::ZipError::FileNotFound) => None,
+            Err(e) => return Err(e.into()),
+        };
+        Ok(result)
     }
 
     /// Extract a sync bundle into a treeline directory.
@@ -263,8 +290,6 @@ impl SyncBundle {
     }
 }
 
-/// Acquire the same exclusive file lock that `DuckDbRepository` takes per
-/// operation. Returns the held `File` — dropping it releases the lock.
 /// Constant-time string equality for credential checks. The xor-fold
 /// touches every byte regardless of where the first mismatch is, so timing
 /// doesn't leak how much of a guessed token was correct.
@@ -276,19 +301,34 @@ fn ct_eq(a: &str, b: &str) -> bool {
             == 0
 }
 
-fn acquire_db_lock(treeline_dir: &Path) -> Result<fs::File> {
-    use fs2::FileExt;
+fn open_db_lock_file(treeline_dir: &Path) -> Result<fs::File> {
     let lock_path = treeline_dir.join("treeline.duckdb.lock");
-    let lock_file = fs::OpenOptions::new()
+    fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
         .open(&lock_path)
-        .with_context(|| format!("Failed to open {}", lock_path.display()))?;
+        .with_context(|| format!("Failed to open {}", lock_path.display()))
+}
+
+/// Acquire the same exclusive file lock that `DuckDbRepository` takes per
+/// operation. Returns the held `File` — dropping it releases the lock.
+pub(crate) fn acquire_db_lock(treeline_dir: &Path) -> Result<fs::File> {
+    use fs2::FileExt;
+    let lock_file = open_db_lock_file(treeline_dir)?;
     lock_file
         .lock_exclusive()
-        .context("Failed to acquire treeline.duckdb.lock for bundle extract")?;
+        .context("Failed to acquire treeline.duckdb.lock")?;
+    Ok(lock_file)
+}
+
+/// Shared variant — blocks while a DuckDB op holds the lock exclusively,
+/// but doesn't exclude other readers.
+fn acquire_db_lock_shared(treeline_dir: &Path) -> Result<fs::File> {
+    let lock_file = open_db_lock_file(treeline_dir)?;
+    fs2::FileExt::lock_shared(&lock_file)
+        .context("Failed to acquire treeline.duckdb.lock for bundle create")?;
     Ok(lock_file)
 }
 
@@ -309,7 +349,7 @@ fn incoming_path(target: &Path) -> PathBuf {
 /// On crash before the rename, the live file at `target` is untouched.
 /// The orphan staging file is swept up by `cleanup_orphan_incoming` at
 /// the start of the next extract.
-fn atomic_write(target: &Path, contents: &[u8]) -> Result<()> {
+pub(crate) fn atomic_write(target: &Path, contents: &[u8]) -> Result<()> {
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -557,6 +597,18 @@ impl HubService {
     pub fn accept_push(&self, data: &[u8], base_hash: Option<&str>) -> Result<PushOutcome> {
         let db_path = self.treeline_dir.join(&self.db_filename);
 
+        // Validate before touching anything. Reading the entry checks it
+        // against the zip CRC (catches torn uploads); the magic check
+        // catches a well-formed zip wrapping a non-DuckDB file. Works for
+        // encrypted databases too — DuckDB keeps the main header magic in
+        // plaintext. The hub can't open the DB to validate deeper (it may
+        // not have the encryption key), so this is as far as it goes.
+        if let Some(db_bytes) = SyncBundle::db_entry_bytes(data)? {
+            if !looks_like_duckdb(&db_bytes) {
+                anyhow::bail!("Pushed bundle's database is not a valid DuckDB file");
+            }
+        }
+
         // Check for conflicts
         if let Some(base_hash) = base_hash {
             let hub_hash = self.current_hash()?;
@@ -651,6 +703,22 @@ impl HubService {
         fs::write(&path, content)?;
         Ok(())
     }
+}
+
+/// DuckDB main-header check: bytes 8..12 of the file are the magic "DUCK"
+/// (preceded by an 8-byte checksum). Present for both plain and encrypted
+/// databases — encryption starts at the block level, not the main header.
+fn looks_like_duckdb(bytes: &[u8]) -> bool {
+    bytes.len() > 12 && &bytes[8..12] == b"DUCK"
+}
+
+/// Compute SHA-256 hash of in-memory bytes. Matches `compute_file_hash` for
+/// the same content — used to derive the hub's file hash from bundle entry
+/// bytes without writing them to disk first.
+pub fn compute_bytes_hash(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hex::encode(hasher.finalize())
 }
 
 /// Compute SHA-256 hash of a file

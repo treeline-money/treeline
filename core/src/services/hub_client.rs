@@ -21,8 +21,16 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
 use crate::config::HubConfig;
-use crate::services::hub::{compute_file_hash, SyncBundle};
+use crate::services::hub::{
+    acquire_db_lock, atomic_write, compute_bytes_hash, compute_file_hash, SyncBundle,
+};
 use crate::TreelineContext;
+
+/// Max attempts for the conflict-merge loop. Each attempt re-downloads the
+/// hub bundle and re-merges, so a hot hub (e.g. an AI session writing every
+/// few seconds) either gets through once its writes pause or we surface an
+/// error instead of silently clobbering it.
+const MERGE_MAX_ATTEMPTS: u32 = 5;
 
 /// Outcome of a `push` call. The caller decides how to surface each variant
 /// (CLI prints, desktop emits an event).
@@ -415,7 +423,7 @@ impl HubClient {
         hub.last_push = Some(chrono::Utc::now());
         hub.base_hash = new_hash.clone();
         hub.save(&self.treeline_dir)?;
-        save_base_snapshot(&self.treeline_dir)?;
+        save_base_snapshot_from_bundle(&self.treeline_dir, &bundle)?;
 
         Ok(PushOutcome::Pushed {
             bytes: size,
@@ -463,13 +471,13 @@ impl HubClient {
 
         SyncBundle::extract(&bytes, &self.treeline_dir)?;
 
-        let new_hash = if db_path.exists() {
-            Some(compute_file_hash(&db_path)?)
-        } else {
-            None
-        };
-
-        save_base_snapshot(&self.treeline_dir)?;
+        // Hash + base snapshot come from the bundle's own DB bytes — the
+        // same bytes the hub hashed — not from the live file, which a local
+        // write may already have moved past by now.
+        let new_hash = SyncBundle::db_entry_bytes(&bytes)?
+            .as_deref()
+            .map(compute_bytes_hash);
+        save_base_snapshot_from_bundle(&self.treeline_dir, &bytes)?;
 
         let mut hub = HubConfig::load(&self.treeline_dir)?.unwrap();
         hub.last_pull = Some(chrono::Utc::now());
@@ -563,6 +571,7 @@ impl HubClient {
         let db_path = self.treeline_dir.join("treeline.duckdb");
         let mut last_mtime = db_path.metadata().and_then(|m| m.modified()).ok();
         let mut last_poll = Instant::now();
+        let mut last_polled_hub_hash: Option<String> = None;
 
         loop {
             if stop.load(Ordering::Relaxed) {
@@ -642,6 +651,14 @@ impl HubClient {
                     Ok(h) => h,
                     Err(_) => continue,
                 };
+                // Quiescence check: only act once the hub hash has been
+                // stable across two consecutive polls. A hash that's still
+                // moving means someone (e.g. an MCP session) is actively
+                // writing — pulling or merging now would race them and
+                // re-enter the merge cycle every poll.
+                let hub_stable = hub_hash.is_some() && hub_hash == last_polled_hub_hash;
+                last_polled_hub_hash = hub_hash.clone();
+
                 let hub_cfg = match HubConfig::load(&self.treeline_dir)? {
                     Some(h) => h,
                     None => continue,
@@ -652,7 +669,7 @@ impl HubClient {
                     (Some(_), None) => true,
                     _ => false,
                 };
-                if !needs_pull {
+                if !needs_pull || !hub_stable {
                     continue;
                 }
 
@@ -754,6 +771,13 @@ impl HubClient {
 
     /// Handle a 409 from the hub: download hub bundle, three-way diff,
     /// auto-merge if non-conflicting, otherwise return structured conflicts.
+    ///
+    /// The merged result is pushed with `base_hash` set to the hash of the
+    /// hub state the merge was computed against (compare-and-swap). If the
+    /// hub or the local DB moved during the merge, the whole attempt is
+    /// retried against the new state — never force-pushed, so writes that
+    /// land mid-merge (e.g. an AI session tagging through the hub MCP) are
+    /// picked up by the re-merge instead of being clobbered.
     fn handle_conflict(
         &self,
         ctx: &TreelineContext,
@@ -765,7 +789,36 @@ impl HubClient {
             return Ok(PushOutcome::NoBaseSnapshot { hub_hash });
         }
 
-        // Download the hub's current bundle into a temp dir.
+        for attempt in 0..MERGE_MAX_ATTEMPTS {
+            if attempt > 0 {
+                // One side is actively being written; give it a moment to
+                // go quiet before downloading and merging again.
+                std::thread::sleep(Duration::from_secs(1 << attempt.min(3)));
+            }
+            match self.merge_and_push(ctx, hub, &base_db_path)? {
+                MergeAttempt::Done(outcome) => return Ok(outcome),
+                MergeAttempt::HubMoved | MergeAttempt::LocalMoved => {}
+            }
+        }
+        anyhow::bail!(
+            "Hub kept changing during merge — gave up after {} attempts. \
+             Will retry on the next sync cycle.",
+            MERGE_MAX_ATTEMPTS
+        )
+    }
+
+    /// One conflict-merge attempt: download the hub bundle, three-way merge
+    /// against the base snapshot, apply the result locally through the
+    /// locked atomic path, and CAS-push it back to the hub.
+    fn merge_and_push(
+        &self,
+        ctx: &TreelineContext,
+        hub: &mut HubConfig,
+        base_db_path: &Path,
+    ) -> Result<MergeAttempt> {
+        // Download the hub's current bundle into a temp dir. The CAS base
+        // for the merged push is the hash of the *downloaded* DB bytes, not
+        // the hash from the 409 — the hub may have moved again in between.
         let pull_resp = self
             .http
             .get(format!("{}/api/pull", hub.url))
@@ -778,19 +831,30 @@ impl HubClient {
             anyhow::bail!("Failed to download hub bundle: {}", pull_resp.status());
         }
         let hub_bundle = pull_resp.bytes()?;
+        let hub_db_bytes = SyncBundle::db_entry_bytes(&hub_bundle)?
+            .ok_or_else(|| anyhow::anyhow!("Hub bundle does not contain a database"))?;
+        let hub_bundle_hash = compute_bytes_hash(&hub_db_bytes);
+
         let hub_temp = tempfile::TempDir::new().context("Failed to create temp dir")?;
         SyncBundle::extract(&hub_bundle, hub_temp.path())?;
-
         let hub_db_path = hub_temp.path().join("treeline.duckdb");
-        if !hub_db_path.exists() {
-            anyhow::bail!("Hub bundle does not contain a database");
-        }
 
+        // Diff against a stable copy of the live DB, snapshotted under the
+        // DB lock — diffy-duck would otherwise read a file that desktop
+        // connections are actively writing.
         let local_db_path = self.treeline_dir.join("treeline.duckdb");
+        let local_temp = tempfile::TempDir::new()?;
+        let local_copy_path = local_temp.path().join("local.duckdb");
+        let local_hash_at_merge = {
+            let _lock = acquire_db_lock(&self.treeline_dir)?;
+            std::fs::copy(&local_db_path, &local_copy_path)?;
+            compute_file_hash(&local_copy_path)?
+        };
+
         let encryption_key = ctx.repository.encryption_key().map(|s| s.to_string());
 
         let mut ancestor_config = DatabaseConfig::new(base_db_path.to_string_lossy());
-        let mut local_config = DatabaseConfig::new(local_db_path.to_string_lossy());
+        let mut local_config = DatabaseConfig::new(local_copy_path.to_string_lossy());
         let mut hub_config = DatabaseConfig::new(hub_db_path.to_string_lossy());
         if let Some(ref key) = encryption_key {
             ancestor_config = ancestor_config.with_key(key);
@@ -812,21 +876,29 @@ impl HubClient {
             !diff3_report.a_only_tables.is_empty() || !diff3_report.b_only_tables.is_empty();
 
         if total_changes == 0 && !has_new_tables {
-            return Ok(PushOutcome::NoChanges);
+            // Logically identical to the hub even though the file bytes
+            // differ (DuckDB layout isn't deterministic). Adopt the hub's
+            // state as the new base so the watcher stops seeing a phantom
+            // divergence every poll.
+            let mut hub_cfg = HubConfig::load(&self.treeline_dir)?.unwrap();
+            hub_cfg.base_hash = Some(hub_bundle_hash);
+            hub_cfg.save(&self.treeline_dir)?;
+            save_base_snapshot_from_bundle(&self.treeline_dir, &hub_bundle)?;
+            return Ok(MergeAttempt::Done(PushOutcome::NoChanges));
         }
 
         if diff3_report.summary.total_conflicts > 0 {
             let conflicts = collect_conflicts(&diff3_report);
-            return Ok(PushOutcome::Conflict {
-                hub_hash,
+            return Ok(MergeAttempt::Done(PushOutcome::Conflict {
+                hub_hash: hub_bundle_hash,
                 conflicts,
-            });
+            }));
         }
 
-        // No conflicts — auto-merge against a copy of the base, push the result.
+        // No conflicts — auto-merge against a copy of the base.
         let merge_temp = tempfile::TempDir::new()?;
         let merge_db_path = merge_temp.path().join("merged.duckdb");
-        std::fs::copy(&base_db_path, &merge_db_path)?;
+        std::fs::copy(base_db_path, &merge_db_path)?;
 
         let mut merge_ancestor = DatabaseConfig::new(merge_db_path.to_string_lossy());
         if let Some(ref key) = encryption_key {
@@ -841,21 +913,36 @@ impl HubClient {
         )
         .map_err(|e| anyhow::anyhow!("Failed to merge: {}", e))?;
 
-        std::fs::copy(&merge_db_path, &local_db_path)?;
+        // Apply the merged DB to the live file under the DB lock, atomically
+        // — never a bare copy onto a file an open connection may be reading.
+        // If a local write landed while we were merging, don't clobber it;
+        // retry the merge against the new local state instead.
+        let merged_bytes = std::fs::read(&merge_db_path)?;
+        {
+            let _lock = acquire_db_lock(&self.treeline_dir)?;
+            if compute_file_hash(&local_db_path)? != local_hash_at_merge {
+                return Ok(MergeAttempt::LocalMoved);
+            }
+            atomic_write(&local_db_path, &merged_bytes)?;
+        }
 
         let merged_bundle = SyncBundle::create(&self.treeline_dir)?;
         let size = merged_bundle.len() as u64;
 
+        let push_url = build_push_url(&hub.url, Some(&hub_bundle_hash));
         let resp = self
             .http
-            .post(format!("{}/api/push", hub.url))
+            .post(&push_url)
             .header("Authorization", format!("Bearer {}", hub.access_token))
             .header("Content-Type", "application/octet-stream")
-            .body(merged_bundle)
+            .body(merged_bundle.clone())
             .timeout(Duration::from_secs(300))
             .send()
             .context("Failed to push merged database")?;
 
+        if resp.status() == reqwest::StatusCode::CONFLICT {
+            return Ok(MergeAttempt::HubMoved);
+        }
         if !resp.status().is_success() {
             let body = resp.text().unwrap_or_default();
             anyhow::bail!("Push after merge failed: {}", body);
@@ -863,17 +950,27 @@ impl HubClient {
 
         let body: serde_json::Value = resp.json().unwrap_or_default();
         let new_hash = body["hash"].as_str().map(|s| s.to_string());
-        let mut hub = HubConfig::load(&self.treeline_dir)?.unwrap();
-        hub.last_push = Some(chrono::Utc::now());
-        hub.base_hash = new_hash.clone();
-        hub.save(&self.treeline_dir)?;
-        save_base_snapshot(&self.treeline_dir)?;
+        let mut hub_cfg = HubConfig::load(&self.treeline_dir)?.unwrap();
+        hub_cfg.last_push = Some(chrono::Utc::now());
+        hub_cfg.base_hash = new_hash.clone();
+        hub_cfg.save(&self.treeline_dir)?;
+        save_base_snapshot_from_bundle(&self.treeline_dir, &merged_bundle)?;
 
-        Ok(PushOutcome::AutoMerged {
+        Ok(MergeAttempt::Done(PushOutcome::AutoMerged {
             bytes: size,
             hash: new_hash,
-        })
+        }))
     }
+}
+
+/// Outcome of a single `merge_and_push` attempt.
+enum MergeAttempt {
+    /// Terminal — surface this outcome to the caller.
+    Done(PushOutcome),
+    /// The hub accepted new writes while we merged (CAS push 409'd).
+    HubMoved,
+    /// The local DB changed while we merged (desktop write mid-merge).
+    LocalMoved,
 }
 
 fn build_push_url(base: &str, base_hash: Option<&str>) -> String {
@@ -930,11 +1027,15 @@ fn collect_conflicts(report: &diffy_duck::Diff3Report) -> Vec<ConflictDescriptio
     out
 }
 
-fn save_base_snapshot(treeline_dir: &Path) -> Result<()> {
-    let db_path = treeline_dir.join("treeline.duckdb");
-    let base_path = treeline_dir.join(".treeline.base.duckdb");
-    if db_path.exists() {
-        std::fs::copy(&db_path, &base_path).context("Failed to save base snapshot")?;
+/// Persist `.treeline.base.duckdb` from the exact DB bytes that were pushed
+/// or pulled. Snapshotting the live file instead would bake in any local
+/// write that landed during the upload — a write the hub never saw — and
+/// every future three-way merge would then read it as "hub deleted this"
+/// and delete it locally.
+fn save_base_snapshot_from_bundle(treeline_dir: &Path, bundle: &[u8]) -> Result<()> {
+    if let Some(db_bytes) = SyncBundle::db_entry_bytes(bundle)? {
+        let base_path = treeline_dir.join(".treeline.base.duckdb");
+        atomic_write(&base_path, &db_bytes).context("Failed to save base snapshot")?;
     }
     Ok(())
 }
@@ -987,6 +1088,25 @@ mod tests {
         let lock = WatchLock::acquire(dir.path()).expect("lock");
         assert!(lock_path.exists(), "hub.lock created on acquire");
         drop(lock);
+    }
+
+    #[test]
+    fn base_snapshot_comes_from_bundle_bytes_not_live_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("treeline.duckdb"), b"bundled-state").unwrap();
+        let bundle = SyncBundle::create(dir.path()).unwrap();
+
+        // A local write lands while the bundle is uploading — it must NOT
+        // end up in the base snapshot, since the hub never saw it.
+        std::fs::write(
+            dir.path().join("treeline.duckdb"),
+            b"local-write-during-upload",
+        )
+        .unwrap();
+
+        save_base_snapshot_from_bundle(dir.path(), &bundle).unwrap();
+        let base = std::fs::read(dir.path().join(".treeline.base.duckdb")).unwrap();
+        assert_eq!(base, b"bundled-state");
     }
 
     #[test]

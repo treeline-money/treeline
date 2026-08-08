@@ -929,3 +929,74 @@ fn test_extract_rejects_denylisted_paths() {
         "denylisted hub.json must not be written"
     );
 }
+
+// ============================================================================
+// Bundle validation + db_entry_bytes
+// ============================================================================
+
+#[test]
+fn test_accept_push_rejects_bundle_with_corrupt_database() {
+    // A well-formed zip whose treeline.duckdb is not a DuckDB file must be
+    // rejected before the hub backs up or swaps anything.
+    use std::io::Cursor;
+    use zip::write::SimpleFileOptions;
+    use zip::ZipWriter;
+
+    let mut buf = Vec::new();
+    {
+        let mut zip = ZipWriter::new(Cursor::new(&mut buf));
+        zip.start_file("treeline.duckdb", SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(b"garbage bytes that are definitely not a duckdb file")
+            .unwrap();
+        zip.finish().unwrap();
+    }
+
+    let hub_dir = TempDir::new().unwrap();
+    let hub_service = create_hub_service(&hub_dir);
+    let err = hub_service.accept_push(&buf, None).unwrap_err();
+    assert!(
+        err.to_string().contains("not a valid DuckDB file"),
+        "unexpected error: {err}"
+    );
+    assert!(
+        !hub_dir.path().join("treeline.duckdb").exists(),
+        "corrupt bundle must not be extracted"
+    );
+}
+
+#[test]
+fn test_accept_push_still_accepts_real_database_bundle() {
+    let source = TempDir::new().unwrap();
+    let _repo = create_test_repo(&source);
+    let bundle = SyncBundle::create(source.path()).unwrap();
+
+    let hub_dir = TempDir::new().unwrap();
+    let hub_service = create_hub_service(&hub_dir);
+    let outcome = hub_service.accept_push(&bundle, None).unwrap();
+    assert!(matches!(
+        outcome,
+        treeline_core::services::hub::PushOutcome::Accepted { .. }
+    ));
+}
+
+#[test]
+fn test_db_entry_bytes_matches_file_on_disk() {
+    let source = TempDir::new().unwrap();
+    let _repo = create_test_repo(&source);
+    let bundle = SyncBundle::create(source.path()).unwrap();
+
+    let entry = SyncBundle::db_entry_bytes(&bundle)
+        .unwrap()
+        .expect("bundle carries a database");
+    let on_disk = std::fs::read(source.path().join("treeline.duckdb")).unwrap();
+    assert_eq!(entry, on_disk, "entry bytes must equal the bundled file");
+}
+
+#[test]
+fn test_db_entry_bytes_none_when_bundle_has_no_database() {
+    let source = TempDir::new().unwrap();
+    std::fs::write(source.path().join("settings.json"), "{}").unwrap();
+    let bundle = SyncBundle::create(source.path()).unwrap();
+    assert!(SyncBundle::db_entry_bytes(&bundle).unwrap().is_none());
+}

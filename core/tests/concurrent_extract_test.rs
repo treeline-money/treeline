@@ -106,3 +106,45 @@ fn extract_with_no_contention_is_fast() {
         elapsed
     );
 }
+
+#[test]
+fn create_blocks_while_db_lock_is_held_then_completes_when_released() {
+    // SyncBundle::create must not read treeline.duckdb while a DuckDB op
+    // holds the lock exclusively — a mid-checkpoint read would produce a
+    // torn database inside the bundle, which then gets pushed to the hub.
+    let source = TempDir::new().unwrap();
+    let db_path = source.path().join("treeline.duckdb");
+    let repo = DuckDbRepository::new(&db_path, None).expect("repo");
+    repo.ensure_schema().expect("schema");
+    repo.checkpoint().expect("checkpoint");
+    drop(repo);
+
+    let lock_path = source.path().join("treeline.duckdb.lock");
+    let held_lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .unwrap();
+    FileExt::lock_exclusive(&held_lock).unwrap();
+
+    let source_path = source.path().to_path_buf();
+    let create_handle = std::thread::spawn(move || {
+        let started = Instant::now();
+        let bundle = SyncBundle::create(&source_path).expect("create");
+        (started.elapsed(), bundle)
+    });
+
+    std::thread::sleep(Duration::from_millis(250));
+    FileExt::unlock(&held_lock).unwrap();
+    drop(held_lock);
+
+    let (elapsed, bundle) = create_handle.join().unwrap();
+    assert!(
+        elapsed >= Duration::from_millis(200),
+        "create did not block on the DB lock; it completed in {:?}",
+        elapsed
+    );
+    assert!(!bundle.is_empty());
+}
