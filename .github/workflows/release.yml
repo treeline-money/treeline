@@ -107,8 +107,18 @@ jobs:
           RUN_ID="${{ steps.get-run.outputs.run_id }}"
           COMMIT_SHA=$(gh run view "$RUN_ID" --json headSha --jq '.headSha')
 
-          echo "Creating tag $VERSION at commit $COMMIT_SHA"
-          git tag "$VERSION" "$COMMIT_SHA"
+          # A prior failed run may have left the tag behind. Reuse it when it
+          # points at the same commit; anything else is a real error.
+          if EXISTING=$(git rev-parse -q --verify "refs/tags/$VERSION^{commit}"); then
+            if [ "$EXISTING" != "$COMMIT_SHA" ]; then
+              echo "Tag $VERSION already exists at $EXISTING, expected $COMMIT_SHA" >&2
+              exit 1
+            fi
+            echo "Tag $VERSION already exists at $COMMIT_SHA — reusing"
+          else
+            echo "Creating tag $VERSION at commit $COMMIT_SHA"
+            git tag "$VERSION" "$COMMIT_SHA"
+          fi
           git push origin "$VERSION"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
