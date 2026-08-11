@@ -278,3 +278,70 @@ export type HubPushNowResult =
 export async function pushToHubNow(): Promise<HubPushNowResult> {
   return invoke<HubPushNowResult>("push_to_hub_now");
 }
+
+// ============================================================================
+// Conflict inspection & resolution
+// ============================================================================
+
+export interface ColumnConflict {
+  column: string;
+  base: unknown;
+  local: unknown;
+  hub: unknown;
+}
+
+export type RowConflict =
+  | { kind: "modified"; key: Record<string, unknown>; columns: ColumnConflict[] }
+  | {
+      kind: "both_added";
+      local_row: Record<string, unknown>;
+      hub_row: Record<string, unknown>;
+    }
+  | {
+      kind: "delete_vs_modify";
+      deleted_row: Record<string, unknown>;
+      modified_row: Record<string, unknown>;
+    };
+
+export interface TableConflicts {
+  table: string;
+  conflicts: RowConflict[];
+}
+
+export interface ConflictReport {
+  hub_hash: string;
+  /** Rows changed only on one side — these merge cleanly either way. */
+  local_only_changes: number;
+  hub_only_changes: number;
+  total_conflicts: number;
+  tables: TableConflicts[];
+}
+
+/** Row/column-level conflict detail. Read-only; takes a few seconds (it
+ *  downloads the hub bundle and diffs it). */
+export async function getHubConflicts(): Promise<ConflictReport> {
+  return invoke<ConflictReport>("get_hub_conflicts");
+}
+
+export type HubResolveResult =
+  | { status: "resolved"; bytes: number }
+  | { status: "no_changes" }
+  | { status: "no_base_snapshot" };
+
+/** Resolve conflicts by choosing which side wins conflicting values. The
+ *  losing side's non-conflicting changes still merge in. Stops the watcher
+ *  for the duration and restarts it after (the watcher thread can hold its
+ *  lock for a moment after stop, hence the start retry loop). */
+export async function resolveHubConflicts(keep: "local" | "hub"): Promise<HubResolveResult> {
+  const wasRunning = await hubWatch.stop();
+  try {
+    return await invoke<HubResolveResult>("resolve_hub_conflicts", { keep });
+  } finally {
+    if (wasRunning) {
+      for (let i = 0; i < 20; i++) {
+        if (await hubWatch.start()) break;
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+    }
+  }
+}

@@ -3,6 +3,7 @@
   import type { StatusBarItem } from "../sdk";
   import StatusBarActivity from "./StatusBarActivity.svelte";
   import HubWatchStatus from "./HubWatchStatus.svelte";
+  import HubConflictModal from "./HubConflictModal.svelte";
 
   let statusBarItems = $state<StatusBarItem[]>(registry.statusBarItems);
   let currentTheme = $state(themeManager.current);
@@ -35,6 +36,8 @@
     const nextIndex = (currentIndex + 1) % themeIds.length;
     themeManager.setTheme(themeIds[nextIndex]);
   }
+
+  let conflictModalOpen = $state(false);
 </script>
 
 <footer class="statusbar">
@@ -46,7 +49,7 @@
   </div>
 
   <div class="statusbar-right">
-    <HubWatchStatus />
+    <HubWatchStatus onConflictClick={() => (conflictModalOpen = true)} />
     {#each rightItems as item (item.id)}
       <item.component />
     {/each}
@@ -58,6 +61,8 @@
     </button>
   </div>
 </footer>
+
+<HubConflictModal isOpen={conflictModalOpen} onClose={() => (conflictModalOpen = false)} />
 
 <style>
   .statusbar {

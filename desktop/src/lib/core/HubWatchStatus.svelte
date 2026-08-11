@@ -1,6 +1,13 @@
 <script lang="ts">
   import { hubWatch, featureFlags, FEATURE_HUB } from "../sdk";
 
+  interface Props {
+    /** When set, the pill becomes clickable in the conflict state and this
+     *  fires — the status bar opens the resolution modal. */
+    onConflictClick?: () => void;
+  }
+  let { onConflictClick }: Props = $props();
+
   // Tick every 15s so "Up to date · 30s ago" stays current.
   let now = $state(Date.now());
   $effect(() => {
@@ -60,15 +67,29 @@
 </script>
 
 {#if label}
-  <span class="statusbar-item hub-watch hub-watch-{label.className}" {title}>
-    <span class="item-icon">{label.icon}</span>
-    <span class="item-text">{label.text}</span>
-  </span>
+  {#if hubWatch.status === "conflict" && onConflictClick}
+    <button
+      class="statusbar-item hub-watch hub-watch-{label.className} hub-watch-clickable"
+      title="Click to review and resolve"
+      onclick={onConflictClick}
+    >
+      <span class="item-icon">{label.icon}</span>
+      <span class="item-text">{label.text} — click to resolve</span>
+    </button>
+  {:else}
+    <span class="statusbar-item hub-watch hub-watch-{label.className}" {title}>
+      <span class="item-icon">{label.icon}</span>
+      <span class="item-text">{label.text}</span>
+    </span>
+  {/if}
 {/if}
 
 <style>
   .hub-watch {
     cursor: default;
+  }
+  .hub-watch-clickable {
+    cursor: pointer;
   }
   .hub-watch-busy .item-icon {
     animation: spin 1s linear infinite;

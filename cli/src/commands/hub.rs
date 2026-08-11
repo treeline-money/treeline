@@ -12,8 +12,8 @@ use std::time::Duration;
 
 use treeline_core::config::HubConfig;
 use treeline_core::services::hub_client::{
-    ConflictDescription, ConflictKind, DeviceCodeLink, DeviceCodeLinkOutcome, PullOutcome,
-    PushOutcome, WatchEvent, WatchObserver, WatchOptions,
+    ConflictDescription, ConflictKind, ConflictResolution, DeviceCodeLink, DeviceCodeLinkOutcome,
+    PullOutcome, PushOutcome, RowConflict, WatchEvent, WatchObserver, WatchOptions,
 };
 use treeline_core::services::HubClient;
 
@@ -64,6 +64,26 @@ pub enum HubCommands {
         json: bool,
     },
 
+    /// Show row-level detail of sync conflicts with the hub
+    Conflicts {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Resolve sync conflicts by choosing which side wins.
+    ///
+    /// The losing side only loses the conflicting values — its
+    /// non-conflicting changes still merge into the result.
+    Resolve {
+        /// Which side wins conflicting values
+        #[arg(value_parser = ["local", "hub"])]
+        side: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Watch for local changes and push/pull automatically
     Watch {
         /// Seconds to wait after last change before pushing (default: 5)
@@ -107,6 +127,8 @@ pub fn run(command: HubCommands) -> Result<()> {
         HubCommands::Push { json, force } => run_push(json, force),
         HubCommands::Pull { json } => run_pull(json),
         HubCommands::Status { json } => run_status(json),
+        HubCommands::Conflicts { json } => run_conflicts(json),
+        HubCommands::Resolve { side, json } => run_resolve(&side, json),
         HubCommands::Watch { debounce, poll } => run_watch(debounce, poll),
         HubCommands::Tokens { command } => run_tokens(command),
     }
@@ -255,6 +277,131 @@ fn run_unlink() -> Result<()> {
     Ok(())
 }
 
+fn run_conflicts(json: bool) -> Result<()> {
+    let ctx = get_context()?;
+    let client = HubClient::new(get_treeline_dir());
+
+    if !json {
+        eprintln!("Comparing local and hub state...");
+    }
+    let report = client.conflict_report(&ctx)?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+
+    if report.total_conflicts == 0 {
+        eprintln!(
+            "{} No conflicts — local and hub changes merge cleanly.",
+            "✓".green()
+        );
+        return Ok(());
+    }
+
+    eprintln!(
+        "{} {} conflict(s) vs hub {}",
+        "Conflict:".red().bold(),
+        report.total_conflicts,
+        &report.hub_hash[..report.hub_hash.len().min(12)]
+    );
+    eprintln!(
+        "Non-conflicting changes merge cleanly either way: {} local-only, {} hub-only.",
+        report.local_only_changes, report.hub_only_changes
+    );
+
+    for table in &report.tables {
+        eprintln!();
+        eprintln!("{}", table.table.bold());
+        for conflict in &table.conflicts {
+            match conflict {
+                RowConflict::Modified { key, columns } => {
+                    eprintln!("  row {}", key);
+                    for col in columns {
+                        eprintln!(
+                            "    {}: local {} | hub {} (was {})",
+                            col.column.cyan(),
+                            col.local,
+                            col.hub,
+                            col.base
+                        );
+                    }
+                }
+                RowConflict::BothAdded { local_row, hub_row } => {
+                    eprintln!("  both added: local {} | hub {}", local_row, hub_row);
+                }
+                RowConflict::DeleteVsModify {
+                    deleted_row,
+                    modified_row,
+                } => {
+                    eprintln!(
+                        "  deleted on one side {} | modified on the other {}",
+                        deleted_row, modified_row
+                    );
+                }
+            }
+        }
+    }
+
+    eprintln!();
+    eprintln!("Resolve with:");
+    eprintln!("  tl hub resolve local   (conflicting values take this device's version)");
+    eprintln!("  tl hub resolve hub     (conflicting values take the hub's version)");
+    Ok(())
+}
+
+fn run_resolve(side: &str, json: bool) -> Result<()> {
+    let resolution = match side {
+        "local" => ConflictResolution::KeepLocal,
+        _ => ConflictResolution::KeepHub,
+    };
+    let ctx = get_context()?;
+    let client = HubClient::new(get_treeline_dir());
+
+    if !json {
+        eprintln!("Merging with conflicting values from {}...", side);
+    }
+    let outcome = client.resolve_conflicts(&ctx, resolution)?;
+
+    match outcome {
+        PushOutcome::AutoMerged { bytes, hash } | PushOutcome::Pushed { bytes, hash } => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "status": "resolved",
+                        "bytes_uploaded": bytes,
+                        "hash": hash,
+                    }))?
+                );
+            } else {
+                eprintln!(
+                    "{} Resolved — merged and pushed {} (conflicting values from {})",
+                    "✓".green(),
+                    format_bytes(bytes),
+                    side
+                );
+            }
+        }
+        PushOutcome::NoChanges => {
+            if json {
+                println!("{}", serde_json::json!({ "status": "no_changes" }));
+            } else {
+                eprintln!("{} Nothing to resolve — already in sync.", "✓".green());
+            }
+        }
+        PushOutcome::NoBaseSnapshot { .. } => {
+            anyhow::bail!(
+                "No base snapshot — cannot merge. Resolve via 'tl hub push --force' or 'tl hub pull'."
+            );
+        }
+        PushOutcome::Conflict { .. } => {
+            anyhow::bail!("Unexpected conflict outcome while resolving — please retry.");
+        }
+    }
+    Ok(())
+}
+
 fn run_push(json: bool, force: bool) -> Result<()> {
     let treeline_dir = get_treeline_dir();
     let ctx = get_context()?;
@@ -324,9 +471,9 @@ fn run_push(json: bool, force: bool) -> Result<()> {
             } else {
                 print_conflicts(&conflicts);
                 eprintln!();
-                eprintln!("Resolve by choosing one version:");
-                eprintln!("  tl hub push --force   (overwrite hub with your local version)");
-                eprintln!("  tl hub pull           (overwrite local with hub's version)");
+                eprintln!("Inspect with 'tl hub conflicts', then resolve:");
+                eprintln!("  tl hub resolve local   (conflicting values take this device's version)");
+                eprintln!("  tl hub resolve hub     (conflicting values take the hub's version)");
             }
         }
         PushOutcome::NoBaseSnapshot { hub_hash } => {
@@ -554,7 +701,7 @@ impl WatchObserver for StderrWatchObserver {
                 conflicts,
             } => {
                 eprintln!(
-                    "[watch] {} {} conflicts vs hub hash {}. Resolve via 'tl hub push --force' or 'tl hub pull'.",
+                    "[watch] {} {} conflicts vs hub hash {}. Inspect with 'tl hub conflicts', resolve with 'tl hub resolve local|hub'.",
                     "Conflict:".red().bold(),
                     conflicts,
                     &hub_hash[..hub_hash.len().min(12)]

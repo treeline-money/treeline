@@ -159,12 +159,19 @@ export {
   unlinkHub,
   getHubLinkStatus,
   pushToHubNow,
+  getHubConflicts,
+  resolveHubConflicts,
 } from "./hub.svelte";
 export type {
   HubLinkInfo,
   HubLinkPollResult,
   HubLinkStatus,
   HubPushNowResult,
+  ConflictReport,
+  TableConflicts,
+  RowConflict,
+  ColumnConflict,
+  HubResolveResult,
 } from "./hub.svelte";
 
 // Platform utilities

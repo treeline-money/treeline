@@ -2595,6 +2595,88 @@ fn push_to_hub_now(
     }
 }
 
+/// Row/column-level conflict detail for the resolution modal. Read-only —
+/// downloads the hub bundle and diffs it against base + local.
+#[tauri::command]
+fn get_hub_conflicts(
+    encryption_state: State<EncryptionState>,
+) -> Result<treeline_core::services::hub_client::ConflictReport, String> {
+    use treeline_core::services::HubClient;
+
+    let treeline_dir = get_treeline_dir()?;
+    if !treeline_dir.join("hub.json").exists() {
+        return Err("Not linked to a hub.".to_string());
+    }
+
+    let encryption_key = encryption_state
+        .key
+        .lock()
+        .map_err(|_| "Failed to lock encryption state".to_string())?
+        .clone();
+
+    let ctx = TreelineContext::new(&treeline_dir, encryption_key.as_deref())
+        .map_err(|e| format!("Failed to build context: {}", e))?;
+
+    let client = HubClient::new(treeline_dir);
+    client.conflict_report(&ctx).map_err(|e| e.to_string())
+}
+
+#[derive(serde::Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum HubResolveResult {
+    Resolved { bytes: u64 },
+    NoChanges,
+    NoBaseSnapshot,
+}
+
+/// Resolve sync conflicts by choosing which side wins conflicting values
+/// (`keep` = "local" | "hub"). Non-conflicting changes from both sides are
+/// preserved. The frontend stops the watcher before calling this and
+/// restarts it after; the merge is CAS'd against the hub either way.
+#[tauri::command]
+fn resolve_hub_conflicts(
+    encryption_state: State<EncryptionState>,
+    keep: String,
+) -> Result<HubResolveResult, String> {
+    use treeline_core::services::HubClient;
+    use treeline_core::services::hub_client::{ConflictResolution, PushOutcome};
+
+    let resolution = match keep.as_str() {
+        "local" => ConflictResolution::KeepLocal,
+        "hub" => ConflictResolution::KeepHub,
+        other => return Err(format!("Unknown resolution '{}'", other)),
+    };
+
+    let treeline_dir = get_treeline_dir()?;
+    if !treeline_dir.join("hub.json").exists() {
+        return Err("Not linked to a hub.".to_string());
+    }
+
+    let encryption_key = encryption_state
+        .key
+        .lock()
+        .map_err(|_| "Failed to lock encryption state".to_string())?
+        .clone();
+
+    let ctx = TreelineContext::new(&treeline_dir, encryption_key.as_deref())
+        .map_err(|e| format!("Failed to build context: {}", e))?;
+
+    let client = HubClient::new(treeline_dir);
+    match client
+        .resolve_conflicts(&ctx, resolution)
+        .map_err(|e| e.to_string())?
+    {
+        PushOutcome::Pushed { bytes, .. } | PushOutcome::AutoMerged { bytes, .. } => {
+            Ok(HubResolveResult::Resolved { bytes })
+        }
+        PushOutcome::NoChanges => Ok(HubResolveResult::NoChanges),
+        PushOutcome::NoBaseSnapshot { .. } => Ok(HubResolveResult::NoBaseSnapshot),
+        PushOutcome::Conflict { .. } => {
+            Err("Unexpected conflict outcome while resolving — please retry.".to_string())
+        }
+    }
+}
+
 /// Read the current hub link status from `hub.json`. Returns `None` when not
 /// linked.
 #[derive(serde::Serialize)]
@@ -3771,7 +3853,9 @@ pub fn run() {
             cancel_hub_link,
             unlink_hub,
             get_hub_link_status,
-            push_to_hub_now
+            push_to_hub_now,
+            get_hub_conflicts,
+            resolve_hub_conflicts
         ]);
 
         // WebDriver plugin for e2e testing (only included with --features e2e-testing)

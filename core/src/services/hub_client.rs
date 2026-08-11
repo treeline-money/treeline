@@ -83,6 +83,69 @@ pub enum ConflictKind {
     DeletedVsModified,
 }
 
+/// The user's choice for resolving a sync conflict. Either way the losing
+/// side only loses the *conflicting* values — its non-conflicting changes
+/// still merge into the result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConflictResolution {
+    /// Conflicting values take this device's version.
+    KeepLocal,
+    /// Conflicting values take the hub's version.
+    KeepHub,
+}
+
+/// Row/column-level detail of a sync conflict, for resolution UIs (desktop
+/// modal, `tl hub conflicts`). Values are the raw cell values as JSON.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConflictReport {
+    /// Hash of the hub DB this report was computed against.
+    pub hub_hash: String,
+    /// Rows changed only locally — merge cleanly whichever way conflicts go.
+    pub local_only_changes: usize,
+    /// Rows changed only on the hub — likewise merge cleanly.
+    pub hub_only_changes: usize,
+    pub total_conflicts: usize,
+    pub tables: Vec<TableConflicts>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TableConflicts {
+    /// Table name, schema-qualified unless it's `main`.
+    pub table: String,
+    pub conflicts: Vec<RowConflict>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RowConflict {
+    /// Both sides changed the same row; only conflicting columns are listed.
+    Modified {
+        /// Primary-key columns and values identifying the row.
+        key: serde_json::Value,
+        columns: Vec<ColumnConflict>,
+    },
+    /// Both sides added a row with the same key but different values.
+    BothAdded {
+        local_row: serde_json::Value,
+        hub_row: serde_json::Value,
+    },
+    /// One side deleted the row while the other modified it. The diff does
+    /// not record which side deleted, so this is presented neutrally.
+    DeleteVsModify {
+        deleted_row: serde_json::Value,
+        modified_row: serde_json::Value,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ColumnConflict {
+    pub column: String,
+    pub base: serde_json::Value,
+    pub local: serde_json::Value,
+    pub hub: serde_json::Value,
+}
+
 /// Tunables for the watch loop.
 #[derive(Debug, Clone)]
 pub struct WatchOptions {
@@ -827,6 +890,64 @@ impl HubClient {
         hub: &mut HubConfig,
         hub_hash: String,
     ) -> Result<PushOutcome> {
+        self.merge_with_retry(ctx, hub, hub_hash, Merge3Strategy::FailOnConflict)
+    }
+
+    /// Resolve an outstanding conflict by choosing which side wins the
+    /// conflicting values. Runs the same CAS'd merge as the watcher, but
+    /// with `AcceptA`/`AcceptB` instead of `FailOnConflict` — so both
+    /// sides' non-conflicting changes are preserved and only the truly
+    /// conflicting values take the chosen side.
+    pub fn resolve_conflicts(
+        &self,
+        ctx: &TreelineContext,
+        resolution: ConflictResolution,
+    ) -> Result<PushOutcome> {
+        let mut hub = HubConfig::load(&self.treeline_dir)?
+            .ok_or_else(|| anyhow::anyhow!("Not linked to a hub. Run 'tl hub link' first."))?;
+
+        // Diff order is diff3(base, local, hub): A = local, B = hub.
+        let strategy = match resolution {
+            ConflictResolution::KeepLocal => Merge3Strategy::AcceptA,
+            ConflictResolution::KeepHub => Merge3Strategy::AcceptB,
+        };
+
+        // Same pre-flight as push(): ship the smallest, most-consistent file.
+        ctx.compact_service.compact()?;
+        ctx.repository.checkpoint()?;
+
+        let hub_hash = self.poll_hub_hash()?.unwrap_or_default();
+        self.merge_with_retry(ctx, &mut hub, hub_hash, strategy)
+    }
+
+    /// Compute the row/column-level conflict detail between local and hub
+    /// state, for display before resolving. Read-only — touches nothing.
+    pub fn conflict_report(&self, ctx: &TreelineContext) -> Result<ConflictReport> {
+        let mut hub = HubConfig::load(&self.treeline_dir)?
+            .ok_or_else(|| anyhow::anyhow!("Not linked to a hub. Run 'tl hub link' first."))?;
+
+        let base_db_path = self.treeline_dir.join(".treeline.base.duckdb");
+        if !base_db_path.exists() {
+            anyhow::bail!(
+                "No base snapshot — cannot compute conflict details. \
+                 Resolve via 'tl hub push --force' or 'tl hub pull'."
+            );
+        }
+
+        let hub_snap = self.download_hub_snapshot(&mut hub)?;
+        let local_snap = self.snapshot_local_db()?;
+        let report =
+            self.diff_against_hub(ctx, &base_db_path, &local_snap.db_path, &hub_snap.db_path)?;
+        Ok(build_conflict_report(&report, hub_snap.db_hash))
+    }
+
+    fn merge_with_retry(
+        &self,
+        ctx: &TreelineContext,
+        hub: &mut HubConfig,
+        hub_hash: String,
+        strategy: Merge3Strategy,
+    ) -> Result<PushOutcome> {
         let base_db_path = self.treeline_dir.join(".treeline.base.duckdb");
         if !base_db_path.exists() {
             return Ok(PushOutcome::NoBaseSnapshot { hub_hash });
@@ -838,7 +959,7 @@ impl HubClient {
                 // go quiet before downloading and merging again.
                 std::thread::sleep(Duration::from_secs(1 << attempt.min(3)));
             }
-            match self.merge_and_push(ctx, hub, &base_db_path)? {
+            match self.merge_and_push(ctx, hub, &base_db_path, &strategy)? {
                 MergeAttempt::Done(outcome) => return Ok(outcome),
                 MergeAttempt::HubMoved | MergeAttempt::LocalMoved => {}
             }
@@ -858,60 +979,17 @@ impl HubClient {
         ctx: &TreelineContext,
         hub: &mut HubConfig,
         base_db_path: &Path,
+        strategy: &Merge3Strategy,
     ) -> Result<MergeAttempt> {
-        // Download the hub's current bundle into a temp dir. The CAS base
-        // for the merged push is the hash of the *downloaded* DB bytes, not
-        // the hash from the 409 — the hub may have moved again in between.
-        let pull_resp = self
-            .http
-            .get(format!("{}/api/pull", hub.url))
-            .header("Authorization", format!("Bearer {}", hub.access_token))
-            .timeout(Duration::from_secs(300))
-            .send()
-            .context("Failed to download hub bundle for merge")?;
+        // The CAS base for the merged push is the hash of the *downloaded*
+        // DB bytes, not the hash from the 409 — the hub may have moved
+        // again in between.
+        let hub_snap = self.download_hub_snapshot(hub)?;
+        let local_snap = self.snapshot_local_db()?;
+        let local_hash_at_merge = local_snap.hash.clone();
 
-        if !pull_resp.status().is_success() {
-            anyhow::bail!("Failed to download hub bundle: {}", pull_resp.status());
-        }
-        let hub_bundle = pull_resp.bytes()?;
-        let hub_db_bytes = SyncBundle::db_entry_bytes(&hub_bundle)?
-            .ok_or_else(|| anyhow::anyhow!("Hub bundle does not contain a database"))?;
-        let hub_bundle_hash = compute_bytes_hash(&hub_db_bytes);
-
-        let hub_temp = tempfile::TempDir::new().context("Failed to create temp dir")?;
-        SyncBundle::extract(&hub_bundle, hub_temp.path())?;
-        let hub_db_path = hub_temp.path().join("treeline.duckdb");
-
-        // Diff against a stable copy of the live DB, snapshotted under the
-        // DB lock — diffy-duck would otherwise read a file that desktop
-        // connections are actively writing.
-        let local_db_path = self.treeline_dir.join("treeline.duckdb");
-        let local_temp = tempfile::TempDir::new()?;
-        let local_copy_path = local_temp.path().join("local.duckdb");
-        let local_hash_at_merge = {
-            let _lock = acquire_db_lock(&self.treeline_dir)?;
-            std::fs::copy(&local_db_path, &local_copy_path)?;
-            compute_file_hash(&local_copy_path)?
-        };
-
-        let encryption_key = ctx.repository.encryption_key().map(|s| s.to_string());
-
-        let mut ancestor_config = DatabaseConfig::new(base_db_path.to_string_lossy());
-        let mut local_config = DatabaseConfig::new(local_copy_path.to_string_lossy());
-        let mut hub_config = DatabaseConfig::new(hub_db_path.to_string_lossy());
-        if let Some(ref key) = encryption_key {
-            ancestor_config = ancestor_config.with_key(key);
-            local_config = local_config.with_key(key);
-            hub_config = hub_config.with_key(key);
-        }
-
-        let diff3_report = diffy_duck::diff3(
-            &ancestor_config,
-            &local_config,
-            &hub_config,
-            &DiffOptions::default(),
-        )
-        .map_err(|e| anyhow::anyhow!("Failed to diff databases: {}", e))?;
+        let diff3_report =
+            self.diff_against_hub(ctx, base_db_path, &local_snap.db_path, &hub_snap.db_path)?;
 
         let total_changes =
             diff3_report.summary.total_non_conflicting + diff3_report.summary.total_conflicts;
@@ -924,42 +1002,47 @@ impl HubClient {
             // state as the new base so the watcher stops seeing a phantom
             // divergence every poll.
             let mut hub_cfg = HubConfig::load(&self.treeline_dir)?.unwrap();
-            hub_cfg.base_hash = Some(hub_bundle_hash);
+            hub_cfg.base_hash = Some(hub_snap.db_hash);
             hub_cfg.save(&self.treeline_dir)?;
-            save_base_snapshot_from_bundle(&self.treeline_dir, &hub_bundle)?;
+            save_base_snapshot_from_bundle(&self.treeline_dir, &hub_snap.bundle)?;
             return Ok(MergeAttempt::Done(PushOutcome::NoChanges));
         }
 
-        if diff3_report.summary.total_conflicts > 0 {
+        if matches!(strategy, Merge3Strategy::FailOnConflict)
+            && diff3_report.summary.total_conflicts > 0
+        {
             let conflicts = collect_conflicts(&diff3_report);
             return Ok(MergeAttempt::Done(PushOutcome::Conflict {
-                hub_hash: hub_bundle_hash,
+                hub_hash: hub_snap.db_hash,
                 conflicts,
             }));
         }
 
-        // No conflicts — auto-merge against a copy of the base.
+        // Merge against a copy of the base. With AcceptA/AcceptB, conflicts
+        // take the chosen side; non-conflicting changes merge from both.
+        let encryption_key = ctx.repository.encryption_key().map(|s| s.to_string());
         let merge_temp = tempfile::TempDir::new()?;
         let merge_db_path = merge_temp.path().join("merged.duckdb");
         std::fs::copy(base_db_path, &merge_db_path)?;
 
         let mut merge_ancestor = DatabaseConfig::new(merge_db_path.to_string_lossy());
+        let mut local_config = DatabaseConfig::new(local_snap.db_path.to_string_lossy());
+        let mut hub_config = DatabaseConfig::new(hub_snap.db_path.to_string_lossy());
         if let Some(ref key) = encryption_key {
             merge_ancestor = merge_ancestor.with_key(key);
+            local_config = local_config.with_key(key);
+            hub_config = hub_config.with_key(key);
         }
 
-        diffy_duck::merge3(
-            &merge_ancestor,
-            &local_config,
-            &hub_config,
-            &Merge3Strategy::FailOnConflict,
-        )
-        .map_err(|e| anyhow::anyhow!("Failed to merge: {}", e))?;
+        diffy_duck::merge3(&merge_ancestor, &local_config, &hub_config, strategy)
+            .map_err(|e| anyhow::anyhow!("Failed to merge: {}", e))?;
+        let hub_bundle_hash = hub_snap.db_hash;
 
         // Apply the merged DB to the live file under the DB lock, atomically
         // — never a bare copy onto a file an open connection may be reading.
         // If a local write landed while we were merging, don't clobber it;
         // retry the merge against the new local state instead.
+        let local_db_path = self.treeline_dir.join("treeline.duckdb");
         let merged_bytes = std::fs::read(&merge_db_path)?;
         {
             let _lock = acquire_db_lock(&self.treeline_dir)?;
@@ -1003,6 +1086,195 @@ impl HubClient {
             bytes: size,
             hash: new_hash,
         }))
+    }
+}
+
+impl HubClient {
+    /// Download the hub's current bundle, extract it to a temp dir, and
+    /// compute the hash of its DB bytes. Refreshes the access token on 401.
+    fn download_hub_snapshot(&self, hub: &mut HubConfig) -> Result<HubSnapshot> {
+        let pull_url = format!("{}/api/pull", hub.url);
+        let send = |access_token: &str| {
+            self.http
+                .get(&pull_url)
+                .header("Authorization", format!("Bearer {}", access_token))
+                .timeout(Duration::from_secs(300))
+                .send()
+        };
+
+        let mut resp = send(&hub.access_token).context("Failed to download hub bundle")?;
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+            self.refresh_access_token(hub)?;
+            resp = send(&hub.access_token).context("Failed to download hub bundle")?;
+        }
+        if !resp.status().is_success() {
+            anyhow::bail!("Failed to download hub bundle: {}", resp.status());
+        }
+
+        let bundle: Vec<u8> = resp.bytes()?.into();
+        let db_bytes = SyncBundle::db_entry_bytes(&bundle)?
+            .ok_or_else(|| anyhow::anyhow!("Hub bundle does not contain a database"))?;
+        let db_hash = compute_bytes_hash(&db_bytes);
+
+        let temp = tempfile::TempDir::new().context("Failed to create temp dir")?;
+        SyncBundle::extract(&bundle, temp.path())?;
+        let db_path = temp.path().join("treeline.duckdb");
+
+        Ok(HubSnapshot {
+            bundle,
+            db_hash,
+            db_path,
+            _temp: temp,
+        })
+    }
+
+    /// Copy the live DB to a temp file under the DB lock, so diffs read a
+    /// stable file rather than one desktop connections are writing to.
+    fn snapshot_local_db(&self) -> Result<LocalSnapshot> {
+        let local_db_path = self.treeline_dir.join("treeline.duckdb");
+        let temp = tempfile::TempDir::new()?;
+        let db_path = temp.path().join("local.duckdb");
+        let hash = {
+            let _lock = acquire_db_lock(&self.treeline_dir)?;
+            std::fs::copy(&local_db_path, &db_path)?;
+            compute_file_hash(&db_path)?
+        };
+        Ok(LocalSnapshot {
+            db_path,
+            hash,
+            _temp: temp,
+        })
+    }
+
+    /// Three-way diff: base (ancestor) vs local (A) vs hub (B).
+    fn diff_against_hub(
+        &self,
+        ctx: &TreelineContext,
+        base_db_path: &Path,
+        local_db_path: &Path,
+        hub_db_path: &Path,
+    ) -> Result<diffy_duck::Diff3Report> {
+        let encryption_key = ctx.repository.encryption_key().map(|s| s.to_string());
+
+        let mut ancestor_config = DatabaseConfig::new(base_db_path.to_string_lossy());
+        let mut local_config = DatabaseConfig::new(local_db_path.to_string_lossy());
+        let mut hub_config = DatabaseConfig::new(hub_db_path.to_string_lossy());
+        if let Some(ref key) = encryption_key {
+            ancestor_config = ancestor_config.with_key(key);
+            local_config = local_config.with_key(key);
+            hub_config = hub_config.with_key(key);
+        }
+
+        diffy_duck::diff3(
+            &ancestor_config,
+            &local_config,
+            &hub_config,
+            &DiffOptions::default(),
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to diff databases: {}", e))
+    }
+}
+
+/// The hub's state at a point in time: bundle bytes, its DB extracted to a
+/// temp dir, and the DB hash (the CAS base for a merged push).
+struct HubSnapshot {
+    bundle: Vec<u8>,
+    db_hash: String,
+    db_path: PathBuf,
+    _temp: tempfile::TempDir,
+}
+
+/// A stable copy of the live local DB, taken under the DB lock.
+struct LocalSnapshot {
+    db_path: PathBuf,
+    hash: String,
+    _temp: tempfile::TempDir,
+}
+
+/// Map a diffy-duck three-way report to the user-facing `ConflictReport`.
+/// In our diff order A = local, B = hub.
+fn build_conflict_report(report: &diffy_duck::Diff3Report, hub_hash: String) -> ConflictReport {
+    let to_value = |row: &diffy_duck::Row| serde_json::to_value(row).unwrap_or(serde_json::Value::Null);
+
+    let mut tables = Vec::new();
+    let mut local_only = 0usize;
+    let mut hub_only = 0usize;
+    let mut total_conflicts = 0usize;
+
+    for table_diff in &report.tables {
+        let s = &table_diff.summary;
+        local_only += s.added_a + s.removed_a + s.modified_a;
+        hub_only += s.added_b + s.removed_b + s.modified_b;
+
+        let mut conflicts = Vec::new();
+        for change in &table_diff.changes {
+            match change {
+                Diff3RowChange::Modified { key, column_changes } => {
+                    let columns: Vec<ColumnConflict> = column_changes
+                        .iter()
+                        .filter(|c| c.origin == Diff3ChangeOrigin::Conflict)
+                        .map(|c| ColumnConflict {
+                            column: c.column.clone(),
+                            base: c.ancestor_value.clone(),
+                            local: c.a_value.clone(),
+                            hub: c.b_value.clone(),
+                        })
+                        .collect();
+                    if !columns.is_empty() {
+                        conflicts.push(RowConflict::Modified {
+                            key: to_value(key),
+                            columns,
+                        });
+                    }
+                }
+                Diff3RowChange::Added {
+                    row,
+                    origin: Diff3ChangeOrigin::Conflict,
+                    other_row,
+                } => {
+                    conflicts.push(RowConflict::BothAdded {
+                        local_row: to_value(row),
+                        hub_row: other_row
+                            .as_ref()
+                            .map(&to_value)
+                            .unwrap_or(serde_json::Value::Null),
+                    });
+                }
+                Diff3RowChange::Removed {
+                    row,
+                    origin: Diff3ChangeOrigin::Conflict,
+                    modified_row,
+                } => {
+                    conflicts.push(RowConflict::DeleteVsModify {
+                        deleted_row: to_value(row),
+                        modified_row: modified_row
+                            .as_ref()
+                            .map(&to_value)
+                            .unwrap_or(serde_json::Value::Null),
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        if !conflicts.is_empty() {
+            total_conflicts += conflicts.len();
+            let t = &table_diff.table;
+            let table = if t.schema == "main" {
+                t.name.clone()
+            } else {
+                format!("{}.{}", t.schema, t.name)
+            };
+            tables.push(TableConflicts { table, conflicts });
+        }
+    }
+
+    ConflictReport {
+        hub_hash,
+        local_only_changes: local_only,
+        hub_only_changes: hub_only,
+        total_conflicts,
+        tables,
     }
 }
 
@@ -1131,6 +1403,110 @@ mod tests {
         let lock = WatchLock::acquire(dir.path()).expect("lock");
         assert!(lock_path.exists(), "hub.lock created on acquire");
         drop(lock);
+    }
+
+    #[test]
+    fn conflict_report_maps_row_and_column_detail() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let make_db = |name: &str, rows: &[(i32, &str)]| {
+            let path = dir.path().join(name);
+            let conn = duckdb::Connection::open(&path).unwrap();
+            conn.execute_batch("CREATE TABLE txns (id INTEGER PRIMARY KEY, tag TEXT)")
+                .unwrap();
+            for (id, tag) in rows {
+                conn.execute("INSERT INTO txns VALUES (?, ?)", duckdb::params![id, tag])
+                    .unwrap();
+            }
+            drop(conn);
+            path
+        };
+
+        // Base: rows 1, 2. Local: modifies 1, adds 3. Hub: modifies 1
+        // (differently), adds 4. Row 1 tag = genuine conflict.
+        let base = make_db("base.duckdb", &[(1, "a"), (2, "x")]);
+        let local = make_db("local.duckdb", &[(1, "local-tag"), (2, "x"), (3, "l")]);
+        let hub = make_db("hub.duckdb", &[(1, "hub-tag"), (2, "x"), (4, "h")]);
+
+        let report = diffy_duck::diff3(
+            &DatabaseConfig::new(base.to_string_lossy()),
+            &DatabaseConfig::new(local.to_string_lossy()),
+            &DatabaseConfig::new(hub.to_string_lossy()),
+            &DiffOptions::default(),
+        )
+        .unwrap();
+
+        let cr = build_conflict_report(&report, "hash123".into());
+        assert_eq!(cr.hub_hash, "hash123");
+        assert_eq!(cr.total_conflicts, 1);
+        assert_eq!(cr.local_only_changes, 1, "row 3 added locally");
+        assert_eq!(cr.hub_only_changes, 1, "row 4 added on hub");
+        assert_eq!(cr.tables.len(), 1);
+        assert_eq!(cr.tables[0].table, "txns");
+        match &cr.tables[0].conflicts[0] {
+            RowConflict::Modified { key, columns } => {
+                assert_eq!(key["id"], 1);
+                assert_eq!(columns.len(), 1);
+                assert_eq!(columns[0].column, "tag");
+                assert_eq!(columns[0].base, "a");
+                assert_eq!(columns[0].local, "local-tag");
+                assert_eq!(columns[0].hub, "hub-tag");
+            }
+            other => panic!("expected Modified conflict, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn side_resolution_keeps_losing_sides_non_conflicting_changes() {
+        // The resolution UI promises: the losing side only loses the
+        // conflicting values — its other changes still merge in. Verify
+        // that AcceptB (keep hub) preserves a local-only added row.
+        let dir = tempfile::TempDir::new().unwrap();
+        let make_db = |name: &str, rows: &[(i32, &str)]| {
+            let path = dir.path().join(name);
+            let conn = duckdb::Connection::open(&path).unwrap();
+            conn.execute_batch("CREATE TABLE txns (id INTEGER PRIMARY KEY, tag TEXT)")
+                .unwrap();
+            for (id, tag) in rows {
+                conn.execute("INSERT INTO txns VALUES (?, ?)", duckdb::params![id, tag])
+                    .unwrap();
+            }
+            drop(conn);
+            path
+        };
+
+        let base = make_db("base.duckdb", &[(1, "a"), (2, "x")]);
+        let local = make_db("local.duckdb", &[(1, "local-tag"), (2, "x"), (3, "l")]);
+        let hub = make_db("hub.duckdb", &[(1, "hub-tag"), (2, "x"), (4, "h")]);
+
+        // Merge into a copy of base, hub winning conflicts.
+        let merged = dir.path().join("merged.duckdb");
+        std::fs::copy(&base, &merged).unwrap();
+        diffy_duck::merge3(
+            &DatabaseConfig::new(merged.to_string_lossy()),
+            &DatabaseConfig::new(local.to_string_lossy()),
+            &DatabaseConfig::new(hub.to_string_lossy()),
+            &Merge3Strategy::AcceptB,
+        )
+        .unwrap();
+
+        let conn = duckdb::Connection::open(&merged).unwrap();
+        let rows: Vec<(i32, String)> = conn
+            .prepare("SELECT id, tag FROM txns ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+
+        assert_eq!(
+            rows,
+            vec![
+                (1, "hub-tag".to_string()), // conflict → hub wins
+                (2, "x".to_string()),       // untouched
+                (3, "l".to_string()),       // local-only add SURVIVES
+                (4, "h".to_string()),       // hub-only add merges
+            ]
+        );
     }
 
     #[test]
