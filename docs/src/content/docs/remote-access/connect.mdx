@@ -3,17 +3,19 @@ title: Connect & Manage
 description: Link devices to a Hub, connect AI agents over MCP, and handle tokens, updates, backups, and encryption.
 ---
 
-Your Hub is running at a URL — say `https://my-treeline-hub.fly.dev` (or `http://your-machine-ip:4242` on your network). Here's how to use and maintain it.
+Your Hub is running at a URL — say `https://your-hub-name.fly.dev` (or `http://your-machine-ip:4242` on your network). Here's how to use and maintain it.
 
 ## Link your devices
 
 On each device that has Treeline, point it at your Hub:
 
 ```sh
-tl hub link --url https://my-treeline-hub.fly.dev
+tl hub link --url https://your-hub-name.fly.dev
 ```
 
 The CLI prints a verification URL. Open it in a browser, **paste your master token** (the value of `TL_HUB_TOKEN`, or the one printed when you started the Hub) to authorize, and the CLI finishes automatically. Each device gets its own scoped token — nothing privileged is stored on the device.
+
+**From the desktop app:** Hub support is currently behind an experimental flag — enable **Hub** under Settings → Advanced → Experimental features, then go to Settings → Hub and click **Link a hub**. Enter your Hub's URL and the same browser authorization opens. Once linked, the app syncs automatically while it's running — no `watch` command needed — and shows sync state in the status bar, including conflicts with a **Review & resolve** flow.
 
 <img src="/hub-authorize-device.jpg" alt="Treeline's authorize page when linking a device, requesting Pull and Push permissions" width="420" />
 
@@ -39,7 +41,7 @@ Point any network-capable MCP client at your Hub's `/mcp` endpoint — your own 
 https://<your-hub-address>/mcp
 ```
 
-For example, a Fly Hub would be `https://my-treeline-hub.fly.dev/mcp` — substitute your real address. The Hub runs its own OAuth server, so the client walks you through authorizing on first use: you'll paste your master token to approve it. This is what lets Claude on your phone, ChatGPT, or any networked MCP agent reach your finances.
+For example, a Fly Hub would be `https://your-hub-name.fly.dev/mcp` — substitute your real address. The Hub runs its own OAuth server, so the client walks you through authorizing on first use: you'll paste your master token to approve it. This is what lets Claude on your phone, ChatGPT, or any networked MCP agent reach your finances.
 
 <img src="/hub-authorize-app.jpg" alt="Treeline's authorize page when connecting an AI agent, requesting Read and Write permissions" width="420" />
 
@@ -79,9 +81,9 @@ Revoking signs that device or agent out immediately — useful if you lose a dev
 Updating means pulling a newer image tag and redeploying:
 
 - **Track latest:** deploy `ghcr.io/treeline-money/treeline-hub:latest` and redeploy to pick up changes.
-- **Pin a version:** deploy a specific tag like `:26.5.2402` for a stable, reproducible Hub, and bump it deliberately.
+- **Pin a version:** deploy a specific tag like `:26.8.1203` for a stable, reproducible Hub, and bump it deliberately.
 
-On Fly: `fly deploy --image ghcr.io/treeline-money/treeline-hub:<tag> -a my-treeline-hub`. On other platforms, change the tag and redeploy. Your data is on the volume, so it survives the upgrade.
+On Fly: `fly deploy --image ghcr.io/treeline-money/treeline-hub:<tag> -a your-hub-name`. On other platforms, change the tag and redeploy. Your data is on the volume, so it survives the upgrade.
 
 ## Backups
 

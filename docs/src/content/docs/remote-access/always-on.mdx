@@ -9,7 +9,7 @@ For a Hub that's reachable even when your laptop is off, run it as a container o
 
 Whatever you run it on — a provider, a VPS, or your homelab — a Hub needs five things:
 
-1. **Run the image** `ghcr.io/treeline-money/treeline-hub` — track `:latest`, or pin a version like `:26.5.2402` for a reproducible deploy.
+1. **Run the image** `ghcr.io/treeline-money/treeline-hub` — track `:latest`, or pin a version like `:26.8.1203` for a reproducible deploy.
 2. **Expose port `4242`** (the port the Hub listens on).
 3. **Mount a persistent volume at `/root/.treeline`** — this holds your DuckDB database, the master token, and OAuth state.
 4. **Set `TL_HUB_TOKEN`** to a value you choose, so the master token is stable across redeploys. (Without it, one is generated into the volume and only shown in the logs.)
@@ -26,18 +26,18 @@ These map directly onto **Render**, **Railway**, a **Docker-capable VPS**, or an
 Fly gives you a free `*.fly.dev` HTTPS URL, a persistent volume, and scale-to-zero so an idle Hub costs almost nothing.
 
 1. Install [flyctl](https://fly.io/docs/flyctl/install/) and run `fly auth login`.
-2. Create the app, a volume, and your token secret (pick a nearby region with `fly platform regions`):
+2. Create the app, a volume, and your token secret. Fly app names are globally unique, so pick your own (`your-hub-name` below), and pick a nearby region with `fly platform regions`:
 
    ```sh
-   fly apps create my-treeline-hub
-   fly volumes create treeline_data --size 1 -r sjc -a my-treeline-hub
-   fly secrets set TL_HUB_TOKEN=<your-token> -a my-treeline-hub
+   fly apps create your-hub-name
+   fly volumes create treeline_data --size 1 -r sjc -a your-hub-name
+   fly secrets set TL_HUB_TOKEN=<your-token> -a your-hub-name
    ```
 
-3. Save this `fly.toml` (replace the app name):
+3. Save this `fly.toml` (with your app name):
 
    ```toml
-   app = "my-treeline-hub"
+   app = "your-hub-name"
    primary_region = "sjc"
 
    [[mounts]]
@@ -60,10 +60,10 @@ Fly gives you a free `*.fly.dev` HTTPS URL, a persistent volume, and scale-to-ze
 4. Deploy the published image:
 
    ```sh
-   fly deploy --image ghcr.io/treeline-money/treeline-hub:latest -a my-treeline-hub --ha=false
+   fly deploy --image ghcr.io/treeline-money/treeline-hub:latest -a your-hub-name --ha=false
    ```
 
-Your Hub is now at `https://my-treeline-hub.fly.dev`.
+Your Hub is now at `https://your-hub-name.fly.dev`.
 
 ## Your own hardware
 
