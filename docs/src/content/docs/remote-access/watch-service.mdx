@@ -1,0 +1,94 @@
+---
+title: Run Watch as a Service
+description: Keep a CLI-only device syncing by running tl hub watch in the background with launchd, systemd, or Task Scheduler.
+---
+
+`tl hub watch` pushes local changes to your Hub and pulls remote ones as they happen. In a terminal it runs until you close it — this page makes it survive reboots and closed terminals by running it as a background service.
+
+**If you use the desktop app on this machine, you don't need this.** The app syncs on its own while it's open. A watch service is for CLI-only devices: a headless box, a server, or a machine where you only use `tl`.
+
+The examples assume the default install location, `~/.treeline/bin/tl`, and a device that's already [linked](/remote-access/connect/). Watch checks the Hub every 15 seconds and debounces local writes for 5 (`--poll` and `--debounce` to change).
+
+## macOS (launchd)
+
+Save this as `~/Library/LaunchAgents/money.treeline.hub-watch.plist`, replacing `/Users/you` with your home directory — launchd doesn't expand `~`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>money.treeline.hub-watch</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/you/.treeline/bin/tl</string>
+    <string>hub</string>
+    <string>watch</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/you/.treeline/hub-watch.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/you/.treeline/hub-watch.log</string>
+</dict>
+</plist>
+```
+
+Then load it:
+
+```sh
+launchctl load ~/Library/LaunchAgents/money.treeline.hub-watch.plist
+```
+
+It starts now and on every login. To stop it: `launchctl unload` the same path. Activity lands in `~/.treeline/hub-watch.log`.
+
+## Linux (systemd user unit)
+
+Save this as `~/.config/systemd/user/treeline-hub-watch.service`:
+
+```ini
+[Unit]
+Description=Treeline hub watch
+After=network-online.target
+
+[Service]
+ExecStart=%h/.treeline/bin/tl hub watch
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+```
+
+Enable and start it:
+
+```sh
+systemctl --user daemon-reload
+systemctl --user enable --now treeline-hub-watch
+```
+
+On a headless machine, user services normally stop when you log out — tell systemd to keep yours running:
+
+```sh
+loginctl enable-linger $USER
+```
+
+Logs: `journalctl --user -u treeline-hub-watch -f`.
+
+## Windows (Task Scheduler)
+
+Create a task that starts watch at logon:
+
+```powershell
+schtasks /Create /TN "Treeline Hub Watch" /SC ONLOGON `
+  /TR "%USERPROFILE%\.treeline\bin\tl.exe hub watch"
+```
+
+This runs it in a console window. To hide it, open Task Scheduler, find the task, and set **Run whether user is logged on or not** — or leave it visible if you like seeing the sync activity.
+
+## Checking on it
+
+From any linked device, `tl hub status` shows the connection, and the Hub-side push timestamps tell you whether this device has been syncing. If a conflict pauses syncing, watch keeps running and reports it on each attempt — resolve with [`tl hub conflicts` / `tl hub resolve`](/remote-access/connect/#conflicts) and it picks back up.
