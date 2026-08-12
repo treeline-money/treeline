@@ -16,6 +16,13 @@
 
   let { isOpen, onClose }: Props = $props();
 
+  /** Ignore close requests while the merge+push is in flight — it only
+   *  takes a few seconds and closing mid-operation reads as "nothing
+   *  happened" even though the push completes. */
+  function requestClose() {
+    if (phase !== "resolving") onClose();
+  }
+
   type Phase = "loading" | "ready" | "resolving" | "error";
   let phase = $state<Phase>("loading");
   let report = $state<ConflictReport | null>(null);
@@ -58,8 +65,8 @@
       }
       toast.success(
         keep === "local"
-          ? "Conflict resolved — kept this device's values"
-          : "Conflict resolved — kept the hub's values",
+          ? "Conflict resolved — this device's values won and were pushed to the hub"
+          : "Conflict resolved — the hub's values won; your other changes were pushed",
       );
       registry.emit("data:refresh");
       onClose();
@@ -95,8 +102,8 @@
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <div
     class="sub-modal-overlay"
-    onclick={onClose}
-    onkeydown={(e) => e.key === "Escape" && onClose()}
+    onclick={requestClose}
+    onkeydown={(e) => e.key === "Escape" && requestClose()}
     role="dialog"
     aria-modal="true"
     tabindex="-1"
@@ -106,19 +113,31 @@
     <div class="sub-modal conflict-modal" onclick={(e) => e.stopPropagation()}>
       <div class="sub-modal-header">
         <span class="sub-modal-title">Resolve sync conflict</span>
-        <button class="close-btn" onclick={onClose} aria-label="Close">
+        <button class="close-btn" onclick={requestClose} aria-label="Close">
           <Icon name="x" size={18} />
         </button>
       </div>
 
       <div class="sub-modal-body">
         {#if phase === "loading"}
-          <div class="loading">Comparing this device with the hub…</div>
+          <div class="conflict-progress">
+            <div class="spinner"></div>
+            <span>Comparing this device with the hub…</span>
+          </div>
+        {:else if phase === "resolving"}
+          <div class="conflict-progress">
+            <div class="spinner"></div>
+            <span>
+              Merging ({resolvingSide === "local"
+                ? "keeping this device's values"
+                : "keeping the hub's values"}) and pushing to the hub…
+            </span>
+          </div>
         {:else if phase === "error"}
           <p class="group-desc conflict-error">{errorMessage}</p>
           <div class="sub-modal-actions">
             <button class="btn secondary" onclick={() => void load()}>Retry</button>
-            <button class="btn secondary" onclick={onClose}>Close</button>
+            <button class="btn secondary" onclick={requestClose}>Close</button>
           </div>
         {:else if report && report.total_conflicts === 0}
           <p class="group-desc">
@@ -126,7 +145,7 @@
             watcher will sync automatically.
           </p>
           <div class="sub-modal-actions">
-            <button class="btn secondary" onclick={onClose}>Close</button>
+            <button class="btn secondary" onclick={requestClose}>Close</button>
           </div>
         {:else if report}
           <p class="group-desc">
@@ -178,15 +197,25 @@
                   {:else}
                     <div class="conflict-row">
                       <div class="conflict-row-key">
-                        Deleted on one side, modified on the other
+                        {#if conflict.deleted_by === "local"}
+                          Deleted on this device, modified on the hub
+                        {:else if conflict.deleted_by === "hub"}
+                          Deleted on the hub, modified on this device
+                        {:else}
+                          Deleted on one side, modified on the other
+                        {/if}
                       </div>
                       <div class="conflict-values">
                         <span class="conflict-side">
-                          <span class="side-label">deleted</span>
+                          <span class="side-label">
+                            deleted{conflict.deleted_by ? ` (${conflict.deleted_by === "local" ? "this device" : "hub"})` : ""}
+                          </span>
                           {fmtRow(conflict.deleted_row)}
                         </span>
                         <span class="conflict-side">
-                          <span class="side-label">modified</span>
+                          <span class="side-label">
+                            modified{conflict.deleted_by ? ` (${conflict.deleted_by === "local" ? "hub" : "this device"})` : ""}
+                          </span>
                           {fmtRow(conflict.modified_row)}
                         </span>
                       </div>
@@ -203,21 +232,13 @@
           </p>
 
           <div class="sub-modal-actions">
-            <button class="btn secondary" onclick={onClose}>Cancel</button>
-            <button class="btn" onclick={() => void resolve("hub")}>
+            <button class="btn secondary" onclick={requestClose}>Cancel</button>
+            <button class="btn primary" onclick={() => void resolve("hub")}>
               Keep hub's values
             </button>
-            <button class="btn" onclick={() => void resolve("local")}>
+            <button class="btn primary" onclick={() => void resolve("local")}>
               Keep this device's values
             </button>
-          </div>
-        {/if}
-
-        {#if phase === "resolving"}
-          <div class="loading">
-            Merging and pushing ({resolvingSide === "local"
-              ? "keeping this device's values"
-              : "keeping the hub's values"})…
           </div>
         {/if}
       </div>
@@ -232,6 +253,16 @@
   }
   .conflict-error {
     color: var(--color-danger, #dc2626);
+  }
+  .conflict-progress {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+    padding: 32px 16px;
+    color: var(--text-secondary, #999);
+    font-size: 13px;
+    text-align: center;
   }
   .conflict-list {
     max-height: 40vh;

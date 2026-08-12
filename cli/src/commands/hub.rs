@@ -13,7 +13,7 @@ use std::time::Duration;
 use treeline_core::config::HubConfig;
 use treeline_core::services::hub_client::{
     ConflictDescription, ConflictKind, ConflictResolution, DeviceCodeLink, DeviceCodeLinkOutcome,
-    PullOutcome, PushOutcome, RowConflict, WatchEvent, WatchObserver, WatchOptions,
+    PullOutcome, PushOutcome, RowConflict, SyncSide, WatchEvent, WatchObserver, WatchOptions,
 };
 use treeline_core::services::HubClient;
 
@@ -331,12 +331,18 @@ fn run_conflicts(json: bool) -> Result<()> {
                     eprintln!("  both added: local {} | hub {}", local_row, hub_row);
                 }
                 RowConflict::DeleteVsModify {
+                    deleted_by,
                     deleted_row,
                     modified_row,
                 } => {
+                    let (del_side, mod_side) = match deleted_by {
+                        Some(SyncSide::Local) => ("this device", "hub"),
+                        Some(SyncSide::Hub) => ("hub", "this device"),
+                        None => ("one side", "the other"),
+                    };
                     eprintln!(
-                        "  deleted on one side {} | modified on the other {}",
-                        deleted_row, modified_row
+                        "  deleted on {} {} | modified on {} {}",
+                        del_side, deleted_row, mod_side, modified_row
                     );
                 }
             }

@@ -130,12 +130,21 @@ pub enum RowConflict {
         local_row: serde_json::Value,
         hub_row: serde_json::Value,
     },
-    /// One side deleted the row while the other modified it. The diff does
-    /// not record which side deleted, so this is presented neutrally.
+    /// One side deleted the row while the other modified it.
     DeleteVsModify {
+        /// Which side deleted (`None` only for legacy reports).
+        deleted_by: Option<SyncSide>,
         deleted_row: serde_json::Value,
         modified_row: serde_json::Value,
     },
+}
+
+/// Which side of the sync a change came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncSide {
+    Local,
+    Hub,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1244,8 +1253,13 @@ fn build_conflict_report(report: &diffy_duck::Diff3Report, hub_hash: String) -> 
                     row,
                     origin: Diff3ChangeOrigin::Conflict,
                     modified_row,
+                    removed_by,
                 } => {
                     conflicts.push(RowConflict::DeleteVsModify {
+                        deleted_by: removed_by.map(|s| match s {
+                            diffy_duck::Diff3Side::A => SyncSide::Local,
+                            diffy_duck::Diff3Side::B => SyncSide::Hub,
+                        }),
                         deleted_row: to_value(row),
                         modified_row: modified_row
                             .as_ref()

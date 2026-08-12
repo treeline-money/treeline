@@ -2565,8 +2565,8 @@ enum HubPushNowResult {
 }
 
 #[tauri::command]
-fn push_to_hub_now(
-    encryption_state: State<EncryptionState>,
+async fn push_to_hub_now(
+    encryption_state: State<'_, EncryptionState>,
 ) -> Result<HubPushNowResult, String> {
     use treeline_core::services::HubClient;
     use treeline_core::services::hub_client::PushOutcome;
@@ -2582,24 +2582,30 @@ fn push_to_hub_now(
         .map_err(|_| "Failed to lock encryption state".to_string())?
         .clone();
 
-    let ctx = TreelineContext::new(&treeline_dir, encryption_key.as_deref())
-        .map_err(|e| format!("Failed to build context: {}", e))?;
+    // Network + DB work off the main thread — a sync command would freeze
+    // the whole window (Tauri runs sync commands on the main thread).
+    tauri::async_runtime::spawn_blocking(move || {
+        let ctx = TreelineContext::new(&treeline_dir, encryption_key.as_deref())
+            .map_err(|e| format!("Failed to build context: {}", e))?;
 
-    let client = HubClient::new(treeline_dir);
-    match client.push(&ctx, false).map_err(|e| e.to_string())? {
-        PushOutcome::Pushed { bytes, .. } => Ok(HubPushNowResult::Pushed { bytes }),
-        PushOutcome::AutoMerged { bytes, .. } => Ok(HubPushNowResult::AutoMerged { bytes }),
-        PushOutcome::Conflict { .. } => Ok(HubPushNowResult::Conflict),
-        PushOutcome::NoBaseSnapshot { .. } => Ok(HubPushNowResult::NoBaseSnapshot),
-        PushOutcome::NoChanges => Ok(HubPushNowResult::NoChanges),
-    }
+        let client = HubClient::new(treeline_dir);
+        match client.push(&ctx, false).map_err(|e| e.to_string())? {
+            PushOutcome::Pushed { bytes, .. } => Ok(HubPushNowResult::Pushed { bytes }),
+            PushOutcome::AutoMerged { bytes, .. } => Ok(HubPushNowResult::AutoMerged { bytes }),
+            PushOutcome::Conflict { .. } => Ok(HubPushNowResult::Conflict),
+            PushOutcome::NoBaseSnapshot { .. } => Ok(HubPushNowResult::NoBaseSnapshot),
+            PushOutcome::NoChanges => Ok(HubPushNowResult::NoChanges),
+        }
+    })
+    .await
+    .map_err(|e| format!("Push task failed: {}", e))?
 }
 
 /// Row/column-level conflict detail for the resolution modal. Read-only —
 /// downloads the hub bundle and diffs it against base + local.
 #[tauri::command]
-fn get_hub_conflicts(
-    encryption_state: State<EncryptionState>,
+async fn get_hub_conflicts(
+    encryption_state: State<'_, EncryptionState>,
 ) -> Result<treeline_core::services::hub_client::ConflictReport, String> {
     use treeline_core::services::HubClient;
 
@@ -2614,11 +2620,17 @@ fn get_hub_conflicts(
         .map_err(|_| "Failed to lock encryption state".to_string())?
         .clone();
 
-    let ctx = TreelineContext::new(&treeline_dir, encryption_key.as_deref())
-        .map_err(|e| format!("Failed to build context: {}", e))?;
+    // Downloads the hub bundle + runs the diff — must not block the main
+    // thread (sync Tauri commands freeze the window for the duration).
+    tauri::async_runtime::spawn_blocking(move || {
+        let ctx = TreelineContext::new(&treeline_dir, encryption_key.as_deref())
+            .map_err(|e| format!("Failed to build context: {}", e))?;
 
-    let client = HubClient::new(treeline_dir);
-    client.conflict_report(&ctx).map_err(|e| e.to_string())
+        let client = HubClient::new(treeline_dir);
+        client.conflict_report(&ctx).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Conflict report task failed: {}", e))?
 }
 
 #[derive(serde::Serialize)]
@@ -2634,8 +2646,8 @@ enum HubResolveResult {
 /// preserved. The frontend stops the watcher before calling this and
 /// restarts it after; the merge is CAS'd against the hub either way.
 #[tauri::command]
-fn resolve_hub_conflicts(
-    encryption_state: State<EncryptionState>,
+async fn resolve_hub_conflicts(
+    encryption_state: State<'_, EncryptionState>,
     keep: String,
 ) -> Result<HubResolveResult, String> {
     use treeline_core::services::HubClient;
@@ -2658,23 +2670,29 @@ fn resolve_hub_conflicts(
         .map_err(|_| "Failed to lock encryption state".to_string())?
         .clone();
 
-    let ctx = TreelineContext::new(&treeline_dir, encryption_key.as_deref())
-        .map_err(|e| format!("Failed to build context: {}", e))?;
+    // Merge + CAS push run for seconds — off the main thread so the modal
+    // can actually render its progress state.
+    tauri::async_runtime::spawn_blocking(move || {
+        let ctx = TreelineContext::new(&treeline_dir, encryption_key.as_deref())
+            .map_err(|e| format!("Failed to build context: {}", e))?;
 
-    let client = HubClient::new(treeline_dir);
-    match client
-        .resolve_conflicts(&ctx, resolution)
-        .map_err(|e| e.to_string())?
-    {
-        PushOutcome::Pushed { bytes, .. } | PushOutcome::AutoMerged { bytes, .. } => {
-            Ok(HubResolveResult::Resolved { bytes })
+        let client = HubClient::new(treeline_dir);
+        match client
+            .resolve_conflicts(&ctx, resolution)
+            .map_err(|e| e.to_string())?
+        {
+            PushOutcome::Pushed { bytes, .. } | PushOutcome::AutoMerged { bytes, .. } => {
+                Ok(HubResolveResult::Resolved { bytes })
+            }
+            PushOutcome::NoChanges => Ok(HubResolveResult::NoChanges),
+            PushOutcome::NoBaseSnapshot { .. } => Ok(HubResolveResult::NoBaseSnapshot),
+            PushOutcome::Conflict { .. } => {
+                Err("Unexpected conflict outcome while resolving — please retry.".to_string())
+            }
         }
-        PushOutcome::NoChanges => Ok(HubResolveResult::NoChanges),
-        PushOutcome::NoBaseSnapshot { .. } => Ok(HubResolveResult::NoBaseSnapshot),
-        PushOutcome::Conflict { .. } => {
-            Err("Unexpected conflict outcome while resolving — please retry.".to_string())
-        }
-    }
+    })
+    .await
+    .map_err(|e| format!("Resolve task failed: {}", e))?
 }
 
 /// Read the current hub link status from `hub.json`. Returns `None` when not

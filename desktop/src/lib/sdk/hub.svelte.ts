@@ -11,6 +11,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { registry } from "./registry";
+import { toast } from "./toast.svelte";
 
 export type WatchEvent =
   | { kind: "started"; hub_url: string }
@@ -47,6 +48,10 @@ class HubWatchStore {
   private _ready = $state(false);
   private _unlisten: UnlistenFn | null = null;
   private readyWaiters: (() => void)[] = [];
+  /** The watcher re-reports an unresolved conflict every poll cycle —
+   *  raise one persistent toast on first detection (dismissed when the
+   *  conflict clears), re-arm once it does. */
+  private conflictToastId: string | null = null;
 
   get running() {
     return this._running;
@@ -152,6 +157,33 @@ class HubWatchStore {
     }
   }
 
+  private notifyConflict(): void {
+    if (this.conflictToastId) return;
+    // Persistent (duration 0) — a conflict shouldn't vanish after 5s.
+    // Dismissed when the conflict clears, or by resolving via the action.
+    this.conflictToastId = toast.show({
+      type: "warning",
+      title: "Sync conflict",
+      message:
+        "This device and the hub changed the same data in different ways. " +
+        "Nothing syncs until you pick which side wins.",
+      duration: 0,
+      action: {
+        label: "Review & resolve",
+        onClick: () => registry.emit("hub:conflict:open"),
+      },
+    });
+  }
+
+  /** Dismiss the persistent conflict toast (no-op if none). Called when
+   *  the conflict clears via sync events or an explicit resolution. */
+  clearConflictNotification(): void {
+    if (this.conflictToastId) {
+      toast.dismiss(this.conflictToastId);
+      this.conflictToastId = null;
+    }
+  }
+
   private applyEvent(event: WatchEvent): void {
     this._lastEvent = event;
     switch (event.kind) {
@@ -180,6 +212,7 @@ class HubWatchStore {
         this._lastUpdatedAt = Date.now();
         this._errorMessage = null;
         this._conflictCount = 0;
+        this.clearConflictNotification();
         // Pulls and merges rewrote the local DB — views showing pre-sync
         // data need to reload.
         if (event.kind !== "pushed") {
@@ -189,10 +222,12 @@ class HubWatchStore {
       case "conflict":
         this._status = "conflict";
         this._conflictCount = event.conflicts;
+        this.notifyConflict();
         break;
       case "no_base_snapshot":
         this._status = "conflict";
         this._conflictCount = 1;
+        this.notifyConflict();
         break;
       case "error":
         this._status = "error";
@@ -299,6 +334,7 @@ export type RowConflict =
     }
   | {
       kind: "delete_vs_modify";
+      deleted_by: "local" | "hub" | null;
       deleted_row: Record<string, unknown>;
       modified_row: Record<string, unknown>;
     };
@@ -330,18 +366,24 @@ export type HubResolveResult =
 
 /** Resolve conflicts by choosing which side wins conflicting values. The
  *  losing side's non-conflicting changes still merge in. Stops the watcher
- *  for the duration and restarts it after (the watcher thread can hold its
- *  lock for a moment after stop, hence the start retry loop). */
+ *  for the duration; the restart happens in the background so callers (the
+ *  modal) aren't kept waiting after the push has already landed — the old
+ *  watcher thread can hold its lock for a few seconds after stop, hence
+ *  the deliberately patient retry loop. */
 export async function resolveHubConflicts(keep: "local" | "hub"): Promise<HubResolveResult> {
   const wasRunning = await hubWatch.stop();
   try {
-    return await invoke<HubResolveResult>("resolve_hub_conflicts", { keep });
+    const result = await invoke<HubResolveResult>("resolve_hub_conflicts", { keep });
+    hubWatch.clearConflictNotification();
+    return result;
   } finally {
     if (wasRunning) {
-      for (let i = 0; i < 20; i++) {
-        if (await hubWatch.start()) break;
-        await new Promise((resolve) => setTimeout(resolve, 500));
-      }
+      void (async () => {
+        for (let i = 0; i < 20; i++) {
+          if (await hubWatch.start()) break;
+          await new Promise((resolve) => setTimeout(resolve, 500));
+        }
+      })();
     }
   }
 }

@@ -38,6 +38,14 @@
   }
 
   let conflictModalOpen = $state(false);
+
+  // The persistent conflict toast's "Review & resolve" action opens the
+  // modal from outside this component.
+  $effect(() => {
+    return registry.on("hub:conflict:open", () => {
+      conflictModalOpen = true;
+    });
+  });
 </script>
 
 <footer class="statusbar">
