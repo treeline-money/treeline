@@ -13,7 +13,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result};
 use diffy_duck::{DatabaseConfig, Diff3ChangeOrigin, Diff3RowChange, DiffOptions, Merge3Strategy};
@@ -728,12 +728,14 @@ impl HubClient {
                 }
 
                 observer.on_event(WatchEvent::Pushing);
-                match self.push(ctx, false) {
+                let synced = match self.push(ctx, false) {
                     Ok(PushOutcome::Pushed { bytes, .. }) => {
                         observer.on_event(WatchEvent::Pushed { bytes });
+                        true
                     }
                     Ok(PushOutcome::AutoMerged { bytes, .. }) => {
                         observer.on_event(WatchEvent::AutoMerged { bytes });
+                        true
                     }
                     Ok(PushOutcome::Conflict {
                         hub_hash,
@@ -743,19 +745,26 @@ impl HubClient {
                             hub_hash,
                             conflicts: conflicts.len(),
                         });
+                        false
                     }
                     Ok(PushOutcome::NoBaseSnapshot { hub_hash }) => {
                         observer.on_event(WatchEvent::NoBaseSnapshot { hub_hash });
+                        false
                     }
-                    Ok(PushOutcome::NoChanges) => {}
+                    Ok(PushOutcome::NoChanges) => true,
                     Err(e) => {
                         observer.on_event(WatchEvent::Error {
                             message: e.to_string(),
                         });
+                        false
                     }
-                }
+                };
                 last_poll = Instant::now();
-                last_mtime = db_path.metadata().and_then(|m| m.modified()).ok();
+                last_mtime = if synced {
+                    rearm_after_sync(&db_path, &self.treeline_dir)
+                } else {
+                    db_path.metadata().and_then(|m| m.modified()).ok()
+                };
                 continue;
             }
 
@@ -799,15 +808,17 @@ impl HubClient {
                     None => db_path.exists(),
                 };
 
-                if has_local_changes {
+                let synced = if has_local_changes {
                     // Both sides moved — push triggers the three-way merge.
                     observer.on_event(WatchEvent::Pushing);
                     match self.push(ctx, false) {
                         Ok(PushOutcome::Pushed { bytes, .. }) => {
                             observer.on_event(WatchEvent::Pushed { bytes });
+                            true
                         }
                         Ok(PushOutcome::AutoMerged { bytes, .. }) => {
                             observer.on_event(WatchEvent::AutoMerged { bytes });
+                            true
                         }
                         Ok(PushOutcome::Conflict {
                             hub_hash,
@@ -817,28 +828,41 @@ impl HubClient {
                                 hub_hash,
                                 conflicts: conflicts.len(),
                             });
+                            false
                         }
                         Ok(PushOutcome::NoBaseSnapshot { hub_hash }) => {
                             observer.on_event(WatchEvent::NoBaseSnapshot { hub_hash });
+                            false
                         }
-                        Ok(PushOutcome::NoChanges) => {}
+                        Ok(PushOutcome::NoChanges) => true,
                         Err(e) => {
                             observer.on_event(WatchEvent::Error {
                                 message: e.to_string(),
                             });
+                            false
                         }
                     }
                 } else {
                     observer.on_event(WatchEvent::Pulling);
                     match self.pull() {
-                        Ok(out) => observer.on_event(WatchEvent::Pulled { bytes: out.bytes }),
-                        Err(e) => observer.on_event(WatchEvent::Error {
-                            message: e.to_string(),
-                        }),
+                        Ok(out) => {
+                            observer.on_event(WatchEvent::Pulled { bytes: out.bytes });
+                            true
+                        }
+                        Err(e) => {
+                            observer.on_event(WatchEvent::Error {
+                                message: e.to_string(),
+                            });
+                            false
+                        }
                     }
-                }
+                };
 
-                last_mtime = db_path.metadata().and_then(|m| m.modified()).ok();
+                last_mtime = if synced {
+                    rearm_after_sync(&db_path, &self.treeline_dir)
+                } else {
+                    db_path.metadata().and_then(|m| m.modified()).ok()
+                };
             }
         }
 
@@ -1354,6 +1378,25 @@ fn collect_conflicts(report: &diffy_duck::Diff3Report) -> Vec<ConflictDescriptio
         }
     }
     out
+}
+
+/// Re-arm the watch loop's change detector after a successful sync
+/// operation. The operation itself bumps the DB file's mtime (compact,
+/// checkpoint, extract), which must be absorbed — but a *user* write that
+/// landed mid-operation must not be absorbed with it, or it strands
+/// unsynced until the next unrelated edit. Content is the tiebreaker: if
+/// the live DB no longer matches the freshly-synced base, return `None`
+/// so the next tick treats the file as changed and syncs again.
+fn rearm_after_sync(db_path: &Path, treeline_dir: &Path) -> Option<SystemTime> {
+    let mtime = db_path.metadata().and_then(|m| m.modified()).ok();
+    let base_hash = HubConfig::load(treeline_dir)
+        .ok()
+        .flatten()
+        .and_then(|c| c.base_hash);
+    match (compute_file_hash(db_path), base_hash) {
+        (Ok(h), Some(base)) if h == base => mtime,
+        _ => None,
+    }
 }
 
 /// Persist `.treeline.base.duckdb` from the exact DB bytes that were pushed
