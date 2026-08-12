@@ -280,6 +280,82 @@ fn test_bundle_includes_plugins_dir() {
 }
 
 #[test]
+fn test_extract_skips_rewriting_unchanged_plugins() {
+    let temp_dir = TempDir::new().unwrap();
+    let _repo = create_test_repo(&temp_dir);
+
+    let unchanged = temp_dir.path().join("plugins").join("budget");
+    let changed = temp_dir.path().join("plugins").join("goals");
+    std::fs::create_dir_all(&unchanged).unwrap();
+    std::fs::create_dir_all(&changed).unwrap();
+    std::fs::write(unchanged.join("index.js"), "// budget v1").unwrap();
+    std::fs::write(changed.join("index.js"), "// goals v1").unwrap();
+
+    let bundle = SyncBundle::create(temp_dir.path()).unwrap();
+
+    // Diverge one plugin locally, then re-extract the bundle on top.
+    std::fs::write(changed.join("index.js"), "// goals local edit").unwrap();
+    let unchanged_mtime = std::fs::metadata(unchanged.join("index.js"))
+        .unwrap()
+        .modified()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    SyncBundle::extract(&bundle, temp_dir.path()).unwrap();
+
+    // Identical plugin was left untouched (no mtime churn → no watcher storm);
+    // the diverged one was rewritten from the bundle.
+    assert_eq!(
+        std::fs::metadata(unchanged.join("index.js"))
+            .unwrap()
+            .modified()
+            .unwrap(),
+        unchanged_mtime
+    );
+    assert_eq!(
+        std::fs::read_to_string(changed.join("index.js")).unwrap(),
+        "// goals v1"
+    );
+}
+
+#[test]
+fn test_extract_rewrites_plugin_with_extra_local_file() {
+    let temp_dir = TempDir::new().unwrap();
+    let _repo = create_test_repo(&temp_dir);
+
+    let plugin = temp_dir.path().join("plugins").join("budget");
+    std::fs::create_dir_all(&plugin).unwrap();
+    std::fs::write(plugin.join("index.js"), "// budget").unwrap();
+
+    let bundle = SyncBundle::create(temp_dir.path()).unwrap();
+
+    // An extra local file means the dir differs from the bundle — replacement
+    // semantics must still apply (the stray file gets cleared).
+    std::fs::write(plugin.join("stray.js"), "// leftover").unwrap();
+    SyncBundle::extract(&bundle, temp_dir.path()).unwrap();
+
+    assert!(plugin.join("index.js").exists());
+    assert!(!plugin.join("stray.js").exists());
+}
+
+#[test]
+fn test_bundle_excludes_ds_store() {
+    let temp_dir = TempDir::new().unwrap();
+    let _repo = create_test_repo(&temp_dir);
+
+    let plugin = temp_dir.path().join("plugins").join("budget");
+    std::fs::create_dir_all(&plugin).unwrap();
+    std::fs::write(plugin.join("index.js"), "// plugin").unwrap();
+    std::fs::write(plugin.join(".DS_Store"), "junk").unwrap();
+
+    let bundle = SyncBundle::create(temp_dir.path()).unwrap();
+
+    let dest = TempDir::new().unwrap();
+    SyncBundle::extract(&bundle, dest.path()).unwrap();
+    assert!(dest.path().join("plugins/budget/index.js").exists());
+    assert!(!dest.path().join("plugins/budget/.DS_Store").exists());
+}
+
+#[test]
 fn test_bundle_excludes_hub_json() {
     let temp_dir = TempDir::new().unwrap();
     let _repo = create_test_repo(&temp_dir);

@@ -20,6 +20,29 @@ const activePlugins = new Map<string, Plugin>();
 // Event listener cleanup
 let unlisten: UnlistenFn | null = null;
 
+// Reloads run one at a time. Concurrent reloadPlugin calls interleave their
+// unregister/activate steps across awaits, which double-registers sidebar
+// items — a duplicate key in Svelte's keyed each throws inside the render
+// effect and kills the whole UI. A pull rewriting many plugins at once fires
+// a burst of change events, so serialize and dedupe them.
+let reloadChain: Promise<void> = Promise.resolve();
+const queuedReloads = new Set<string>();
+
+function queueReload(pluginId: string): void {
+  if (queuedReloads.has(pluginId)) return;
+  queuedReloads.add(pluginId);
+  reloadChain = reloadChain.then(async () => {
+    queuedReloads.delete(pluginId);
+    if (!unlisten) return; // hot-reload was stopped while queued
+    console.log(`[hot-reload] Detected change in plugin: ${pluginId}`);
+    try {
+      await reloadPlugin(pluginId);
+    } catch (error) {
+      console.error(`[hot-reload] Failed to reload plugin ${pluginId}:`, error);
+    }
+  });
+}
+
 /**
  * Track an active plugin instance so we can call deactivate() on reload.
  * Called from initializePlugins() after a plugin is activated.
@@ -36,15 +59,8 @@ export async function startHotReload(): Promise<void> {
   await invoke("watch_plugins_dir");
 
   // Listen for change events from the backend
-  unlisten = await listen<string>("plugin-file-changed", async (event) => {
-    const pluginId = event.payload;
-    console.log(`[hot-reload] Detected change in plugin: ${pluginId}`);
-
-    try {
-      await reloadPlugin(pluginId);
-    } catch (error) {
-      console.error(`[hot-reload] Failed to reload plugin ${pluginId}:`, error);
-    }
+  unlisten = await listen<string>("plugin-file-changed", (event) => {
+    queueReload(event.payload);
   });
 
   console.log("[hot-reload] Plugin hot-reload started");

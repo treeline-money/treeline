@@ -134,12 +134,25 @@ class PluginRegistry {
   // ============================================================================
 
   registerSidebarSection(section: SidebarSection) {
-    this._sidebarSections.push(section);
+    // Replace-by-id: a re-register (e.g. plugin hot-reload) must never
+    // produce a duplicate — duplicate keys in the sidebar's keyed each are
+    // a fatal render error in Svelte 5.
+    const existing = this._sidebarSections.findIndex((s) => s.id === section.id);
+    if (existing !== -1) {
+      this._sidebarSections[existing] = section;
+    } else {
+      this._sidebarSections.push(section);
+    }
     this.notify();
   }
 
   registerSidebarItem(item: SidebarItem) {
-    this._sidebarItems.push(item);
+    const existing = this._sidebarItems.findIndex((i) => i.id === item.id);
+    if (existing !== -1) {
+      this._sidebarItems[existing] = item;
+    } else {
+      this._sidebarItems.push(item);
+    }
     this.notify();
   }
 
@@ -260,7 +273,12 @@ class PluginRegistry {
   }
 
   registerStatusBarItem(item: StatusBarItem) {
-    this._statusBarItems.push(item);
+    const existing = this._statusBarItems.findIndex((i) => i.id === item.id);
+    if (existing !== -1) {
+      this._statusBarItems[existing] = item;
+    } else {
+      this._statusBarItems.push(item);
+    }
     this.notify();
   }
 

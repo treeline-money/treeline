@@ -235,7 +235,15 @@ impl SyncBundle {
                     .with_context(|| format!("Failed to clear {}", skills_dir.display()))?;
             }
         }
+        // Skip plugins whose bundle content is byte-identical to disk: a
+        // rewrite would only churn mtimes, and file watchers (desktop plugin
+        // hot-reload) treat that as a real change. Most pulls carry data
+        // changes, not plugin changes, so this keeps them quiet.
+        let unchanged_plugins = unchanged_plugin_dirs(&mut archive, treeline_dir, &bundle_plugin_ids)?;
         for plugin_id in &bundle_plugin_ids {
+            if unchanged_plugins.contains(plugin_id) {
+                continue;
+            }
             let plugin_dir = treeline_dir.join("plugins").join(plugin_id);
             if plugin_dir.exists() {
                 fs::remove_dir_all(&plugin_dir)
@@ -262,6 +270,14 @@ impl SyncBundle {
                 file.read_to_end(&mut buf)?;
                 bundled_settings = Some(buf);
                 continue;
+            }
+
+            if let Some(rest) = name.strip_prefix("plugins/") {
+                if let Some(slash) = rest.find('/') {
+                    if unchanged_plugins.contains(&rest[..slash]) {
+                        continue;
+                    }
+                }
             }
 
             let target = treeline_dir.join(&name);
@@ -400,6 +416,90 @@ fn cleanup_orphan_incoming(treeline_dir: &Path) {
 /// Reject paths that would escape the destination directory (zip slip) or
 /// that are absolute. The receiver trusts the producer's contents but never
 /// the structure of the paths inside the zip.
+/// Which of `plugin_ids` have on-disk `plugins/<id>/` content byte-identical
+/// to the bundle's — same recursive file set, same bytes. Any read error on
+/// either side counts as "changed" so the pull falls back to a full rewrite.
+fn unchanged_plugin_dirs<R: Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    treeline_dir: &Path,
+    plugin_ids: &std::collections::HashSet<String>,
+) -> Result<std::collections::HashSet<String>> {
+    use std::collections::{BTreeMap, BTreeSet, HashSet};
+
+    let mut bundle_files: BTreeMap<String, BTreeMap<String, Vec<u8>>> = BTreeMap::new();
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i)?;
+        let name = entry.name().to_string();
+        if !is_safe_path(&name) || is_denylisted(&name) {
+            continue;
+        }
+        let Some(rest) = name.strip_prefix("plugins/") else {
+            continue;
+        };
+        let Some(slash) = rest.find('/') else {
+            continue;
+        };
+        let (id, rel) = (&rest[..slash], &rest[slash + 1..]);
+        if rel.is_empty() || entry.is_dir() || !plugin_ids.contains(id) {
+            continue;
+        }
+        let mut buf = Vec::new();
+        entry.read_to_end(&mut buf)?;
+        bundle_files
+            .entry(id.to_string())
+            .or_default()
+            .insert(rel.to_string(), buf);
+    }
+
+    let mut unchanged = HashSet::new();
+    for (id, files) in &bundle_files {
+        let plugin_dir = treeline_dir.join("plugins").join(id);
+        if !plugin_dir.is_dir() {
+            continue;
+        }
+        let mut disk_paths = BTreeSet::new();
+        if collect_rel_file_paths(&plugin_dir, "", &mut disk_paths).is_err() {
+            continue;
+        }
+        if disk_paths.iter().ne(files.keys()) {
+            continue;
+        }
+        let all_equal = files
+            .iter()
+            .all(|(rel, bytes)| fs::read(plugin_dir.join(rel)).is_ok_and(|d| d == *bytes));
+        if all_equal {
+            unchanged.insert(id.clone());
+        }
+    }
+    Ok(unchanged)
+}
+
+fn collect_rel_file_paths(
+    dir: &Path,
+    prefix: &str,
+    out: &mut std::collections::BTreeSet<String>,
+) -> Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name == ".DS_Store" {
+            continue;
+        }
+        let rel = if prefix.is_empty() {
+            name
+        } else {
+            format!("{}/{}", prefix, name)
+        };
+        if path.is_dir() {
+            collect_rel_file_paths(&path, &rel, out)?;
+        } else {
+            out.insert(rel);
+        }
+    }
+    Ok(())
+}
+
 fn is_safe_path(path: &str) -> bool {
     if path.is_empty() {
         return false;
@@ -504,6 +604,9 @@ fn add_dir_to_zip<W: Write + std::io::Seek>(
     for entry in fs::read_dir(dir_path)? {
         let entry = entry?;
         let path = entry.path();
+        if entry.file_name().to_string_lossy() == ".DS_Store" {
+            continue;
+        }
         let name = format!("{}/{}", prefix, entry.file_name().to_string_lossy());
 
         if path.is_dir() {
