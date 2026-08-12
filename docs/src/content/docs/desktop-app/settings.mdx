@@ -49,6 +49,8 @@ Backups are saved to `~/.treeline/backups/`. You can create, restore, or delete 
 
 Link this device to a Treeline hub so your database flows between your devices automatically. Enter your hub's URL, authorize the device in the browser, and the app pushes and pulls in the background. The Hub section shows connection status, last push/pull times, and a button to unlink (your local data is kept).
 
+If both sides change the same data between syncs, the app raises a warning and the status bar shows a conflict indicator — click either to review the differing values side by side and pick which side wins. Only the genuinely conflicting values take the chosen side; everything else is kept from both. See [Conflicts](/remote-access/connect/#conflicts).
+
 Running a hub is opt-in — by default Treeline stays fully local. See [Remote Access](/remote-access/) for how to run one.
 
 ## Plugins

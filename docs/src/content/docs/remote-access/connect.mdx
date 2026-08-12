@@ -22,11 +22,13 @@ Devices request **pull** and **push** scopes — Treeline's replication permissi
 Then push and pull:
 
 ```sh
-tl hub push     # send local data up to the Hub
-tl hub pull     # pull the latest down on another device
-tl hub watch    # push and pull automatically as local data changes
-tl hub status   # check the connection
-tl hub unlink   # disconnect this device (local data is kept)
+tl hub push       # send local data up to the Hub
+tl hub pull       # pull the latest down on another device
+tl hub watch      # push and pull automatically as local data changes
+tl hub status     # check the connection
+tl hub conflicts  # inspect sync conflicts (see below)
+tl hub resolve    # resolve them by picking a side
+tl hub unlink     # disconnect this device (local data is kept)
 ```
 
 ## Connect AI agents (remote MCP)
@@ -44,6 +46,22 @@ For example, a Fly Hub would be `https://my-treeline-hub.fly.dev/mcp` — substi
 Agents request **read**, plus **write** if they'll tag or edit data — you approve exactly what's shown before anything connects.
 
 For an agent on the **same machine** as your data, you don't need a Hub — use `tl mcp` directly. See [MCP Server](/ai-agents/mcp-server/).
+
+## Conflicts
+
+If the same data changes in two places between syncs — say an AI agent tags a transaction through the Hub while this device edits the same one — Treeline detects the conflict instead of overwriting either side. Sync pauses for that device until you resolve it: the desktop app raises a warning with a **Review & resolve** button, and the CLI reports it on `push` and `watch`.
+
+Inspect exactly what differs, then pick which side wins:
+
+```sh
+tl hub conflicts        # row-by-row detail of every conflicting value (--json for scripting)
+tl hub resolve local    # conflicting values take this device's version
+tl hub resolve hub      # conflicting values take the Hub's version
+```
+
+Resolving is a three-way merge, not an overwrite. Only the values that genuinely conflict take the chosen side — non-conflicting changes from **both** sides are kept, whichever you pick. The Hub also snapshots its database before accepting any push (it keeps the last 20), so a resolution is never unrecoverable.
+
+To discard one side wholesale instead, `tl hub push --force` (this device wins, including non-conflicting Hub changes) or `tl hub pull` (the Hub wins likewise).
 
 ## Manage tokens
 
