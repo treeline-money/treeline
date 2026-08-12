@@ -73,15 +73,34 @@ impl SyncService {
         let integrations = self.repository.get_integrations()?;
         let mut results = Vec::new();
 
+        if integrations.is_empty() {
+            anyhow::bail!("No integrations configured");
+        }
+
         let integrations_to_sync: Vec<_> = if let Some(name) = integration {
-            integrations.iter().filter(|i| i.name == name).collect()
+            // Case-insensitive: callers (especially AI agents via MCP) see
+            // display names like "SimpleFIN" while the table stores
+            // "simplefin" — an exact match here used to reject those with a
+            // misleading "No integrations configured".
+            let matched: Vec<_> = integrations
+                .iter()
+                .filter(|i| i.name.eq_ignore_ascii_case(name))
+                .collect();
+            if matched.is_empty() {
+                anyhow::bail!(
+                    "Integration '{}' not found. Configured: {}",
+                    name,
+                    integrations
+                        .iter()
+                        .map(|i| i.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
+            matched
         } else {
             integrations.iter().collect()
         };
-
-        if integrations_to_sync.is_empty() {
-            anyhow::bail!("No integrations configured");
-        }
 
         for int in integrations_to_sync {
             let result = self.sync_integration(

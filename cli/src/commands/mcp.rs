@@ -169,13 +169,13 @@ pub fn tool_definitions() -> Value {
             },
             {
                 "name": "sync",
-                "description": "Sync accounts and transactions from connected bank integrations (SimpleFIN, Lunchflow). Pulls latest data from all configured integrations.",
+                "description": "Sync accounts and transactions from connected bank integrations. Prefer calling with no arguments — that syncs every configured integration. Can take a minute; it calls the bank APIs.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "integration": {
                             "type": "string",
-                            "description": "Specific integration to sync (optional, syncs all if omitted)"
+                            "description": "Specific integration to sync (optional — omit to sync all, which is usually what you want). Name matching is case-insensitive; the error lists configured names if yours doesn't match."
                         },
                         "dry_run": {
                             "type": "boolean",
