@@ -13,7 +13,13 @@ Written for AI agents, useful for humans. If you're an agent: read the conventio
 
 **Query the `transactions` view, and don't outsmart it.** The view already excludes deleted rows, and split transactions are handled for you: splitting soft-deletes the parent, so only the child rows are visible. Do **not** add `parent_transaction_id IS NULL` as a "defensive" filter — that excludes every split child and undercounts.
 
-**Transfers aren't spending or income.** Money moving between your own accounts (savings transfers, brokerage moves, credit card payments) shows up as ordinary transactions on *both* sides. The common convention is tags like `transfer` and `payment` — but **verify the user's actual vocabulary before trusting any cash-flow number**: some people tag savings moves `savings`, some tag nothing. A tell-tale sign of leaking transfers is income that closely tracks spending month to month. Check the biggest rows and ask the user which tags mean internal movement:
+**Transfers aren't spending or income — and tags are entirely user-defined.** Money moving between your own accounts (savings transfers, brokerage moves, credit card payments) shows up as ordinary transactions on *both* sides, and there is **no fixed tag vocabulary**: one user tags these `transfer`, another `savings`, another nothing at all. Before trusting any cash-flow number, discover what *this* user's tags mean:
+
+```sql
+SELECT tag, COUNT(*) AS n
+FROM (SELECT UNNEST(tags) AS tag FROM transactions)
+GROUP BY tag ORDER BY n DESC;
+```
 
 ```sql
 SELECT posted_date, description, amount, account_name, tags
@@ -22,7 +28,9 @@ ORDER BY ABS(amount) DESC
 LIMIT 20;
 ```
 
-Exclude internal-movement tags from spending *and* income totals, and exclude them **at the row level, before `UNNEST`** — a transfer tagged `['transfer', 'savings']` will leak into per-tag totals through its second tag if you filter after unnesting.
+If the biggest rows are account-to-account moves, note which tags they carry — and when in doubt, ask the user. A tell-tale sign of leaking transfers is income that closely tracks spending month to month. If the user doesn't tag internal movement at all, say so rather than reporting silently inflated numbers.
+
+The queries below exclude internal movement with `list_has_any(tags, ['transfer', 'payment'])` — **that list is a placeholder**; substitute the tags this user actually uses. Exclusion must happen **at the row level, before `UNNEST`** — a transfer tagged `['transfer', 'savings']` leaks into per-tag totals through its second tag if you filter after unnesting.
 
 **Net worth comes from `balance_snapshots`, not `accounts.balance`.** Take the latest snapshot per account and sum the raw balances. Balances carry their own sign — liabilities are negative — so do **not** flip signs by `classification`; that adds debt back and inflates net worth. Snapshots can be sparse (manual accounts, paused syncs), so time-series queries must carry each account's last known balance forward rather than bucketing snapshots by period.
 
@@ -91,8 +99,7 @@ The `as_of` date matters: a stale snapshot means a stale answer, and saying so b
 SELECT DATE_TRUNC('month', posted_date) AS month, ROUND(SUM(-amount), 2) AS spending
 FROM transactions
 WHERE amount < 0
-  AND NOT COALESCE(list_contains(tags, 'transfer'), false)
-  AND NOT COALESCE(list_contains(tags, 'payment'), false)
+  AND NOT COALESCE(list_has_any(tags, ['transfer', 'payment']), false)
 GROUP BY month
 ORDER BY month;
 ```
@@ -105,8 +112,7 @@ Without the tag exclusions, every credit card payment and savings transfer count
 SELECT DATE_TRUNC('month', posted_date) AS month, ROUND(SUM(amount), 2) AS income
 FROM transactions
 WHERE amount > 0
-  AND NOT COALESCE(list_contains(tags, 'transfer'), false)
-  AND NOT COALESCE(list_contains(tags, 'payment'), false)
+  AND NOT COALESCE(list_has_any(tags, ['transfer', 'payment']), false)
 GROUP BY month
 ORDER BY month;
 ```
@@ -121,8 +127,7 @@ WITH monthly AS (
     SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) AS income,
     SUM(CASE WHEN amount < 0 THEN -amount ELSE 0 END) AS spending
   FROM transactions
-  WHERE NOT COALESCE(list_contains(tags, 'transfer'), false)
-    AND NOT COALESCE(list_contains(tags, 'payment'), false)
+  WHERE NOT COALESCE(list_has_any(tags, ['transfer', 'payment']), false)
   GROUP BY month
 )
 SELECT month, income, spending,
@@ -142,8 +147,7 @@ FROM (
   FROM transactions
   WHERE amount < 0
     AND posted_date >= now()::TIMESTAMP::DATE - INTERVAL 90 DAY
-    AND NOT COALESCE(list_contains(tags, 'transfer'), false)
-    AND NOT COALESCE(list_contains(tags, 'payment'), false)
+    AND NOT COALESCE(list_has_any(tags, ['transfer', 'payment']), false)
 )
 GROUP BY tag
 ORDER BY total DESC;
@@ -159,8 +163,7 @@ FROM (
   SELECT UNNEST(tags) AS tag, posted_date, amount
   FROM transactions
   WHERE amount < 0
-    AND NOT COALESCE(list_contains(tags, 'transfer'), false)
-    AND NOT COALESCE(list_contains(tags, 'payment'), false)
+    AND NOT COALESCE(list_has_any(tags, ['transfer', 'payment']), false)
 )
 GROUP BY tag, month
 ORDER BY tag, month;
@@ -173,8 +176,7 @@ SELECT description, COUNT(*) AS txns, ROUND(SUM(-amount), 2) AS total
 FROM transactions
 WHERE amount < 0
   AND posted_date >= now()::TIMESTAMP::DATE - INTERVAL 90 DAY
-  AND NOT COALESCE(list_contains(tags, 'transfer'), false)
-  AND NOT COALESCE(list_contains(tags, 'payment'), false)
+  AND NOT COALESCE(list_has_any(tags, ['transfer', 'payment']), false)
 GROUP BY description
 ORDER BY total DESC
 LIMIT 10;
@@ -207,8 +209,7 @@ SELECT posted_date, description, ROUND(-amount, 2) AS spent, tags
 FROM transactions
 WHERE amount < 0
   AND posted_date >= DATE_TRUNC('month', now()::TIMESTAMP::DATE)
-  AND NOT COALESCE(list_contains(tags, 'transfer'), false)
-  AND NOT COALESCE(list_contains(tags, 'payment'), false)
+  AND NOT COALESCE(list_has_any(tags, ['transfer', 'payment']), false)
 ORDER BY amount ASC
 LIMIT 15;
 ```
