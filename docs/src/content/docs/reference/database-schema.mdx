@@ -236,55 +236,7 @@ tl query "SELECT posted_date, amount, description FROM transactions LIMIT 10"
 
 ### Example Queries
 
-**Spending by tag this month:**
-
-```sql
-SELECT tag, SUM(-amount) as total
-FROM (
-  SELECT UNNEST(tags) as tag, amount
-  FROM transactions
-  WHERE amount < 0
-    AND posted_date >= DATE_TRUNC('month', now()::TIMESTAMP::DATE)
-)
-GROUP BY tag
-ORDER BY total DESC
-```
-
-**Net worth over time:**
-
-```sql
-SELECT
-  DATE_TRUNC('month', snapshot_time) as month,
-  SUM(CASE
-    WHEN a.classification = 'asset' THEN b.balance
-    ELSE -b.balance
-  END) as net_worth
-FROM balance_snapshots b
-JOIN accounts a USING (account_id)
-GROUP BY month
-ORDER BY month
-```
-
-**Untagged transactions:**
-
-```sql
-SELECT posted_date, description, amount
-FROM transactions
-WHERE tags IS NULL OR ARRAY_LENGTH(tags) = 0
-ORDER BY posted_date DESC
-```
-
-**Account balances by type:**
-
-```sql
-SELECT
-  account_type,
-  classification,
-  SUM(balance) as total_balance
-FROM accounts
-GROUP BY account_type, classification
-ORDER BY classification, total_balance DESC
-```
+Canonical, tested queries for common questions — net worth, spending, income, savings rate, recurring charges — live in the [Query Cookbook](/ai-agents/query-cookbook/), along with the conventions (sign handling, transfer exclusion, snapshot semantics) that make naive versions return wrong numbers.
 
 **Explore the schema:**
 

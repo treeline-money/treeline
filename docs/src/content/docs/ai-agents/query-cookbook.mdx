@@ -1,0 +1,236 @@
+---
+title: Query Cookbook
+description: Canonical, tested SQL for the questions agents get asked most — net worth, spending, income, savings rate, recurring charges, and more.
+---
+
+Canonical queries for the most common questions about Treeline data. Every query on this page runs against the demo database in CI on every release, so they stay correct as the schema evolves.
+
+Written for AI agents, useful for humans. If you're an agent: read the conventions first — they're what make naive queries return wrong numbers — then adapt the queries below. If you're a human: paste this page into your AI tool of choice as context, or save it as a skill in whatever harness you use.
+
+## Conventions (read this first)
+
+**Amounts carry their sign.** Negative = money out, positive = money in. "Spending" means `amount < 0`, and you'll usually want `-amount` so totals read as positive numbers.
+
+**Query the `transactions` view, and don't outsmart it.** The view already excludes deleted rows, and split transactions are handled for you: splitting soft-deletes the parent, so only the child rows are visible. Do **not** add `parent_transaction_id IS NULL` as a "defensive" filter — that excludes every split child and undercounts.
+
+**Transfers aren't spending or income.** Money moving between your own accounts (savings transfers, brokerage moves, credit card payments) shows up as ordinary transactions on *both* sides. The common convention is tags like `transfer` and `payment` — but **verify the user's actual vocabulary before trusting any cash-flow number**: some people tag savings moves `savings`, some tag nothing. A tell-tale sign of leaking transfers is income that closely tracks spending month to month. Check the biggest rows and ask the user which tags mean internal movement:
+
+```sql
+SELECT posted_date, description, amount, account_name, tags
+FROM transactions
+ORDER BY ABS(amount) DESC
+LIMIT 20;
+```
+
+Exclude internal-movement tags from spending *and* income totals, and exclude them **at the row level, before `UNNEST`** — a transfer tagged `['transfer', 'savings']` will leak into per-tag totals through its second tag if you filter after unnesting.
+
+**Net worth comes from `balance_snapshots`, not `accounts.balance`.** Take the latest snapshot per account and sum the raw balances. Balances carry their own sign — liabilities are negative — so do **not** flip signs by `classification`; that adds debt back and inflates net worth. Snapshots can be sparse (manual accounts, paused syncs), so time-series queries must carry each account's last known balance forward rather than bucketing snapshots by period.
+
+**Tags are a `VARCHAR[]` column.** Use `list_contains(tags, 'foo')` for membership (wrap in `COALESCE(..., false)` — untagged rows are `NULL`), and `UNNEST(tags)` in a subquery to group by tag.
+
+**Use `now()::TIMESTAMP::DATE` for "today".** `CURRENT_DATE` needs the icu extension, which Treeline deliberately doesn't load (`tl query`, the desktop app, and MCP all reject it) — the double cast works everywhere.
+
+## Net worth right now
+
+```sql
+WITH latest AS (
+  SELECT account_id, balance
+  FROM balance_snapshots
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY account_id ORDER BY snapshot_time DESC) = 1
+)
+SELECT ROUND(SUM(balance), 2) AS net_worth FROM latest;
+```
+
+Latest snapshot per account, raw sum. No sign flipping (see conventions).
+
+## Net worth over time
+
+```sql
+WITH months AS (
+  SELECT DISTINCT DATE_TRUNC('month', snapshot_time) AS month
+  FROM balance_snapshots
+),
+carried AS (
+  SELECT m.month, s.account_id, s.balance,
+    ROW_NUMBER() OVER (
+      PARTITION BY m.month, s.account_id
+      ORDER BY s.snapshot_time DESC
+    ) AS rn
+  FROM months m
+  JOIN balance_snapshots s ON s.snapshot_time < m.month + INTERVAL 1 MONTH
+)
+SELECT month, ROUND(SUM(balance), 2) AS net_worth
+FROM carried
+WHERE rn = 1
+GROUP BY month
+ORDER BY month;
+```
+
+For each month, every account contributes its last balance *as of* that month's end — not just snapshots taken during the month. Real snapshot data is sparse (manual accounts, paused syncs); bucketing by snapshot month silently drops accounts and produces wild swings.
+
+## Current balance per account
+
+```sql
+WITH latest AS (
+  SELECT account_id, balance, snapshot_time
+  FROM balance_snapshots
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY account_id ORDER BY snapshot_time DESC) = 1
+)
+SELECT a.name, a.account_type, a.classification, l.balance,
+       CAST(l.snapshot_time AS DATE) AS as_of
+FROM latest l
+JOIN accounts a USING (account_id)
+ORDER BY l.balance DESC;
+```
+
+The `as_of` date matters: a stale snapshot means a stale answer, and saying so builds trust.
+
+## Spending by month
+
+```sql
+SELECT DATE_TRUNC('month', posted_date) AS month, ROUND(SUM(-amount), 2) AS spending
+FROM transactions
+WHERE amount < 0
+  AND NOT COALESCE(list_contains(tags, 'transfer'), false)
+  AND NOT COALESCE(list_contains(tags, 'payment'), false)
+GROUP BY month
+ORDER BY month;
+```
+
+Without the tag exclusions, every credit card payment and savings transfer counts as an expense.
+
+## Income by month
+
+```sql
+SELECT DATE_TRUNC('month', posted_date) AS month, ROUND(SUM(amount), 2) AS income
+FROM transactions
+WHERE amount > 0
+  AND NOT COALESCE(list_contains(tags, 'transfer'), false)
+  AND NOT COALESCE(list_contains(tags, 'payment'), false)
+GROUP BY month
+ORDER BY month;
+```
+
+Same exclusions on the income side: a transfer *into* checking isn't income, and a payment arriving at a credit card is a positive amount there.
+
+## Savings rate
+
+```sql
+WITH monthly AS (
+  SELECT DATE_TRUNC('month', posted_date) AS month,
+    SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) AS income,
+    SUM(CASE WHEN amount < 0 THEN -amount ELSE 0 END) AS spending
+  FROM transactions
+  WHERE NOT COALESCE(list_contains(tags, 'transfer'), false)
+    AND NOT COALESCE(list_contains(tags, 'payment'), false)
+  GROUP BY month
+)
+SELECT month, income, spending,
+       ROUND(100 * (income - spending) / NULLIF(income, 0), 1) AS savings_rate_pct
+FROM monthly
+ORDER BY month;
+```
+
+`NULLIF` guards months with no income. Partial months (the current one, the first synced one) will look off — consider excluding them when summarizing.
+
+## Spending by tag
+
+```sql
+SELECT tag, ROUND(SUM(-amount), 2) AS total, COUNT(*) AS txns
+FROM (
+  SELECT UNNEST(tags) AS tag, amount
+  FROM transactions
+  WHERE amount < 0
+    AND posted_date >= now()::TIMESTAMP::DATE - INTERVAL 90 DAY
+    AND NOT COALESCE(list_contains(tags, 'transfer'), false)
+    AND NOT COALESCE(list_contains(tags, 'payment'), false)
+)
+GROUP BY tag
+ORDER BY total DESC;
+```
+
+Transfer exclusion happens *inside* the subquery, before `UNNEST` — see conventions. Note a transaction with two tags counts toward both, so tag totals can legitimately exceed total spending.
+
+## Spending trend per tag
+
+```sql
+SELECT tag, DATE_TRUNC('month', posted_date) AS month, ROUND(SUM(-amount), 2) AS total
+FROM (
+  SELECT UNNEST(tags) AS tag, posted_date, amount
+  FROM transactions
+  WHERE amount < 0
+    AND NOT COALESCE(list_contains(tags, 'transfer'), false)
+    AND NOT COALESCE(list_contains(tags, 'payment'), false)
+)
+GROUP BY tag, month
+ORDER BY tag, month;
+```
+
+## Top merchants
+
+```sql
+SELECT description, COUNT(*) AS txns, ROUND(SUM(-amount), 2) AS total
+FROM transactions
+WHERE amount < 0
+  AND posted_date >= now()::TIMESTAMP::DATE - INTERVAL 90 DAY
+  AND NOT COALESCE(list_contains(tags, 'transfer'), false)
+  AND NOT COALESCE(list_contains(tags, 'payment'), false)
+GROUP BY description
+ORDER BY total DESC
+LIMIT 10;
+```
+
+`description` is the raw bank string, so the same merchant can appear under several variants — good enough for a top-10, but say so when it matters.
+
+## Recurring charges & subscriptions
+
+```sql
+SELECT description,
+       COUNT(DISTINCT DATE_TRUNC('month', posted_date)) AS months_seen,
+       ROUND(AVG(-amount), 2) AS avg_amount,
+       ROUND(MIN(-amount), 2) AS min_amount,
+       ROUND(MAX(-amount), 2) AS max_amount
+FROM transactions
+WHERE amount < 0
+GROUP BY description
+HAVING months_seen >= 3
+   AND (MAX(-amount) - MIN(-amount)) / NULLIF(AVG(-amount), 0) < 0.25
+ORDER BY avg_amount DESC;
+```
+
+Heuristic: same description in 3+ distinct months with amounts within ±25% of each other. Catches subscriptions and steady bills without relying on tags; surface `min ≠ max` rows as possible price changes.
+
+## Largest expenses this month
+
+```sql
+SELECT posted_date, description, ROUND(-amount, 2) AS spent, tags
+FROM transactions
+WHERE amount < 0
+  AND posted_date >= DATE_TRUNC('month', now()::TIMESTAMP::DATE)
+  AND NOT COALESCE(list_contains(tags, 'transfer'), false)
+  AND NOT COALESCE(list_contains(tags, 'payment'), false)
+ORDER BY amount ASC
+LIMIT 15;
+```
+
+## Untagged transactions
+
+```sql
+SELECT posted_date, description, amount, account_name
+FROM transactions
+WHERE tags IS NULL OR LEN(tags) = 0
+ORDER BY posted_date DESC
+LIMIT 25;
+```
+
+The review queue. If you're tagging on the user's behalf, propose tags and let them confirm — check their existing tag vocabulary first (`SELECT DISTINCT UNNEST(tags) FROM transactions`).
+
+## Exploring further
+
+```sql
+SELECT table_name, table_type
+FROM information_schema.tables
+WHERE table_schema = 'main';
+```
+
+`DESCRIBE transactions` (or any table) shows columns. The full schema reference is at [Database Schema](/reference/database-schema/). Prefer the views (`transactions`, `accounts`, `balance_snapshots`) — the `sys_*` tables carry raw provider data and include soft-deleted rows.

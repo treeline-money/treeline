@@ -33,6 +33,7 @@ export default defineConfig({
 					items: [
 						{ label: 'Overview', slug: 'ai-agents' },
 						{ label: 'MCP Server', slug: 'ai-agents/mcp-server' },
+						{ label: 'Query Cookbook', slug: 'ai-agents/query-cookbook' },
 						{ label: 'OpenClaw', slug: 'ai-agents/openclaw' },
 						{ label: 'Claude Code', slug: 'ai-agents/claude-code' },
 						{ label: 'CLI for Agents', slug: 'ai-agents/cli-for-agents' },

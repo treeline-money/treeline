@@ -79,7 +79,7 @@ impl JsonRpcResponse {
 /// Build instructions that include encryption status so the client knows
 /// immediately if the database is locked.
 fn build_instructions() -> String {
-    let base = "You are connected to Treeline, a local-first personal finance app backed by DuckDB. Use the query tool for financial analysis and skills_list to discover user-created financial skills.";
+    let base = "You are connected to Treeline, a local-first personal finance app backed by DuckDB. Use the query tool for financial analysis. Before computing net worth, spending, income, or other aggregates, consult the query cookbook at https://docs.treeline.money/ai-agents/query-cookbook/ — it has tested canonical queries and the conventions (sign handling, transfer exclusion, snapshot semantics) that make naive queries return wrong numbers.";
 
     let treeline_dir = get_treeline_dir();
     let db_path = treeline_dir.join("treeline.duckdb");
