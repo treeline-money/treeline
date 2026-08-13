@@ -13,24 +13,37 @@ Written for AI agents, useful for humans. If you're an agent: read the conventio
 
 **Query the `transactions` view, and don't outsmart it.** The view already excludes deleted rows, and split transactions are handled for you: splitting soft-deletes the parent, so only the child rows are visible. Do **not** add `parent_transaction_id IS NULL` as a "defensive" filter — that excludes every split child and undercounts.
 
-**Transfers aren't spending or income — and tags are entirely user-defined.** Money moving between your own accounts (savings transfers, brokerage moves, credit card payments) shows up as ordinary transactions on *both* sides, and there is **no fixed tag vocabulary**: one user tags these `transfer`, another `savings`, another nothing at all. Before trusting any cash-flow number, discover what *this* user's tags mean:
+**Don't assume what counts as "spending" or "income" — that's the user's definition, not yours.** `amount < 0` is an outflow, nothing more. The same row — a credit card payment, an investment contribution, a 529 deposit, a Venmo to a friend — is consumption to one user, savings to another, noise to a third. Setups differ just as much: some users track transactions on every account (so a card payment appears twice, an outflow and a matching inflow); others track only some accounts (so a brokerage contribution appears once, as a bare outflow from checking). And tags are entirely user-defined — there is no fixed vocabulary.
+
+So before answering cash-flow questions, discover this user's definitions instead of supplying your own:
 
 ```sql
+-- Which accounts even carry transactions?
+SELECT a.name, a.account_type, a.classification, COUNT(t.transaction_id) AS txns
+FROM accounts a
+LEFT JOIN transactions t USING (account_id)
+GROUP BY a.name, a.account_type, a.classification
+ORDER BY txns DESC;
+```
+
+```sql
+-- What vocabulary does this user tag with?
 SELECT tag, COUNT(*) AS n
 FROM (SELECT UNNEST(tags) AS tag FROM transactions)
 GROUP BY tag ORDER BY n DESC;
 ```
 
 ```sql
+-- What are the biggest flows, and how are they tagged?
 SELECT posted_date, description, amount, account_name, tags
 FROM transactions
 ORDER BY ABS(amount) DESC
 LIMIT 20;
 ```
 
-If the biggest rows are account-to-account moves, note which tags they carry — and when in doubt, ask the user. A tell-tale sign of leaking transfers is income that closely tracks spending month to month. If the user doesn't tag internal movement at all, say so rather than reporting silently inflated numbers.
+Build your filters from what you learn, and when a large flow is ambiguous, ask the user rather than classify it yourself. Patterns you notice — income closely tracking spending, big untagged outflows — are questions to raise with the user, not conclusions to bake into the numbers.
 
-The queries below exclude internal movement with `list_has_any(tags, ['transfer', 'payment'])` — **that list is a placeholder**; substitute the tags this user actually uses. Exclusion must happen **at the row level, before `UNNEST`** — a transfer tagged `['transfer', 'savings']` leaks into per-tag totals through its second tag if you filter after unnesting.
+The queries below exclude rows with `list_has_any(tags, ['transfer', 'payment'])`. **That list is a syntactic placeholder** showing where the user's exclusions plug in — not a recommendation of what to exclude. Whatever the list ends up being, apply it **at the row level, before `UNNEST`** — a row tagged `['transfer', 'savings']` leaks into per-tag totals through its second tag if you filter after unnesting.
 
 **Net worth comes from `balance_snapshots`, not `accounts.balance`.** Take the latest snapshot per account and sum the raw balances. Balances carry their own sign — liabilities are negative — so do **not** flip signs by `classification`; that adds debt back and inflates net worth. Snapshots can be sparse (manual accounts, paused syncs), so time-series queries must carry each account's last known balance forward rather than bucketing snapshots by period.
 
@@ -104,7 +117,7 @@ GROUP BY month
 ORDER BY month;
 ```
 
-Without the tag exclusions, every credit card payment and savings transfer counts as an expense.
+The exclusion list is the user's definition of what doesn't count (see conventions) — without one, every outflow counts, whatever it is.
 
 ## Income by month
 
@@ -117,7 +130,7 @@ GROUP BY month
 ORDER BY month;
 ```
 
-Same exclusions on the income side: a transfer *into* checking isn't income, and a payment arriving at a credit card is a positive amount there.
+Apply the user's exclusions on the income side too — depending on their setup, inflows can include the receiving side of internal moves (a payment arriving at a tracked credit card is a positive amount there).
 
 ## Savings rate
 
@@ -136,7 +149,7 @@ FROM monthly
 ORDER BY month;
 ```
 
-`NULLIF` guards months with no income. Partial months (the current one, the first synced one) will look off — consider excluding them when summarizing.
+This is one common definition of savings rate — confirm it matches the user's before presenting it as *their* savings rate. `NULLIF` guards months with no income. Partial months (the current one, the first synced one) will look off — consider excluding them when summarizing.
 
 ## Spending by tag
 
