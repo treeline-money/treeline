@@ -52,8 +52,10 @@ const SHARED_SETTING_PATHS: &[&str] = &[
 /// Files that must never be overwritten by a bundle, regardless of what the
 /// producer chose to include. These are device-local: hub credentials, the
 /// hub's own sync metadata, the DuckDB lock file, the local 3-way-merge
-/// snapshot, and per-device logs. Defense in depth — a correct producer
-/// won't include any of these, but the receiver enforces it anyway.
+/// snapshot, and the legacy per-device log database. Defense in depth — a
+/// correct producer won't include any of these, but the receiver enforces it
+/// anyway. `logs.duckdb` is no longer written, but old installs still have one
+/// on disk and it must never ride along in a bundle.
 const DEVICE_LOCAL_DENYLIST: &[&str] = &[
     "hub.json",
     "hub-token",

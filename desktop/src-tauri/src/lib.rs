@@ -20,8 +20,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use treeline_core::config::ColumnMappings;
 use treeline_core::services::{
     BackfillExecuteResult, BackupService, BalanceSnapshotPreview, DemoService, EncryptionService,
-    EntryPoint, ImportOptions, KeychainService, LogEvent, LoggingService, NumberFormat,
-    PluginService,
+    ImportOptions, KeychainService, NumberFormat, PluginService,
 };
 use treeline_core::TreelineContext;
 
@@ -126,20 +125,6 @@ impl Default for AppUpdateState {
     fn default() -> Self {
         Self {
             update: tauri::async_runtime::Mutex::new(None),
-        }
-    }
-}
-
-/// App state holding the logging service for structured event logging
-pub struct LoggingState {
-    /// The logging service (initialized on app startup, None if init failed)
-    logger: Mutex<Option<LoggingService>>,
-}
-
-impl Default for LoggingState {
-    fn default() -> Self {
-        Self {
-            logger: Mutex::new(None),
         }
     }
 }
@@ -957,20 +942,10 @@ async fn run_sync(
     lookback_days: Option<i64>,
     encryption_state: State<'_, EncryptionState>,
     context_state: State<'_, TreelineContextState>,
-    logging_state: State<'_, LoggingState>,
 ) -> Result<String, String> {
     let key = get_encryption_key(&encryption_state)?;
     let dry_run = dry_run.unwrap_or(false);
     let balances_only = balances_only.unwrap_or(false);
-
-    // Log sync started
-    {
-        if let Ok(guard) = logging_state.logger.lock() {
-            if let Some(logger) = guard.as_ref() {
-                let _ = logger.log(LogEvent::new("sync_started"));
-            }
-        }
-    }
 
     // Clone the shared repository Arc - this allows sync to use the same
     // database connection without holding the file lock during network I/O.
@@ -1010,55 +985,6 @@ async fn run_sync(
     })
     .await
     .map_err(|e| format!("Task failed: {}", e))??;
-
-    // Log sync results per integration
-    {
-        if let Ok(guard) = logging_state.logger.lock() {
-            if let Some(logger) = guard.as_ref() {
-                // Parse the result to log per-integration results
-                if let Ok(sync_result) = serde_json::from_str::<serde_json::Value>(&result) {
-                    if let Some(results) = sync_result.get("results").and_then(|r| r.as_array()) {
-                        for r in results {
-                            let integration = r
-                                .get("integration")
-                                .and_then(|i| i.as_str())
-                                .unwrap_or("unknown");
-                            if let Some(error) = r.get("error").and_then(|e| e.as_str()) {
-                                let _ = logger.log(
-                                    LogEvent::new("sync_failed")
-                                        .with_integration(integration)
-                                        .with_error(error),
-                                );
-                            } else {
-                                let _ = logger.log(
-                                    LogEvent::new("sync_completed").with_integration(integration),
-                                );
-                            }
-                            // Log any auto-tag rule failures
-                            if let Some(failures) =
-                                r.get("auto_tag_failures").and_then(|f| f.as_array())
-                            {
-                                for failure in failures {
-                                    let rule_name = failure
-                                        .get("rule_name")
-                                        .and_then(|n| n.as_str())
-                                        .unwrap_or("unknown");
-                                    let error_msg = failure
-                                        .get("error")
-                                        .and_then(|e| e.as_str())
-                                        .unwrap_or("unknown error");
-                                    let _ = logger.log(
-                                        LogEvent::new("auto_tag_rule_failed")
-                                            .with_error(&format!("{}: {}", rule_name, error_msg)),
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
 
     Ok(result)
 }
@@ -2227,74 +2153,6 @@ fn run_migrations(
     // Getting or creating the shared context ensures migrations run
     let _ctx_guard = get_or_create_context(&context_state, key)?;
     Ok(())
-}
-
-// ============================================================================
-// Logging Commands
-// ============================================================================
-
-/// Log a page/view navigation from the frontend
-/// Privacy: Only logs the view name, never any user data
-#[tauri::command]
-fn log_page(page: String, logging_state: State<LoggingState>) -> Result<(), String> {
-    let guard = logging_state
-        .logger
-        .lock()
-        .map_err(|_| "Lock failed".to_string())?;
-    if let Some(logger) = guard.as_ref() {
-        let _ = logger.log_page(&page); // Silently ignore errors
-    }
-    Ok(())
-}
-
-/// Log a user action from the frontend
-/// Privacy: Only logs action/component names, never any user data
-#[tauri::command]
-fn log_action(
-    action: String,
-    component: String,
-    logging_state: State<LoggingState>,
-) -> Result<(), String> {
-    let guard = logging_state
-        .logger
-        .lock()
-        .map_err(|_| "Lock failed".to_string())?;
-    if let Some(logger) = guard.as_ref() {
-        let event = LogEvent::new(&action).with_page(&component);
-        let _ = logger.log(event); // Silently ignore errors
-    }
-    Ok(())
-}
-
-/// Log an error from the frontend
-/// Privacy: Error messages should be sanitized by the frontend before logging
-#[tauri::command]
-fn log_error(
-    event: String,
-    message: String,
-    details: Option<String>,
-    logging_state: State<LoggingState>,
-) -> Result<(), String> {
-    let guard = logging_state
-        .logger
-        .lock()
-        .map_err(|_| "Lock failed".to_string())?;
-    if let Some(logger) = guard.as_ref() {
-        let _ = logger.log_error(&event, &message, details.as_deref());
-    }
-    Ok(())
-}
-
-/// Get the path to the logs database for support purposes
-#[tauri::command]
-fn get_logs_path(logging_state: State<LoggingState>) -> Result<Option<String>, String> {
-    let guard = logging_state
-        .logger
-        .lock()
-        .map_err(|_| "Lock failed".to_string())?;
-    Ok(guard
-        .as_ref()
-        .map(|l| l.db_path().to_string_lossy().to_string()))
 }
 
 // ============================================================================
@@ -3673,35 +3531,12 @@ pub fn run() {
         .manage(DevtoolsState::default())
         .manage(AppUpdateState::default())
         .manage(TreelineContextState::default())
-        .manage(LoggingState::default())
         .manage(PluginWatcherState::default())
         .manage(HubWatchState::default())
         .manage(HubLinkState::default())
         .setup(|app| {
             let window = app.get_webview_window("main").unwrap();
             let devtools_state = app.state::<DevtoolsState>();
-            let logging_state = app.state::<LoggingState>();
-
-            // Initialize logging service
-            if let Ok(treeline_dir) = get_treeline_dir() {
-                match LoggingService::new(
-                    &treeline_dir,
-                    EntryPoint::Desktop,
-                    env!("CARGO_PKG_VERSION"),
-                ) {
-                    Ok(logger) => {
-                        // Log app startup
-                        let _ = logger.log_event("app_started");
-                        if let Ok(mut guard) = logging_state.logger.lock() {
-                            *guard = Some(logger);
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("Warning: Failed to initialize logging: {}", e);
-                        // Continue without logging - it should never block app startup
-                    }
-                }
-            }
 
             // Diagnostic: verify DuckDB encryption support (httpfs extension)
             // Only runs when TREELINE_CHECK_ENCRYPTION=1 to avoid impacting normal startup.
@@ -3721,22 +3556,6 @@ pub fn run() {
                 match &enc_check {
                     Ok(()) => eprintln!("Encryption support: httpfs loaded successfully"),
                     Err(e) => eprintln!("Encryption support: httpfs failed — {e}"),
-                }
-                if let Ok(guard) = logging_state.logger.lock() {
-                    if let Some(logger) = guard.as_ref() {
-                        match &enc_check {
-                            Ok(()) => {
-                                let _ = logger.log_event("encryption_support_ok");
-                            }
-                            Err(e) => {
-                                let _ = logger.log_error(
-                                    "encryption_support_failed",
-                                    &format!("httpfs: {e}"),
-                                    None,
-                                );
-                            }
-                        }
-                    }
                 }
             }
 
@@ -3857,10 +3676,6 @@ pub fn run() {
             check_for_app_update,
             download_and_install_app_update,
             // Logging commands
-            log_page,
-            log_action,
-            log_error,
-            get_logs_path,
             // Hub watch (background watcher)
             start_hub_watch,
             stop_hub_watch,

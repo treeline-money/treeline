@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
-  import { registry, modKey, logger } from "../sdk";
+  import { registry, modKey } from "../sdk";
   import { createPluginSDK } from "../sdk/public";
   import type { Tab, ViewDefinition } from "../sdk";
 
@@ -22,11 +22,6 @@
 
       // Emit event when tab changes (not on initial load)
       if (prevActiveTabId !== null && newActiveTabId !== prevActiveTabId && newActiveTabId !== null) {
-        // Log page navigation
-        const tab = registry.tabs.find((t) => t.id === newActiveTabId);
-        if (tab) {
-          logger.page(tab.viewId);
-        }
         // Small delay to let the tab render before focusing
         setTimeout(() => registry.emit("tab:activated"), 10);
       }

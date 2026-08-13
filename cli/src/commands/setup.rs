@@ -4,8 +4,7 @@ use anyhow::Result;
 use clap::Subcommand;
 use colored::Colorize;
 
-use super::{get_context, get_logger, get_treeline_dir, log_event};
-use treeline_core::LogEvent;
+use super::{get_context, get_treeline_dir};
 
 /// Environment variable for Lunchflow API key
 const LUNCHFLOW_API_KEY_ENV: &str = "LUNCHFLOW_API_KEY";
@@ -37,46 +36,18 @@ pub enum SetupCommands {
 }
 
 pub fn run(command: Option<SetupCommands>) -> Result<()> {
-    let logger = get_logger();
-
     match command {
         Some(SetupCommands::SimpleFIN { token }) => {
-            log_event(
-                &logger,
-                LogEvent::new("setup_started").with_integration("simplefin"),
-            );
-
             println!("Setting up SimpleFIN integration...");
 
             let ctx = get_context()?;
-            match ctx.sync_service.setup_simplefin(&token) {
-                Ok(()) => {
-                    log_event(
-                        &logger,
-                        LogEvent::new("setup_completed").with_integration("simplefin"),
-                    );
-                    println!("{}", "SimpleFIN configured successfully!".green());
-                    println!();
-                    println!("Run '{}' to sync your accounts.", "tl sync".cyan());
-                    Ok(())
-                }
-                Err(e) => {
-                    log_event(
-                        &logger,
-                        LogEvent::new("setup_failed")
-                            .with_integration("simplefin")
-                            .with_error(&e.to_string()),
-                    );
-                    Err(e)
-                }
-            }
+            ctx.sync_service.setup_simplefin(&token)?;
+            println!("{}", "SimpleFIN configured successfully!".green());
+            println!();
+            println!("Run '{}' to sync your accounts.", "tl sync".cyan());
+            Ok(())
         }
         Some(SetupCommands::Lunchflow { api_key, base_url }) => {
-            log_event(
-                &logger,
-                LogEvent::new("setup_started").with_integration("lunchflow"),
-            );
-
             // Try to get API key from argument, then environment variable
             let api_key = api_key
                 .or_else(|| std::env::var(LUNCHFLOW_API_KEY_ENV).ok())
@@ -101,30 +72,12 @@ pub fn run(command: Option<SetupCommands>) -> Result<()> {
             std::fs::create_dir_all(&treeline_dir)?;
 
             let ctx = get_context()?;
-            match ctx
-                .sync_service
-                .setup_lunchflow(&api_key, base_url.as_deref())
-            {
-                Ok(()) => {
-                    log_event(
-                        &logger,
-                        LogEvent::new("setup_completed").with_integration("lunchflow"),
-                    );
-                    println!("{}", "Lunchflow configured successfully!".green());
-                    println!();
-                    println!("Run '{}' to sync your accounts.", "tl sync".cyan());
-                    Ok(())
-                }
-                Err(e) => {
-                    log_event(
-                        &logger,
-                        LogEvent::new("setup_failed")
-                            .with_integration("lunchflow")
-                            .with_error(&e.to_string()),
-                    );
-                    Err(e)
-                }
-            }
+            ctx.sync_service
+                .setup_lunchflow(&api_key, base_url.as_deref())?;
+            println!("{}", "Lunchflow configured successfully!".green());
+            println!();
+            println!("Run '{}' to sync your accounts.", "tl sync".cyan());
+            Ok(())
         }
         Some(SetupCommands::Status) => {
             let ctx = get_context()?;
@@ -143,19 +96,10 @@ pub fn run(command: Option<SetupCommands>) -> Result<()> {
             Ok(())
         }
         Some(SetupCommands::Remove { name }) => {
-            log_event(
-                &logger,
-                LogEvent::new("setup_remove").with_integration(&name),
-            );
-
             let ctx = get_context()?;
-            match ctx.sync_service.remove_integration(&name) {
-                Ok(()) => {
-                    println!("{} integration removed.", name.green());
-                    Ok(())
-                }
-                Err(e) => Err(e),
-            }
+            ctx.sync_service.remove_integration(&name)?;
+            println!("{} integration removed.", name.green());
+            Ok(())
         }
         None => {
             // Show help when no subcommand provided

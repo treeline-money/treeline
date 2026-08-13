@@ -208,20 +208,6 @@ The MCP server (`tl mcp`, implemented in `cli/src/commands/mcp.rs`) exposes CLI 
 
 Not every CLI command needs an MCP tool (e.g., `update`, `encrypt`, `setup` are CLI-only). But any command that reads or modifies financial data (queries, sync, tags, import, etc.) should have an MCP equivalent so AI agents can perform the same operations.
 
-## Logging
-
-Both CLI and desktop app log to `~/.treeline/logs.duckdb`.
-
-**Privacy:** Never log user data (transactions, accounts, amounts). Only log:
-- Event names
-- Integration names
-- Sanitized error messages
-
-View logs:
-```bash
-./target/release/tl logs list --limit 20
-```
-
 ## Testing
 
 ```bash

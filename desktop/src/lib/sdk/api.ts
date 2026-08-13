@@ -3,7 +3,6 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
-import { logger } from "./logging";
 
 export interface QueryResult {
   columns: string[];
@@ -46,8 +45,6 @@ export async function executeQuery(query: string, options: ExecuteQueryOptions =
       row_count: response.row_count || 0,
     };
   } catch (e) {
-    // Log query errors (but NOT the query itself which might contain user data)
-    logger.error("query_error", typeof e === "string" ? e : "Query execution failed");
     // Tauri invoke errors come as strings from Rust's Result::Err
     if (typeof e === "string") {
       throw new Error(e);
@@ -108,8 +105,6 @@ export async function executeQueryWithParams(
       row_count: response.row_count || 0,
     };
   } catch (e) {
-    // Log query errors (but NOT the query itself which might contain user data)
-    logger.error("query_error", typeof e === "string" ? e : "Query execution failed");
     // Tauri invoke errors come as strings from Rust's Result::Err
     if (typeof e === "string") {
       throw new Error(e);

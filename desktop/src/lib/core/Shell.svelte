@@ -13,7 +13,7 @@
   import ImportModal from "./ImportModal.svelte";
   import PendingImportsModal from "./PendingImportsModal.svelte";
   import { Icon } from "../shared";
-  import { registry, getDemoMode, enableDemo, disableDemo, runSync, toast, getAppSetting, activityStore, listPendingImports, pluginUpdatesStore, logger, type PendingImportFile } from "../sdk";
+  import { registry, getDemoMode, enableDemo, disableDemo, runSync, toast, getAppSetting, activityStore, listPendingImports, pluginUpdatesStore, type PendingImportFile } from "../sdk";
   import { initUpdater, restartApp, checkForUpdate } from "../sdk/updater";
 
   let commandPaletteOpen = $state(false);
@@ -157,7 +157,6 @@
       category: "Core",
       shortcut: "cmd+,",
       execute: () => {
-        logger.action("settings_opened", "command");
         settingsInitialSection = undefined;
         settingsModalOpen = true;
       },

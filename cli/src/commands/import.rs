@@ -9,9 +9,8 @@ use comfy_table::{ContentArrangement, Table};
 use rust_decimal::Decimal;
 use treeline_core::config::ColumnMappings;
 use treeline_core::services::import::{ImportOptions, NumberFormat};
-use treeline_core::LogEvent;
 
-use super::{get_context, get_logger, log_event};
+use super::get_context;
 
 pub fn run(
     file: &str,
@@ -36,12 +35,6 @@ pub fn run(
     dry_run: bool,
     json: bool,
 ) -> Result<()> {
-    let logger = get_logger();
-    log_event(
-        &logger,
-        LogEvent::new("import_started").with_command("import"),
-    );
-
     let ctx = get_context()?;
 
     // Resolve file path — support stdin via "-"
@@ -148,14 +141,7 @@ pub fn run(
     // Run import (preview or execute)
     let result = ctx
         .import_service
-        .import(&file_path, &account_id, &mappings, &options, dry_run)
-        .map_err(|e| {
-            log_event(
-                &logger,
-                LogEvent::new("import_failed").with_error(&e.to_string()),
-            );
-            e
-        })?;
+        .import(&file_path, &account_id, &mappings, &options, dry_run)?;
 
     // Save profile if requested (only on successful non-preview import)
     if let Some(profile_name) = save_profile {
@@ -170,11 +156,6 @@ pub fn run(
             }
         }
     }
-
-    log_event(
-        &logger,
-        LogEvent::new("import_completed").with_command("import"),
-    );
 
     // Output
     if json {

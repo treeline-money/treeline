@@ -10,7 +10,6 @@
 pub mod adapters;
 pub mod config;
 pub mod domain;
-pub mod log_migrations;
 pub mod migrations;
 pub mod ports;
 pub mod services;
@@ -31,7 +30,6 @@ pub use domain::{
     Account, BackupMetadata, BalanceSnapshot, EncryptionMetadata, EncryptionStatus, Transaction,
     User,
 };
-pub use services::{EntryPoint, LogEntry, LogEvent, LoggingService};
 
 /// Main context for Treeline operations
 ///

@@ -6,9 +6,7 @@ use anyhow::Result;
 use clap::Subcommand;
 use colored::Colorize;
 use dialoguer::{Confirm, Password};
-use treeline_core::LogEvent;
 
-use super::{get_logger, log_event};
 use treeline_core::config::Config;
 use treeline_core::services::{BackupService, EncryptionService, KeychainService};
 
@@ -185,12 +183,6 @@ pub fn run(command: Option<EncryptCommands>, password: Option<String>, json: boo
             }
         }
         None => {
-            let logger = get_logger();
-            log_event(
-                &logger,
-                LogEvent::new("encrypt_started").with_command("encrypt"),
-            );
-
             // Encrypt the database
             if encryption_service.is_encrypted()? {
                 anyhow::bail!("Database is already encrypted. Use 'tl decrypt' first.");
@@ -214,37 +206,21 @@ pub fn run(command: Option<EncryptCommands>, password: Option<String>, json: boo
             // Create BackupService directly - don't need full context for encryption
             let backup_service =
                 BackupService::new(treeline_dir.clone(), "treeline.duckdb".to_string());
-            match encryption_service.encrypt(&pwd, &backup_service) {
-                Ok(result) => {
-                    log_event(
-                        &logger,
-                        LogEvent::new("encrypt_completed").with_command("encrypt"),
-                    );
+            let result = encryption_service.encrypt(&pwd, &backup_service)?;
 
-                    // Best-effort: store derived key in keychain for seamless access
-                    if let Ok(key_hex) = encryption_service.derive_key_for_connection(&pwd) {
-                        let _ = KeychainService::store_key(&key_hex);
-                    }
+            // Best-effort: store derived key in keychain for seamless access
+            if let Ok(key_hex) = encryption_service.derive_key_for_connection(&pwd) {
+                let _ = KeychainService::store_key(&key_hex);
+            }
 
-                    if json {
-                        println!("{}", serde_json::to_string_pretty(&result)?);
-                    } else {
-                        println!("{}", "Database encrypted successfully".green());
-                        if let Some(backup_name) = result.backup_name {
-                            println!("  Backup created: {}", backup_name);
-                        }
-                        println!("  {}", "Encryption key stored in OS keychain".dimmed());
-                    }
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                println!("{}", "Database encrypted successfully".green());
+                if let Some(backup_name) = result.backup_name {
+                    println!("  Backup created: {}", backup_name);
                 }
-                Err(e) => {
-                    log_event(
-                        &logger,
-                        LogEvent::new("encrypt_failed")
-                            .with_command("encrypt")
-                            .with_error(&e.to_string()),
-                    );
-                    return Err(e);
-                }
+                println!("  {}", "Encryption key stored in OS keychain".dimmed());
             }
         }
     }
@@ -253,12 +229,6 @@ pub fn run(command: Option<EncryptCommands>, password: Option<String>, json: boo
 }
 
 pub fn run_decrypt(password: Option<String>, json: bool) -> Result<()> {
-    let logger = get_logger();
-    log_event(
-        &logger,
-        LogEvent::new("decrypt_started").with_command("decrypt"),
-    );
-
     let treeline_dir = super::get_treeline_dir();
     let config = Config::load(&treeline_dir)?;
 
@@ -287,33 +257,17 @@ pub fn run_decrypt(password: Option<String>, json: bool) -> Result<()> {
 
     // Create BackupService directly - don't need full context for decryption
     let backup_service = BackupService::new(treeline_dir.clone(), "treeline.duckdb".to_string());
-    match encryption_service.decrypt(&pwd, &backup_service) {
-        Ok(result) => {
-            log_event(
-                &logger,
-                LogEvent::new("decrypt_completed").with_command("decrypt"),
-            );
+    let result = encryption_service.decrypt(&pwd, &backup_service)?;
 
-            // Best-effort: clear key from keychain since DB is no longer encrypted
-            let _ = KeychainService::delete_key();
+    // Best-effort: clear key from keychain since DB is no longer encrypted
+    let _ = KeychainService::delete_key();
 
-            if json {
-                println!("{}", serde_json::to_string_pretty(&result)?);
-            } else {
-                println!("{}", "Database decrypted successfully".green());
-                if let Some(backup_name) = result.backup_name {
-                    println!("  Backup created: {}", backup_name);
-                }
-            }
-        }
-        Err(e) => {
-            log_event(
-                &logger,
-                LogEvent::new("decrypt_failed")
-                    .with_command("decrypt")
-                    .with_error(&e.to_string()),
-            );
-            return Err(e);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else {
+        println!("{}", "Database decrypted successfully".green());
+        if let Some(backup_name) = result.backup_name {
+            println!("  Backup created: {}", backup_name);
         }
     }
 

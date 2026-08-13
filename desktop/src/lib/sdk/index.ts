@@ -177,9 +177,6 @@ export type {
 // Platform utilities
 export { isMac, modKey, formatShortcut } from "./platform";
 
-// Logging (for troubleshooting)
-export { logger, logPage, logAction, logError, getLogsPath } from "./logging";
-
 // Currency utilities
 export {
   SUPPORTED_CURRENCIES,

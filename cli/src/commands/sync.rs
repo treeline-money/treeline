@@ -2,9 +2,8 @@
 
 use anyhow::Result;
 use colored::Colorize;
-use treeline_core::LogEvent;
 
-use super::{get_context, get_logger, log_event};
+use super::get_context;
 
 pub fn run(
     integration: Option<String>,
@@ -12,50 +11,11 @@ pub fn run(
     json: bool,
     lookback_days: Option<i64>,
 ) -> Result<()> {
-    let logger = get_logger();
-    log_event(&logger, LogEvent::new("sync_started").with_command("sync"));
-
     let ctx = get_context()?;
     // CLI always syncs with transactions (balances_only = false)
     let result = ctx
         .sync_service
-        .sync(integration.as_deref(), dry_run, false, lookback_days);
-
-    match &result {
-        Ok(sync_result) => {
-            for sr in &sync_result.results {
-                if let Some(error) = &sr.error {
-                    log_event(
-                        &logger,
-                        LogEvent::new("sync_failed")
-                            .with_integration(&sr.integration)
-                            .with_error(error),
-                    );
-                } else {
-                    log_event(
-                        &logger,
-                        LogEvent::new("sync_completed").with_integration(&sr.integration),
-                    );
-                }
-                // Log any auto-tag rule failures
-                for failure in &sr.auto_tag_failures {
-                    log_event(
-                        &logger,
-                        LogEvent::new("auto_tag_rule_failed")
-                            .with_error(&format!("{}: {}", failure.rule_name, failure.error)),
-                    );
-                }
-            }
-        }
-        Err(e) => {
-            log_event(
-                &logger,
-                LogEvent::new("sync_failed").with_error(&e.to_string()),
-            );
-        }
-    }
-
-    let result = result?;
+        .sync(integration.as_deref(), dry_run, false, lookback_days)?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&result)?);
