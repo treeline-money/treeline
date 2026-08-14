@@ -51,9 +51,25 @@ pub struct TreelineContext {
     pub plugin_service: services::PluginService,
 }
 
+/// Delete the legacy structured-logging database.
+///
+/// The logging feature was removed in 26.8. Nothing writes `logs.duckdb` any
+/// more, but installs that upgrade from an earlier version still carry one —
+/// often hundreds of megabytes, since every write leaked DuckDB blocks that
+/// were never reclaimed. Best-effort by design: a missing file, or a failed
+/// unlink because another process still holds it open, must never block
+/// startup. Anything left behind is retried on the next run.
+fn remove_legacy_logs_db(treeline_dir: &Path) {
+    for name in ["logs.duckdb", "logs.duckdb.wal", "logs.duckdb.lock"] {
+        let _ = std::fs::remove_file(treeline_dir.join(name));
+    }
+}
+
 impl TreelineContext {
     /// Create a new Treeline context
     pub fn new(treeline_dir: &Path, password: Option<&str>) -> Result<Self> {
+        remove_legacy_logs_db(treeline_dir);
+
         let config = Config::load(treeline_dir)?;
 
         // Determine which database file to use

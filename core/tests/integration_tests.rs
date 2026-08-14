@@ -1158,3 +1158,35 @@ fn test_readonly_rejects_create_table() {
     let result = repo.execute_query_readonly("CREATE TABLE evil (id INTEGER)");
     assert!(result.is_err(), "CREATE TABLE should fail in readonly mode");
 }
+
+// ============================================================================
+// Legacy Cleanup Tests
+// ============================================================================
+
+/// The structured-logging feature was removed in 26.8. Installs upgrading from
+/// an earlier version still carry a `logs.duckdb` — often hundreds of MB of
+/// leaked DuckDB blocks — so creating a context must clear it out.
+#[test]
+fn test_context_removes_legacy_logs_db() {
+    let temp_dir = TempDir::new().unwrap();
+    let dir = temp_dir.path();
+
+    std::fs::write(dir.join("logs.duckdb"), "stale logs").unwrap();
+    std::fs::write(dir.join("logs.duckdb.wal"), "stale wal").unwrap();
+    std::fs::write(dir.join("logs.duckdb.lock"), "").unwrap();
+
+    let _ctx = treeline_core::TreelineContext::new(dir, None).expect("context should build");
+
+    assert!(!dir.join("logs.duckdb").exists(), "logs.duckdb should be deleted");
+    assert!(!dir.join("logs.duckdb.wal").exists(), "logs.duckdb.wal should be deleted");
+    assert!(!dir.join("logs.duckdb.lock").exists(), "logs.duckdb.lock should be deleted");
+}
+
+/// Cleanup is best-effort: a directory with no legacy logs database must still
+/// build a context without error.
+#[test]
+fn test_context_without_legacy_logs_db() {
+    let temp_dir = TempDir::new().unwrap();
+    let _ctx =
+        treeline_core::TreelineContext::new(temp_dir.path(), None).expect("context should build");
+}
