@@ -115,6 +115,57 @@ fn test_open_encrypted_db_readonly() {
 }
 
 #[test]
+fn test_encrypted_readonly_rejects_writes_and_host_access() {
+    // Regression: the encrypted read-only path opens an in-memory connection
+    // and ATTACHes the file READ_ONLY, so writes to the in-memory catalog and
+    // filesystem access used to slip through. All of these must be rejected.
+    let (temp_dir, db_path, key_hex) = create_encrypted_db();
+    let repo = DuckDbRepository::new(&db_path, Some(&key_hex)).unwrap();
+
+    // In-memory catalog write (statement gate).
+    assert!(
+        repo.execute_query_readonly("CREATE TABLE memory.evil AS SELECT 1")
+            .is_err(),
+        "in-memory CREATE must be rejected on the read-only path"
+    );
+
+    // Reading a host file via a table function inside a SELECT (external
+    // access disabled — the statement is a valid read, so only the setting
+    // stops it).
+    let secret = temp_dir.path().join("secret.txt");
+    std::fs::write(&secret, "TOPSECRET").unwrap();
+    let read_file = repo.execute_query_readonly(&format!(
+        "SELECT content FROM read_text('{}')",
+        secret.display()
+    ));
+    assert!(
+        read_file.is_err(),
+        "reading a host file must be rejected on the read-only path"
+    );
+
+    // Writing a host file via COPY.
+    let out = temp_dir.path().join("exfil.csv");
+    assert!(
+        repo.execute_query_readonly(&format!("COPY (SELECT 1) TO '{}'", out.display()))
+            .is_err(),
+        "COPY TO a host file must be rejected"
+    );
+    assert!(!out.exists(), "COPY must not have written a file");
+
+    // A statement hiding behind a CHECKPOINT prefix.
+    assert!(
+        repo.execute_query_readonly("CHECKPOINT ; CREATE TABLE memory.evil2 AS SELECT 1")
+            .is_err(),
+        "a statement after CHECKPOINT must not slip through"
+    );
+
+    // A legitimate read still works.
+    assert!(repo
+        .execute_query_readonly("SELECT COUNT(*) FROM sys_accounts")
+        .is_ok());
+}
+
+#[test]
 fn test_open_encrypted_db_readwrite() {
     let (_temp_dir, db_path, key_hex) = create_encrypted_db();
 

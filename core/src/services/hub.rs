@@ -619,6 +619,23 @@ impl HubService {
         treeline_dir.join("hub-token")
     }
 
+    /// Write the master token to disk with owner-only permissions (0600 on
+    /// Unix). The token authorizes every `/api/*` route including token
+    /// issuance and full database pull/push, so on a shared host (homelab,
+    /// VPS) it must not be world-readable. `fs::write` alone would use the
+    /// process umask, typically 0644.
+    fn write_token_file(token_path: &Path, token: &str) -> Result<()> {
+        fs::write(token_path, token)
+            .with_context(|| format!("Failed to write hub token to {}", token_path.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(token_path, fs::Permissions::from_mode(0o600))
+                .with_context(|| format!("Failed to secure {}", token_path.display()))?;
+        }
+        Ok(())
+    }
+
     /// Load or generate the hub auth token.
     ///
     /// Lookup order:
@@ -634,7 +651,7 @@ impl HubService {
         if let Ok(env_token) = std::env::var("TL_HUB_TOKEN") {
             let env_token = env_token.trim().to_string();
             if !env_token.is_empty() {
-                fs::write(&token_path, &env_token)
+                Self::write_token_file(&token_path, &env_token)
                     .context("Failed to persist TL_HUB_TOKEN to hub token file")?;
                 return Ok(env_token);
             }
@@ -646,13 +663,20 @@ impl HubService {
                 .trim()
                 .to_string();
             if !token.is_empty() {
+                // Tighten perms on an existing token from before this was
+                // enforced, so upgrading hubs stop being world-readable.
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = fs::set_permissions(&token_path, fs::Permissions::from_mode(0o600));
+                }
                 return Ok(token);
             }
         }
 
         // Generate a new token
         let token = Self::generate_token();
-        fs::write(&token_path, &token).context("Failed to write hub token")?;
+        Self::write_token_file(&token_path, &token)?;
         Ok(token)
     }
 

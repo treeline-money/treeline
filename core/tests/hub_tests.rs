@@ -41,6 +41,21 @@ fn test_token_generated_on_first_call() {
     assert_eq!(token.len(), 64); // 32 bytes = 64 hex chars
 }
 
+#[cfg(unix)]
+#[test]
+fn test_token_file_is_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp_dir = TempDir::new().unwrap();
+    HubService::load_or_create_token(temp_dir.path()).unwrap();
+
+    let mode = std::fs::metadata(temp_dir.path().join("hub-token"))
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o600, "master token must not be group/world-readable");
+}
+
 #[test]
 fn test_token_persisted_across_calls() {
     let temp_dir = TempDir::new().unwrap();

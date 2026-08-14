@@ -47,16 +47,23 @@ pub fn ensure_encryption_support(conn: &Connection) -> Result<()> {
 
 /// Parse SQL with the DuckDB dialect, catching malformed queries early.
 ///
-/// Returns `None` for DuckDB-specific commands sqlparser can't parse
-/// (CHECKPOINT, VACUUM) — valid, but with no AST to inspect. This is the
-/// single parse/validation point for every query path; statement
-/// classification (read vs write) derives from the AST it returns, so
-/// leading comments or unusual whitespace can never change how a query is
-/// gated or shaped.
+/// Returns `None` for a bare DuckDB-specific command sqlparser can't parse
+/// (CHECKPOINT, VACUUM) — valid, but with no AST to inspect. Every query path
+/// that classifies read vs write runs this and derives from the AST it
+/// returns, so leading comments or unusual whitespace can't change how a
+/// query is gated or shaped.
 fn parse_statements(sql: &str) -> Result<Option<Vec<sqlparser::ast::Statement>>> {
-    let first_word = sql.trim().split_whitespace().next().unwrap_or("");
-    if first_word.eq_ignore_ascii_case("CHECKPOINT") || first_word.eq_ignore_ascii_case("VACUUM") {
-        return Ok(None);
+    // CHECKPOINT / VACUUM are valid DuckDB but sqlparser can't parse them, so
+    // we skip parsing — but ONLY when the whole string is that single command.
+    // A prefix match ("CHECKPOINT ; DROP ...") would let a second statement
+    // ride along unparsed and unclassified, so require a bare command: no
+    // embedded semicolons, keyword optionally followed by a database name.
+    let bare = sql.trim().trim_end_matches(';').trim();
+    if !bare.contains(';') {
+        let first = bare.split_whitespace().next().unwrap_or("");
+        if first.eq_ignore_ascii_case("CHECKPOINT") || first.eq_ignore_ascii_case("VACUUM") {
+            return Ok(None);
+        }
     }
 
     let dialect = DuckDbDialect {};
@@ -70,8 +77,11 @@ fn parse_statements(sql: &str) -> Result<Option<Vec<sqlparser::ast::Statement>>>
     Ok(Some(statements))
 }
 
-/// Validate SQL syntax before execution to catch malformed queries early.
-/// This prevents crashes from malformed SQL reaching the database engine.
+/// Validate SQL syntax without classifying it. Thin wrapper over
+/// `parse_statements`, retained for the syntax-validation unit tests; the
+/// execution paths call `parse_statements` directly so they can also inspect
+/// the AST.
+#[cfg_attr(not(test), allow(dead_code))]
 fn validate_sql_syntax(sql: &str) -> Result<()> {
     parse_statements(sql)?;
     Ok(())
@@ -81,22 +91,27 @@ fn validate_sql_syntax(sql: &str) -> Result<()> {
 /// SHOW, EXPLAIN). Used to gate read-only paths and to shape results
 /// (rows vs. affected count) on read-write paths.
 fn statements_are_read_only(statements: &[sqlparser::ast::Statement]) -> bool {
+    !statements.is_empty() && statements.iter().all(statement_is_read_only)
+}
+
+fn statement_is_read_only(s: &sqlparser::ast::Statement) -> bool {
     use sqlparser::ast::Statement;
-    !statements.is_empty()
-        && statements.iter().all(|s| {
-            matches!(
-                s,
-                Statement::Query(_)
-                    | Statement::Explain { .. }
-                    | Statement::ExplainTable { .. }
-                    | Statement::ShowTables { .. }
-                    | Statement::ShowColumns { .. }
-                    | Statement::ShowVariable { .. }
-                    | Statement::ShowVariables { .. }
-                    | Statement::ShowFunctions { .. }
-                    | Statement::ShowDatabases { .. }
-            )
-        })
+    match s {
+        Statement::Query(_)
+        | Statement::ExplainTable { .. }
+        | Statement::ShowTables { .. }
+        | Statement::ShowColumns { .. }
+        | Statement::ShowVariable { .. }
+        | Statement::ShowVariables { .. }
+        | Statement::ShowFunctions { .. }
+        | Statement::ShowDatabases { .. } => true,
+        // `EXPLAIN <stmt>` only plans (read-only), but `EXPLAIN ANALYZE <stmt>`
+        // actually RUNS <stmt> — so it's read-only only if the inner one is.
+        Statement::Explain {
+            analyze, statement, ..
+        } => !analyze || statement_is_read_only(statement),
+        _ => false,
+    }
 }
 
 /// DuckDB repository implementation
@@ -269,6 +284,22 @@ impl DuckDbRepository {
         // Note: JSON extension is statically linked via Cargo feature "json"
         // No LOAD required - it's compiled into DuckDB
         // ICU is NOT included - all date functions use Rust-computed dates
+
+        if read_only {
+            // Read-only connections serve untrusted callers (the MCP `query`
+            // tool, `tl query` without --allow-writes). DuckDB's read-only
+            // mode protects the *database* but not the *host*: `read_text`,
+            // `read_csv`, `COPY ... TO`, `ATTACH`, `INSTALL`/`LOAD` still reach
+            // the filesystem, which would let a read-scoped query exfiltrate
+            // the hub token or write files. Disabling external access closes
+            // that. It must be set AFTER the encrypted ATTACH above (which
+            // needs filesystem access), and it's a one-way latch — DuckDB
+            // refuses to re-enable it at runtime — so a later `SET` in a
+            // malicious query can't undo it. The statement-level read-only
+            // gate is the other half; this stops the reads that gate can't
+            // (file access lives inside otherwise-valid SELECTs).
+            conn.execute("SET enable_external_access = false", [])?;
+        }
 
         Ok(conn)
     }
@@ -1459,12 +1490,23 @@ impl DuckDbRepository {
         self.execute_query_readonly(sql)
     }
 
-    /// Execute a read-only SQL query using a DuckDB read-only connection.
+    /// Execute a read-only SQL query.
     ///
-    /// Enforces read-only at the DuckDB engine level -- any attempt to
-    /// execute a write statement will be rejected by DuckDB itself.
+    /// Read-only is enforced in three layers: this method rejects any
+    /// statement that isn't a pure read (parsed from the AST, so comments and
+    /// whitespace can't disguise it); the DuckDB connection is opened in
+    /// READ_ONLY mode (engine-level write protection); and that connection has
+    /// external filesystem access disabled (so a read like
+    /// `SELECT ... FROM read_text('hub-token')` can't reach the host). This is
+    /// the authorization boundary for the MCP `query` tool — a read-scoped
+    /// caller must not be able to write data, write files, or read files.
     pub fn execute_query_readonly(&self, sql: &str) -> Result<QueryResult> {
-        validate_sql_syntax(sql)?;
+        let is_read = parse_statements(sql)?
+            .map(|stmts| statements_are_read_only(&stmts))
+            .unwrap_or(false); // CHECKPOINT/VACUUM aren't reads
+        if !is_read {
+            anyhow::bail!("Only read-only queries are allowed");
+        }
 
         self.with_readonly_connection(|conn| {
             let mut stmt = conn.prepare(sql)?;
@@ -2402,6 +2444,68 @@ fn parse_duckdb_array(s: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ==================== Read/write classification ====================
+
+    /// Classify a SQL string the way the read-only path does: a parse error
+    /// or a bare maintenance command (None) both mean "not an allowed read".
+    fn is_read(sql: &str) -> bool {
+        match parse_statements(sql) {
+            Ok(Some(stmts)) => statements_are_read_only(&stmts),
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn classify_reads() {
+        assert!(is_read("SELECT 1"));
+        assert!(is_read("  -- comment\n  SELECT 1"));
+        assert!(is_read("WITH x AS (SELECT 1) SELECT * FROM x"));
+        assert!(is_read("EXPLAIN SELECT 1"));
+        assert!(is_read("EXPLAIN INSERT INTO t VALUES (1)")); // plans only, no write
+        assert!(is_read("DESCRIBE transactions"));
+        assert!(is_read("SELECT content FROM read_text('x')")); // read stmt; blocked by the connection, not the gate
+    }
+
+    #[test]
+    fn classify_writes() {
+        assert!(!is_read("INSERT INTO t VALUES (1)"));
+        assert!(!is_read("UPDATE t SET a = 1"));
+        assert!(!is_read("DELETE FROM t"));
+        assert!(!is_read("CREATE TABLE memory.evil AS SELECT 1"));
+        assert!(!is_read("COPY (SELECT 1) TO 'x.csv'"));
+        assert!(!is_read("ATTACH 'other.db' AS o"));
+        assert!(!is_read("INSTALL httpfs"));
+        assert!(!is_read("LOAD httpfs"));
+        assert!(!is_read("SET enable_external_access = true"));
+        assert!(!is_read("PRAGMA database_list"));
+    }
+
+    #[test]
+    fn classify_explain_analyze_runs_inner_statement() {
+        // EXPLAIN ANALYZE executes its inner statement, so a write inner
+        // must NOT be classified as read-only (finding 4).
+        assert!(is_read("EXPLAIN ANALYZE SELECT 1"));
+        assert!(!is_read("EXPLAIN ANALYZE INSERT INTO t VALUES (1)"));
+        assert!(!is_read("EXPLAIN ANALYZE DELETE FROM t"));
+    }
+
+    #[test]
+    fn classify_rejects_statement_hidden_behind_maintenance_prefix() {
+        // A bare CHECKPOINT/VACUUM parses as None (write-shaped, not a read).
+        assert!(!is_read("CHECKPOINT"));
+        assert!(!is_read("VACUUM"));
+        // But a second statement must never ride along unparsed (finding 3):
+        // these fail to parse and error out rather than being skipped.
+        assert!(parse_statements("CHECKPOINT ; CREATE TABLE evil (a int)").is_err());
+        assert!(parse_statements("CHECKPOINT; COPY (SELECT 1) TO 'x'").is_err());
+        assert!(!is_read("CHECKPOINT ; CREATE TABLE evil (a int)"));
+    }
+
+    #[test]
+    fn classify_rejects_multi_statement_mixes() {
+        assert!(!is_read("SELECT 1; INSERT INTO t VALUES (1)"));
+    }
 
     // ==================== Valid SQL Tests ====================
 

@@ -1190,3 +1190,50 @@ fn test_context_without_legacy_logs_db() {
     let _ctx =
         treeline_core::TreelineContext::new(temp_dir.path(), None).expect("context should build");
 }
+
+/// The read-only query path (`execute_query`, the MCP `query` tool, and
+/// `tl query` without `--allow-writes`) must reject every write and every
+/// attempt to reach the host filesystem — the authorization boundary a
+/// read-scoped hub token relies on.
+#[test]
+fn test_readonly_query_path_blocks_writes_and_host_access() {
+    let temp_dir = TempDir::new().unwrap();
+    let repo = create_test_repo(&temp_dir);
+
+    // Data writes.
+    for sql in [
+        "CREATE TABLE evil (a INT)",
+        "INSERT INTO sys_accounts (account_id, name) VALUES ('x', 'y')",
+        "UPDATE sys_accounts SET name = 'z'",
+        "DELETE FROM sys_accounts",
+        "ATTACH 'other.db' AS o",
+        "INSTALL httpfs",
+        "LOAD httpfs",
+    ] {
+        assert!(
+            repo.execute_query(sql).is_err(),
+            "read-only path must reject: {sql}"
+        );
+    }
+
+    // Host file read via a table function inside a valid SELECT.
+    let secret = temp_dir.path().join("secret.txt");
+    std::fs::write(&secret, "TOPSECRET").unwrap();
+    assert!(
+        repo.execute_query(&format!("SELECT content FROM read_text('{}')", secret.display()))
+            .is_err(),
+        "read-only path must not read host files"
+    );
+
+    // Host file write via COPY.
+    let out = temp_dir.path().join("exfil.csv");
+    assert!(
+        repo.execute_query(&format!("COPY (SELECT 1) TO '{}'", out.display()))
+            .is_err(),
+        "read-only path must not write host files"
+    );
+    assert!(!out.exists());
+
+    // A genuine read still works.
+    assert!(repo.execute_query("SELECT COUNT(*) FROM sys_accounts").is_ok());
+}

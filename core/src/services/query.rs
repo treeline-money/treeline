@@ -21,10 +21,12 @@ impl QueryService {
         self.repository.execute_query(sql)
     }
 
-    /// Execute a read-only SQL query using a DuckDB read-only connection.
+    /// Execute a read-only SQL query.
     ///
-    /// Enforces read-only at both the SQL validation level and the
-    /// DuckDB connection level for defense in depth.
+    /// Read-only is enforced in layers: statement-level classification from
+    /// the parsed AST, a DuckDB READ_ONLY connection, and external filesystem
+    /// access disabled on that connection. This is the authorization boundary
+    /// for untrusted callers like the MCP `query` tool.
     pub fn execute_readonly(&self, sql: &str) -> Result<QueryResult> {
         self.repository.execute_query_readonly(sql)
     }
