@@ -45,25 +45,58 @@ pub fn ensure_encryption_support(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Validate SQL syntax before execution to catch malformed queries early.
-/// This prevents crashes from malformed SQL reaching the database engine.
-fn validate_sql_syntax(sql: &str) -> Result<()> {
-    // Skip validation for DuckDB-specific commands that sqlparser doesn't recognize.
-    // These are valid DuckDB commands but the sqlparser DuckDbDialect doesn't parse them.
+/// Parse SQL with the DuckDB dialect, catching malformed queries early.
+///
+/// Returns `None` for DuckDB-specific commands sqlparser can't parse
+/// (CHECKPOINT, VACUUM) — valid, but with no AST to inspect. This is the
+/// single parse/validation point for every query path; statement
+/// classification (read vs write) derives from the AST it returns, so
+/// leading comments or unusual whitespace can never change how a query is
+/// gated or shaped.
+fn parse_statements(sql: &str) -> Result<Option<Vec<sqlparser::ast::Statement>>> {
     let first_word = sql.trim().split_whitespace().next().unwrap_or("");
     if first_word.eq_ignore_ascii_case("CHECKPOINT") || first_word.eq_ignore_ascii_case("VACUUM") {
-        return Ok(());
+        return Ok(None);
     }
 
     let dialect = DuckDbDialect {};
-    Parser::parse_sql(&dialect, sql).map_err(|e| {
+    let statements = Parser::parse_sql(&dialect, sql).map_err(|e| {
         // Clean up the error message - remove redundant prefix
         // Tauri will add "Failed to execute query:" wrapper
         let msg = e.to_string();
         let cleaned = msg.trim_start_matches("sql parser error: ");
         anyhow!("{}", cleaned)
     })?;
+    Ok(Some(statements))
+}
+
+/// Validate SQL syntax before execution to catch malformed queries early.
+/// This prevents crashes from malformed SQL reaching the database engine.
+fn validate_sql_syntax(sql: &str) -> Result<()> {
+    parse_statements(sql)?;
     Ok(())
+}
+
+/// Whether every parsed statement only reads data (SELECT/WITH, DESCRIBE,
+/// SHOW, EXPLAIN). Used to gate read-only paths and to shape results
+/// (rows vs. affected count) on read-write paths.
+fn statements_are_read_only(statements: &[sqlparser::ast::Statement]) -> bool {
+    use sqlparser::ast::Statement;
+    !statements.is_empty()
+        && statements.iter().all(|s| {
+            matches!(
+                s,
+                Statement::Query(_)
+                    | Statement::Explain { .. }
+                    | Statement::ExplainTable { .. }
+                    | Statement::ShowTables { .. }
+                    | Statement::ShowColumns { .. }
+                    | Statement::ShowVariable { .. }
+                    | Statement::ShowVariables { .. }
+                    | Statement::ShowFunctions { .. }
+                    | Statement::ShowDatabases { .. }
+            )
+        })
 }
 
 /// DuckDB repository implementation
@@ -1420,103 +1453,10 @@ impl DuckDbRepository {
     // === Query operations ===
 
     pub fn execute_query(&self, sql: &str) -> Result<QueryResult> {
-        // Validate it's a read-only query by checking SQL statement type
-        // Only look at the first word after stripping whitespace/comments
-        let sql_trimmed = sql.trim();
-        let first_word = sql_trimmed
-            .split_whitespace()
-            .next()
-            .unwrap_or("")
-            .to_uppercase();
-        if first_word != "SELECT" && first_word != "WITH" {
-            anyhow::bail!("Only SELECT queries are allowed");
-        }
-
-        // Also block dangerous operations even in subqueries
-        let sql_upper = sql.to_uppercase();
-        // Use word boundaries to avoid false positives (deleted_at vs DELETE)
-        let dangerous_patterns = [
-            " INSERT ",
-            " UPDATE ",
-            " DROP ",
-            " CREATE ",
-            " ALTER ",
-            " TRUNCATE ",
-            "\nINSERT ",
-            "\nUPDATE ",
-            "\nDROP ",
-            "\nCREATE ",
-            "\nALTER ",
-            "\nTRUNCATE ",
-            "(INSERT ",
-            "(UPDATE ",
-            "(DROP ",
-            "(CREATE ",
-            "(ALTER ",
-            "(TRUNCATE ",
-        ];
-        for pattern in dangerous_patterns {
-            if sql_upper.contains(pattern) {
-                anyhow::bail!("Only SELECT queries are allowed");
-            }
-        }
-
-        self.with_connection(|conn| {
-            let mut stmt = conn.prepare(sql)?;
-
-            // Execute query and iterate
-            let mut result_rows = stmt.query([])?;
-
-            // Collect all rows first
-            let mut rows: Vec<Vec<serde_json::Value>> = Vec::new();
-            let mut column_count = 0;
-
-            while let Some(row) = result_rows.next()? {
-                // Get column count from the first row
-                if rows.is_empty() {
-                    column_count = row.as_ref().column_count();
-                }
-
-                let mut row_values: Vec<serde_json::Value> = Vec::new();
-                for i in 0..column_count {
-                    let value = Self::get_column_value(row, i);
-                    row_values.push(value);
-                }
-                rows.push(row_values);
-            }
-
-            // Drop result_rows to release borrow on stmt
-            drop(result_rows);
-
-            // Now get column names
-            let columns: Vec<String> = if column_count > 0 {
-                (0..column_count)
-                    .map(|i| {
-                        stmt.column_name(i)
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|_| format!("col{}", i))
-                    })
-                    .collect()
-            } else {
-                // No rows, try to get column count from statement
-                let count = stmt.column_count();
-                (0..count)
-                    .map(|i| {
-                        stmt.column_name(i)
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|_| format!("col{}", i))
-                    })
-                    .collect()
-            };
-
-            let row_count = rows.len();
-
-            Ok(QueryResult {
-                columns,
-                rows,
-                row_count,
-            })
-        })
+        // Same path as every other read: sqlparser validation + a DuckDB
+        // read-only connection. Kept as an alias so existing callers and
+        // tests don't churn.
+        self.execute_query_readonly(sql)
     }
 
     /// Execute a read-only SQL query using a DuckDB read-only connection.
@@ -1583,20 +1523,12 @@ impl DuckDbRepository {
     /// For SELECT queries, returns columns and rows.
     /// For write queries (INSERT/UPDATE/DELETE), returns affected_rows count.
     pub fn execute_sql(&self, sql: &str) -> Result<QueryResult> {
-        // Validate SQL syntax before execution to prevent crashes on malformed queries
-        validate_sql_syntax(sql)?;
-
-        let sql_trimmed = sql.trim();
-        let first_word = sql_trimmed
-            .split_whitespace()
-            .next()
-            .unwrap_or("")
-            .to_uppercase();
-
-        let is_select = first_word == "SELECT"
-            || first_word == "WITH"
-            || first_word == "DESCRIBE"
-            || first_word == "SHOW";
+        // Parse once: validates syntax and classifies read vs write from the
+        // AST (comment- and whitespace-proof). CHECKPOINT/VACUUM parse as
+        // None and take the write-shaped path, as before.
+        let is_select = parse_statements(sql)?
+            .map(|stmts| statements_are_read_only(&stmts))
+            .unwrap_or(false);
 
         if is_select {
             self.with_connection(|conn| {
@@ -1671,20 +1603,11 @@ impl DuckDbRepository {
         sql: &str,
         params: &[serde_json::Value],
     ) -> Result<QueryResult> {
-        // Validate SQL syntax before execution to prevent crashes on malformed queries
-        validate_sql_syntax(sql)?;
-
-        let sql_trimmed = sql.trim();
-        let first_word = sql_trimmed
-            .split_whitespace()
-            .next()
-            .unwrap_or("")
-            .to_uppercase();
-
-        let is_select = first_word == "SELECT"
-            || first_word == "WITH"
-            || first_word == "DESCRIBE"
-            || first_word == "SHOW";
+        // Parse once: validates syntax and classifies read vs write from the
+        // AST (comment- and whitespace-proof).
+        let is_select = parse_statements(sql)?
+            .map(|stmts| statements_are_read_only(&stmts))
+            .unwrap_or(false);
 
         // Convert JSON params to DuckDB params
         let duckdb_params: Vec<Box<dyn duckdb::ToSql>> = params
