@@ -622,18 +622,53 @@ impl HubService {
     /// Write the master token to disk with owner-only permissions (0600 on
     /// Unix). The token authorizes every `/api/*` route including token
     /// issuance and full database pull/push, so on a shared host (homelab,
-    /// VPS) it must not be world-readable. `fs::write` alone would use the
-    /// process umask, typically 0644.
+    /// VPS) it must not be world-readable, must not be created through a
+    /// pre-planted symlink, and must never exist even briefly at looser perms.
+    #[cfg(unix)]
+    fn write_token_file(token_path: &Path, token: &str) -> Result<()> {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        // First run (the homelab/self-host case, highest local-attacker risk):
+        // O_CREAT|O_EXCL creates atomically at 0600 and refuses to open if the
+        // path already exists as a file OR a symlink — no world-readable window,
+        // no symlink-follow.
+        let created = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(token_path);
+        match created {
+            Ok(mut f) => {
+                f.write_all(token.as_bytes())
+                    .with_context(|| format!("Failed to write hub token to {}", token_path.display()))?;
+                Ok(())
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                // Overwrite path (provisioner re-persisting TL_HUB_TOKEN over an
+                // existing file). O_NOFOLLOW refuses a token path that was swapped
+                // for a symlink; the existing regular file is already 0600 (from
+                // creation above or the re-chmod on read), and O_TRUNC replaces
+                // its contents in place without widening perms.
+                let mut f = fs::OpenOptions::new()
+                    .write(true)
+                    .truncate(true)
+                    .custom_flags(libc::O_NOFOLLOW)
+                    .open(token_path)
+                    .with_context(|| format!("Failed to open hub token {}", token_path.display()))?;
+                f.write_all(token.as_bytes())
+                    .with_context(|| format!("Failed to write hub token to {}", token_path.display()))?;
+                Ok(())
+            }
+            Err(e) => Err(anyhow::Error::new(e)
+                .context(format!("Failed to create hub token {}", token_path.display()))),
+        }
+    }
+
+    #[cfg(not(unix))]
     fn write_token_file(token_path: &Path, token: &str) -> Result<()> {
         fs::write(token_path, token)
-            .with_context(|| format!("Failed to write hub token to {}", token_path.display()))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(token_path, fs::Permissions::from_mode(0o600))
-                .with_context(|| format!("Failed to secure {}", token_path.display()))?;
-        }
-        Ok(())
+            .with_context(|| format!("Failed to write hub token to {}", token_path.display()))
     }
 
     /// Load or generate the hub auth token.

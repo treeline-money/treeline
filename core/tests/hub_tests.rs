@@ -42,18 +42,40 @@ fn test_token_generated_on_first_call() {
 }
 
 #[cfg(unix)]
+fn token_mode(path: &std::path::Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+}
+
+#[cfg(unix)]
 #[test]
 fn test_token_file_is_owner_only() {
-    use std::os::unix::fs::PermissionsExt;
     let temp_dir = TempDir::new().unwrap();
     HubService::load_or_create_token(temp_dir.path()).unwrap();
+    assert_eq!(
+        token_mode(&temp_dir.path().join("hub-token")),
+        0o600,
+        "freshly created master token must be owner-only"
+    );
+}
 
-    let mode = std::fs::metadata(temp_dir.path().join("hub-token"))
-        .unwrap()
-        .permissions()
-        .mode()
-        & 0o777;
-    assert_eq!(mode, 0o600, "master token must not be group/world-readable");
+#[cfg(unix)]
+#[test]
+fn test_token_file_stays_owner_only_on_overwrite() {
+    // Provisioner re-persisting TL_HUB_TOKEN over an existing file must not
+    // widen perms.
+    let _g = ENV_GUARD.lock().unwrap();
+    let temp_dir = TempDir::new().unwrap();
+    std::env::remove_var("TL_HUB_TOKEN");
+    HubService::load_or_create_token(temp_dir.path()).unwrap(); // creates file
+
+    std::env::set_var("TL_HUB_TOKEN", "abcd1234");
+    HubService::load_or_create_token(temp_dir.path()).unwrap(); // overwrites file
+    std::env::remove_var("TL_HUB_TOKEN");
+
+    let path = temp_dir.path().join("hub-token");
+    assert_eq!(token_mode(&path), 0o600, "overwrite must keep owner-only");
+    assert_eq!(std::fs::read_to_string(&path).unwrap().trim(), "abcd1234");
 }
 
 #[test]
