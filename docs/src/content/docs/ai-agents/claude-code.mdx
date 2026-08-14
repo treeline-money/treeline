@@ -22,7 +22,6 @@ Claude Code can also run `tl` commands directly in its shell. This is useful whe
 ```bash
 tl status --json
 tl query "SELECT * FROM transactions WHERE amount < -100" --json
-tl skills list --json
 ```
 
 ## Example Session
@@ -32,6 +31,5 @@ Once connected, just ask questions naturally:
 - "What's my checking account balance?"
 - "Show me all untagged transactions from this month"
 - "Write a query that shows my spending trend by category over the last 6 months"
-- "Create a skill that tracks my freelance income categories"
 
 Claude Code will use the appropriate Treeline tool or CLI command to answer.

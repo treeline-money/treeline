@@ -11,12 +11,12 @@ mod output;
 
 use commands::{
     backup, compact, demo, doctor, encrypt, hub, import, mcp, plugin, query, schema, serve, setup,
-    skills, status, sync, tag, update,
+    status, sync, tag, update,
 };
 
 /// Treeline - personal finance in your terminal
 #[derive(Parser)]
-#[command(name = "tl", version, about, long_about = None)]
+#[command(name = "tl", version, about, long_about = None, after_help = "Docs: https://docs.treeline.money\nAgents: query cookbook at https://docs.treeline.money/ai-agents/query-cookbook/")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -225,12 +225,6 @@ enum Commands {
         command: plugin::PluginCommands,
     },
 
-    /// Discover and read agent skills
-    Skills {
-        #[command(subcommand)]
-        command: skills::SkillsCommands,
-    },
-
     /// Update to the latest version
     Update {
         /// Skip confirmation prompt
@@ -374,7 +368,6 @@ fn run(cli: Cli) -> Result<()> {
         Commands::Demo { command } => demo::run(command),
         Commands::Setup { command } => setup::run(command),
         Commands::Plugin { command } => plugin::run(command),
-        Commands::Skills { command } => skills::run(command),
         Commands::Update { yes, check } => update::run(yes, check),
         Commands::Mcp => mcp::run(),
         Commands::Hub { command } => hub::run(command),

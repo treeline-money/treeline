@@ -10,8 +10,8 @@
 //! refresh tokens. State is persisted via `treeline_core::services::oauth::OAuthStore`
 //! so registered clients and issued tokens survive server restarts.
 //!
-//! Scopes: `read` (query/status/schema/skills_read/etc) and `write` (adds
-//! query_write, sync, tag, demo, skills_write). The master token is only
+//! Scopes: `read` (query/status/schema/etc) and `write` (adds
+//! query_write, sync, tag, demo). The master token is only
 //! accepted on `/api/*` — never on `/mcp`.
 
 use std::net::SocketAddr;
@@ -64,12 +64,12 @@ const MCP_SCOPES: &[&str] = &[SCOPE_READ, SCOPE_WRITE];
 const REPLICATE_SCOPES: &[&str] = &[SCOPE_PULL, SCOPE_PUSH];
 
 /// MCP tools that mutate state. Calling these requires `write` scope.
-const WRITE_TOOLS: &[&str] = &["query_write", "sync", "tag", "demo", "skills_write"];
+const WRITE_TOOLS: &[&str] = &["query_write", "sync", "tag", "demo"];
 
 /// MCP tools that read or write the DuckDB database. Calling these on a hub
 /// with no `treeline.duckdb` yet returns a JSON-RPC isError result rather than
 /// silently creating an empty DB. Tools not in this list (`version`,
-/// `encryption_status`, `skills_*`, `demo`) work without a database.
+/// `encryption_status`, `demo`) work without a database.
 const TOOLS_REQUIRING_DB: &[&str] = &[
     "status",
     "query",
@@ -436,7 +436,7 @@ async fn handle_mcp(
 
     // Reject *only* data-requiring tool calls when no DB exists. `initialize`,
     // `tools/list`, and tools that don't need DuckDB (`version`,
-    // `encryption_status`, `skills_*`, `demo`) still work, so thin clients can
+    // `encryption_status`, `demo`) still work, so thin clients can
     // connect and discover capabilities before the user has pushed a database.
     if requires_database(&req) && !state.hub_service.has_database() {
         return no_database_response(&req);
@@ -703,11 +703,11 @@ fn render_scope_items(scopes: &[String]) -> String {
             let (name, desc) = match s.as_str() {
                 SCOPE_READ => (
                     "Read",
-                    "View your accounts, transactions, balances, and skills.",
+                    "View your accounts, transactions, and balances.",
                 ),
                 SCOPE_WRITE => (
                     "Write",
-                    "Modify data, run bank syncs, tag transactions, and edit skills.",
+                    "Modify data, run bank syncs, and tag transactions.",
                 ),
                 SCOPE_PULL => (
                     "Pull",

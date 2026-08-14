@@ -226,11 +226,11 @@ Duplicate transactions are automatically detected and skipped on re-import via f
 
 ---
 
-## User Skills
+## Query Cookbook
 
-Treeline supports user-created skills for personal financial knowledge. Use `tl skills list --json` to discover existing skills and `tl skills read <path>` to read them.
+Before computing net worth, spending, income, or other aggregates, consult the query cookbook at https://docs.treeline.money/ai-agents/query-cookbook/ — canonical, CI-tested queries plus the conventions that make naive queries return wrong numbers (sign handling, transfer exclusion, snapshot semantics, and how to discover what this user's tags actually mean).
 
-**Creating skills:** When you learn something reusable about the user's finances — tag conventions, account meanings, tax categories, budget targets — ask if they'd like to save it as a skill for future conversations. To create one, write a SKILL.md file to `~/.treeline/skills/<name>/SKILL.md` (use `tl skills path` to get the directory). Follow the Agent Skills standard (agentskills.io).
+When you learn something reusable about the user's finances — tag conventions, account meanings, what counts as spending for them — save it via your own memory or skill mechanism so future conversations start informed.
 
 ---
 
@@ -392,7 +392,6 @@ WHERE schema_name LIKE 'plugin_%'
 
 **plugin_emergency_fund** — Emergency fund tracking
 
-Check `tl skills list` for user-specific plugin preferences.
 
 ---
 
@@ -479,7 +478,7 @@ GROUP BY c.category_id, c.name, c.expected
 2. **Amounts are signed** — negative = expense
 3. **Use `classification`** for asset/liability
 4. **Balances live in snapshots**, not the accounts table
-5. **Check `tl skills list`** for user-specific account meanings and tag conventions
+5. **Discover the user's conventions** — tag vocabulary and account coverage queries are in the cookbook
 
 ---
 

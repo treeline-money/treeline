@@ -13,7 +13,6 @@ pub mod query;
 pub mod schema;
 pub mod serve;
 pub mod setup;
-pub mod skills;
 pub mod status;
 pub mod sync;
 pub mod tag;

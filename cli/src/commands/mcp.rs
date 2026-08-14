@@ -13,7 +13,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use super::{get_context, get_treeline_dir, skills};
+use super::{get_context, get_treeline_dir};
 use treeline_core::services::{DemoService, EncryptionService, KeychainService};
 
 // =============================================================================
@@ -289,40 +289,6 @@ pub fn tool_definitions() -> Value {
                 }
             },
             {
-                "name": "skills_list",
-                "description": "List available agent skills. Returns skill names, descriptions, and file listings. Skills contain user-created financial knowledge like tax tracking rules, budget targets, and tagging conventions.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {},
-                    "additionalProperties": false
-                },
-                "annotations": {
-                    "title": "List Skills",
-                    "readOnlyHint": true,
-                    "openWorldHint": false
-                }
-            },
-            {
-                "name": "skills_read",
-                "description": "Read a file from a skill directory. Use with paths from skills_list output, e.g. 'tax-tracking/SKILL.md' or 'budget-mgmt/references/targets.md'.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "File path relative to the skills directory (e.g. 'tax-tracking/SKILL.md')"
-                        }
-                    },
-                    "required": ["path"],
-                    "additionalProperties": false
-                },
-                "annotations": {
-                    "title": "Read Skill File",
-                    "readOnlyHint": true,
-                    "openWorldHint": false
-                }
-            },
-            {
                 "name": "encryption_status",
                 "description": "Check database encryption and lock status. If the database is encrypted and locked, all other tools will fail until the user unlocks it via the Treeline app or 'tl encrypt unlock' in their terminal.",
                 "inputSchema": {
@@ -348,32 +314,6 @@ pub fn tool_definitions() -> Value {
                     "title": "Version & Update Check",
                     "readOnlyHint": true,
                     "openWorldHint": true
-                }
-            },
-            {
-                "name": "skills_write",
-                "description": "Write a file to a skill directory. Use to create or update skills on behalf of the user. Path must include skill name and filename, e.g. 'budget-targets/SKILL.md'. Directories are created automatically. SKILL.md files should have YAML frontmatter with name and description fields.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "File path relative to the skills directory (e.g. 'tax-categories/SKILL.md')"
-                        },
-                        "content": {
-                            "type": "string",
-                            "description": "File content to write"
-                        }
-                    },
-                    "required": ["path", "content"],
-                    "additionalProperties": false
-                },
-                "annotations": {
-                    "title": "Write Skill File",
-                    "readOnlyHint": false,
-                    "destructiveHint": false,
-                    "idempotentHint": true,
-                    "openWorldHint": false
                 }
             }
         ]
@@ -448,27 +388,6 @@ pub fn execute_tool(name: &str, args: &Value) -> Result<Value, String> {
         }
         "encryption_status" => tool_encryption_status(),
         "version" => tool_version(),
-        "skills_list" => skills::mcp_list(),
-        "skills_read" => {
-            let path = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .ok_or("Missing required parameter: path")?;
-            let content = skills::mcp_read(path)?;
-            Ok(json!({ "content": content }))
-        }
-        "skills_write" => {
-            let path = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .ok_or("Missing required parameter: path")?;
-            let content = args
-                .get("content")
-                .and_then(|v| v.as_str())
-                .ok_or("Missing required parameter: content")?;
-            let message = skills::mcp_write(path, content)?;
-            Ok(json!({ "message": message }))
-        }
         _ => Err(format!("Unknown tool: {}", name)),
     }
 }

@@ -30,7 +30,7 @@ use crate::services::BackupService;
 const SYNC_FILES: &[&str] = &["treeline.duckdb", "encryption.json", "settings.json"];
 
 /// Directories the producer includes in sync bundles (recursive).
-const SYNC_DIRS: &[&str] = &["skills", "plugins"];
+const SYNC_DIRS: &[&str] = &["plugins"];
 
 /// `settings.json` paths whose values sync across devices ("bundle wins" on
 /// receive). Anything not under one of these prefixes is treated as
@@ -170,17 +170,13 @@ impl SyncBundle {
     ///   are kept locally and only bootstrapped from the bundle when the
     ///   local key is missing. If `settings.json` doesn't exist locally, the
     ///   bundle's bytes are written verbatim (first-pull bootstrap).
-    /// - **`skills/`**: mirror semantics. If the bundle contains any
-    ///   `skills/` entries, the local `skills/` directory is cleared before
-    ///   extraction. Deletes propagate.
     /// - **`plugins/<id>/`**: per-plugin replacement. For each plugin id
     ///   present in the bundle, the local `plugins/<id>/` directory is
     ///   cleared before extraction (so upgrades don't leak old files). Local
     ///   plugin directories that aren't in the bundle are left alone —
     ///   uninstalls do NOT propagate. The reasoning: plugins are software
     ///   that may legitimately differ across devices (one spouse uses Goals,
-    ///   the other doesn't), unlike skills which are user-authored content
-    ///   where deletes are deliberate.
+    ///   the other doesn't).
     ///
     /// Acquires the DuckDB filesystem lock (`treeline.duckdb.lock`) for the
     /// duration of the extraction. This prevents `treeline.duckdb` from
@@ -203,9 +199,7 @@ impl SyncBundle {
 
         // First pass: scan the bundle to figure out which directories to
         // clear before writing entries. We need this up front so that
-        // pre-existing local files don't survive a per-plugin replace or a
-        // skills mirror.
-        let mut bundle_has_skills = false;
+        // pre-existing local files don't survive a per-plugin replace.
         let mut bundle_plugin_ids: std::collections::HashSet<String> =
             std::collections::HashSet::new();
         for i in 0..archive.len() {
@@ -213,11 +207,6 @@ impl SyncBundle {
             let name = entry.name();
             if !is_safe_path(name) || is_denylisted(name) {
                 continue;
-            }
-            if let Some(rest) = name.strip_prefix("skills/") {
-                if !rest.is_empty() {
-                    bundle_has_skills = true;
-                }
             }
             if let Some(rest) = name.strip_prefix("plugins/") {
                 if let Some(slash) = rest.find('/') {
@@ -229,14 +218,7 @@ impl SyncBundle {
             }
         }
 
-        // Pre-extract cleanup: skills mirror, per-plugin replace.
-        if bundle_has_skills {
-            let skills_dir = treeline_dir.join("skills");
-            if skills_dir.exists() {
-                fs::remove_dir_all(&skills_dir)
-                    .with_context(|| format!("Failed to clear {}", skills_dir.display()))?;
-            }
-        }
+        // Pre-extract cleanup: per-plugin replace.
         // Skip plugins whose bundle content is byte-identical to disk: a
         // rewrite would only churn mtimes, and file watchers (desktop plugin
         // hot-reload) treat that as a real change. Most pulls carry data

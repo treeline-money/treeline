@@ -34,9 +34,6 @@
     { "name": "doctor", "description": "Run database health checks." },
     { "name": "demo", "description": "Manage demo mode with sample financial data." },
     { "name": "schema", "description": "Get database schema (tables, views, columns) for SQL query planning." },
-    { "name": "skills_list", "description": "List available user-created financial skills." },
-    { "name": "skills_read", "description": "Read a file from a skill directory." },
-    { "name": "skills_write", "description": "Create or update a skill file." },
     { "name": "encryption_status", "description": "Check database encryption and lock status." },
     { "name": "version", "description": "Get current CLI version and check for available updates." }
   ],

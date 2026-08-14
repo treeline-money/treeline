@@ -37,7 +37,6 @@ export default defineConfig({
 						{ label: 'OpenClaw', slug: 'ai-agents/openclaw' },
 						{ label: 'Claude Code', slug: 'ai-agents/claude-code' },
 						{ label: 'CLI for Agents', slug: 'ai-agents/cli-for-agents' },
-						{ label: 'User Skills', slug: 'ai-agents/user-skills' },
 						{ label: 'Example Workflows', slug: 'ai-agents/example-workflows' },
 					],
 				},

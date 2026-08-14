@@ -246,11 +246,12 @@ fn test_bundle_includes_settings() {
 }
 
 #[test]
-fn test_bundle_includes_skills_dir() {
+fn test_bundle_excludes_skills_dir() {
+    // The skills feature was removed; a leftover skills/ directory from an
+    // old install must not ride along in sync bundles.
     let temp_dir = TempDir::new().unwrap();
     let _repo = create_test_repo(&temp_dir);
 
-    // Create skills directory with a file
     let skills_dir = temp_dir.path().join("skills").join("my-skill");
     std::fs::create_dir_all(&skills_dir).unwrap();
     std::fs::write(skills_dir.join("SKILL.md"), "# My Skill").unwrap();
@@ -259,7 +260,7 @@ fn test_bundle_includes_skills_dir() {
 
     let dest = TempDir::new().unwrap();
     SyncBundle::extract(&bundle, dest.path()).unwrap();
-    assert!(dest.path().join("skills/my-skill/SKILL.md").exists());
+    assert!(!dest.path().join("skills").exists());
 }
 
 #[test]
@@ -560,10 +561,6 @@ fn test_push_then_pull_roundtrip() {
         r#"{"app":{"demoMode":false}}"#,
     )
     .unwrap();
-    let skills_dir = source_dir.path().join("skills").join("budgeting");
-    std::fs::create_dir_all(&skills_dir).unwrap();
-    std::fs::write(skills_dir.join("SKILL.md"), "# Budget skill").unwrap();
-
     // Push to hub
     let bundle = SyncBundle::create(source_dir.path()).unwrap();
     hub_service.accept_push(&bundle, None).unwrap();
@@ -582,7 +579,6 @@ fn test_push_then_pull_roundtrip() {
     assert_eq!(accounts[0].name, "Test Account");
 
     assert!(dest_dir.path().join("settings.json").exists());
-    assert!(dest_dir.path().join("skills/budgeting/SKILL.md").exists());
 }
 
 #[test]
@@ -654,34 +650,6 @@ fn test_extract_preserves_local_skills_when_bundle_has_no_skills() {
     SyncBundle::extract(&bundle, dest.path()).unwrap();
 
     assert!(dest.path().join("skills/my-skill/SKILL.md").exists());
-}
-
-#[test]
-fn test_extract_clears_skills_dir_when_bundle_has_skills() {
-    // Bundle has skills/new-skill; local has skills/old-skill.
-    // After extract: only new-skill exists (mirror semantics for skills).
-    let src = TempDir::new().unwrap();
-    let _repo = create_test_repo(&src);
-    let new_skill = src.path().join("skills").join("new-skill");
-    std::fs::create_dir_all(&new_skill).unwrap();
-    std::fs::write(new_skill.join("SKILL.md"), "# New").unwrap();
-    let bundle = bundle_from(src.path());
-
-    let dest = TempDir::new().unwrap();
-    let old_skill = dest.path().join("skills").join("old-skill");
-    std::fs::create_dir_all(&old_skill).unwrap();
-    std::fs::write(old_skill.join("SKILL.md"), "# Old").unwrap();
-
-    SyncBundle::extract(&bundle, dest.path()).unwrap();
-
-    assert!(
-        dest.path().join("skills/new-skill/SKILL.md").exists(),
-        "new skill should be present"
-    );
-    assert!(
-        !dest.path().join("skills/old-skill").exists(),
-        "old skill should be wiped (mirror semantics)"
-    );
 }
 
 #[test]
