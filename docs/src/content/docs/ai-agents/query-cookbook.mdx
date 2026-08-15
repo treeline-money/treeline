@@ -241,7 +241,7 @@ The review queue. If you're tagging on the user's behalf, propose tags and let t
 
 ## Budget vs actual (Budget plugin)
 
-The Budget plugin stores a **complete category set per month** in `plugin_budget.categories` — there is no template that carries forward, so a month with no rows simply hasn't been set up. The tables exist for everyone (core migrations create them); they only have rows if the user budgets.
+The Budget plugin stores a **complete category set per month** in `plugin_budget.categories` — there is no template that carries forward, so a month with no rows simply hasn't been set up. If the tables are missing or contain no rows at all, the user likely doesn't have the Budget plugin installed — say so rather than reporting a zero budget.
 
 The plugin's own matching rules, which your query must reproduce to agree with what the user sees on screen:
 
