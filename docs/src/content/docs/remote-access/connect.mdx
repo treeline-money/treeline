@@ -5,33 +5,40 @@ description: Link devices to a Hub, connect AI agents over MCP, and handle token
 
 Your Hub is running at a URL — say `https://your-hub-name.fly.dev` (or `http://your-machine-ip:4242` on your network). Here's how to use and maintain it.
 
-## Link your devices
+## Link a device
 
-On each device that has Treeline, point it at your Hub:
+Link each device to your Hub using whichever Treeline it runs — the **desktop app** or the **CLI**. Either way, a browser opens where you **paste your master token** (the value of `TL_HUB_TOKEN`, or the one printed when you started the Hub) to authorize. Each device then gets its own scoped token with **pull** and **push** permissions — nothing privileged is stored on the device.
+
+<img src="/hub-authorize-device.jpg" alt="Treeline's authorize page when linking a device, requesting Pull and Push permissions" width="420" />
+
+### Desktop app
+
+Most people will use this. Hub support is currently behind an experimental flag:
+
+1. Enable **Hub** under Settings → Advanced → Experimental features.
+2. Go to Settings → Hub and click **Link a hub**.
+3. Enter your Hub's URL and authorize in the browser.
+
+That's it — no commands to run. While the app is open it syncs **automatically**, pushing your changes and pulling remote ones, and shows sync state in the status bar (including a **Review & resolve** flow for [conflicts](#conflicts)).
+
+### CLI
+
+For a headless box, a server, or a machine where you only use `tl`:
 
 ```sh
 tl hub link --url https://your-hub-name.fly.dev
 ```
 
-The CLI prints a verification URL. Open it in a browser, **paste your master token** (the value of `TL_HUB_TOKEN`, or the one printed when you started the Hub) to authorize, and the CLI finishes automatically. Each device gets its own scoped token — nothing privileged is stored on the device.
-
-**From the desktop app:** Hub support is currently behind an experimental flag — enable **Hub** under Settings → Advanced → Experimental features, then go to Settings → Hub and click **Link a hub**. Enter your Hub's URL and the same browser authorization opens. Once linked, the app syncs automatically while it's running — no `watch` command needed — and shows sync state in the status bar, including conflicts with a **Review & resolve** flow.
-
-<img src="/hub-authorize-device.jpg" alt="Treeline's authorize page when linking a device, requesting Pull and Push permissions" width="420" />
-
-Devices request **pull** and **push** scopes — Treeline's replication permissions for moving your database to and from the Hub.
-
-Then push and pull:
+This prints a verification URL; open it, paste your master token, and it finishes automatically. Unlike the desktop app, the CLI does **not** sync on its own — you move data with:
 
 ```sh
-tl hub push       # send local data up to the Hub
-tl hub pull       # pull the latest down on another device
-tl hub watch      # push and pull automatically as local data changes
-tl hub status     # check the connection
-tl hub conflicts  # inspect sync conflicts (see below)
-tl hub resolve    # resolve them by picking a side
-tl hub unlink     # disconnect this device (local data is kept)
+tl hub push      # send local changes up to the Hub
+tl hub pull      # pull the latest down
+tl hub status    # check the connection
+tl hub unlink    # disconnect this device (local data is kept)
 ```
+
+Or run `tl hub watch` to push and pull automatically as data changes — see [Run Watch as a Service](/remote-access/watch-service/) to keep it running in the background.
 
 ## Connect AI agents (remote MCP)
 
