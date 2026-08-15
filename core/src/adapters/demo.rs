@@ -625,6 +625,60 @@ pub fn generate_demo_balance_snapshots() -> Vec<BalanceSnapshot> {
     snapshots
 }
 
+/// Generate SQL that seeds Budget plugin data: a category set for the last
+/// three months (including the current one) matching the demo tag vocabulary,
+/// plus one rollover into the current month. Keeps the Budget plugin populated
+/// in demo mode and gives the query cookbook's budget queries rows to return.
+pub fn generate_demo_budget_sql() -> Vec<String> {
+    let now = Utc::now();
+    let months: Vec<String> = (0..3)
+        .map(|i| {
+            let mut year = now.year();
+            let mut month = now.month() as i32 - i;
+            if month < 1 {
+                month += 12;
+                year -= 1;
+            }
+            format!("{year:04}-{month:02}")
+        })
+        .collect();
+
+    let categories: [(&str, &str, &str, &str); 10] = [
+        ("income", "Income", "8500.00", "['salary']"),
+        ("expense", "Rent", "2250.00", "['rent']"),
+        ("expense", "Utilities", "250.00", "['utilities']"),
+        ("expense", "Food", "1200.00", "['food']"),
+        ("expense", "Transportation", "200.00", "['gas']"),
+        ("expense", "Insurance", "185.00", "['insurance']"),
+        ("expense", "Subscriptions", "50.00", "['subscription']"),
+        ("expense", "Health", "60.00", "['fitness']"),
+        ("expense", "Shopping", "300.00", "['shopping']"),
+        ("expense", "Savings", "750.00", "['savings']"),
+    ];
+
+    let mut statements = Vec::new();
+    for month in &months {
+        let values: Vec<String> = categories
+            .iter()
+            .enumerate()
+            .map(|(i, (cat_type, name, expected, tags))| {
+                format!("(uuid()::VARCHAR, '{month}', '{cat_type}', '{name}', {expected}, {tags}, false, NULL, {i})")
+            })
+            .collect();
+        statements.push(format!(
+            "INSERT INTO plugin_budget.categories (category_id, month, type, name, expected, tags, require_all, amount_sign, sort_order) VALUES {}",
+            values.join(", ")
+        ));
+    }
+
+    statements.push(format!(
+        "INSERT INTO plugin_budget.rollovers (rollover_id, source_month, from_category, to_category, to_month, amount) VALUES ('transfer-' || uuid()::VARCHAR, '{}', 'Food', 'Food', '{}', 75.00)",
+        months[1], months[0]
+    ));
+
+    statements
+}
+
 // =============================================================================
 // DemoDataProvider - implements DataAggregationProvider trait
 // =============================================================================

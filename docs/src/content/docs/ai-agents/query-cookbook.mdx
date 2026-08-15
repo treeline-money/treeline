@@ -239,6 +239,80 @@ LIMIT 25;
 
 The review queue. If you're tagging on the user's behalf, propose tags and let them confirm — check their existing tag vocabulary first (`SELECT DISTINCT UNNEST(tags) FROM transactions`).
 
+## Budget vs actual (Budget plugin)
+
+The Budget plugin stores a **complete category set per month** in `plugin_budget.categories` — there is no template that carries forward, so a month with no rows simply hasn't been set up. The tables exist for everyone (core migrations create them); they only have rows if the user budgets.
+
+The plugin's own matching rules, which your query must reproduce to agree with what the user sees on screen:
+
+- A category matches transactions by tag: **any** of `tags` when `require_all` is false, **all** of them when true.
+- `amount_sign` optionally restricts to inflows (`'positive'`) or outflows (`'negative'`) — used when one tag (a rental property, say) carries both income and expenses.
+- Actuals bucket by **`transaction_date`**, not the `posted_date` used elsewhere on this page.
+- Expense actuals are sign-flipped so spending reads positive; income actuals are kept as-is.
+- Rollovers (`plugin_budget.rollovers`) carry leftover budget between months, keyed by category **name**; a category's balance is its incoming rollovers plus its variance.
+
+```sql
+WITH cats AS (
+  SELECT * FROM plugin_budget.categories
+  WHERE month = strftime(now()::TIMESTAMP, '%Y-%m')
+),
+roll_in AS (
+  SELECT to_category, SUM(amount) AS rolled_in
+  FROM plugin_budget.rollovers
+  WHERE to_month = strftime(now()::TIMESTAMP, '%Y-%m')
+  GROUP BY to_category
+)
+SELECT c.type, c.name, c.expected,
+       ROUND(COALESCE(SUM(CASE WHEN c.type = 'expense' THEN -t.amount ELSE t.amount END), 0), 2) AS actual,
+       ROUND(COALESCE(r.rolled_in, 0), 2) AS rolled_in,
+       ROUND(COALESCE(r.rolled_in, 0)
+             + CASE WHEN c.type = 'income'
+                    THEN COALESCE(SUM(t.amount), 0) - c.expected
+                    ELSE c.expected - COALESCE(SUM(-t.amount), 0) END, 2) AS balance
+FROM cats c
+LEFT JOIN transactions t
+  ON strftime(t.transaction_date, '%Y-%m') = c.month
+ AND (CASE WHEN c.require_all THEN list_has_all(COALESCE(t.tags, []), c.tags)
+           ELSE list_has_any(COALESCE(t.tags, []), c.tags) END)
+ AND (c.amount_sign IS NULL
+      OR (c.amount_sign = 'positive' AND t.amount > 0)
+      OR (c.amount_sign = 'negative' AND t.amount < 0))
+LEFT JOIN roll_in r ON r.to_category = c.name
+GROUP BY c.type, c.name, c.expected, r.rolled_in, c.sort_order
+ORDER BY c.type DESC, c.sort_order;
+```
+
+Swap the `month` filter for any `'YYYY-MM'` string to look at past months. A positive `balance` on an expense category is room left to spend; negative is overspend.
+
+## Setting up a new budget month
+
+Because each month is self-contained, someone — the user or their agent — has to create it. First see what exists:
+
+```sql
+SELECT month, COUNT(*) AS categories,
+       ROUND(SUM(expected) FILTER (WHERE type = 'income'), 2) AS planned_income,
+       ROUND(SUM(expected) FILTER (WHERE type = 'expense'), 2) AS planned_spending
+FROM plugin_budget.categories
+GROUP BY month
+ORDER BY month;
+```
+
+If the latest month is behind `strftime(now()::TIMESTAMP, '%Y-%m')`, copy it forward — same categories, fresh UUIDs:
+
+```sql
+INSERT INTO plugin_budget.categories
+  (category_id, month, type, name, expected, tags, require_all, amount_sign, sort_order)
+SELECT uuid()::VARCHAR, strftime(now()::TIMESTAMP, '%Y-%m'),
+       type, name, expected, tags, require_all, amount_sign, sort_order
+FROM plugin_budget.categories
+WHERE month = (SELECT max(month) FROM plugin_budget.categories
+               WHERE month < strftime(now()::TIMESTAMP, '%Y-%m'))
+  AND NOT EXISTS (SELECT 1 FROM plugin_budget.categories
+                  WHERE month = strftime(now()::TIMESTAMP, '%Y-%m'));
+```
+
+This is a write, so it needs `tl query --allow-writes` or the MCP `query_write` tool; the `NOT EXISTS` guard makes it safe to run repeatedly. The copied `expected` amounts are last month's plan, not this month's — review them with the user afterward rather than assuming they still apply.
+
 ## Exploring further
 
 ```sql

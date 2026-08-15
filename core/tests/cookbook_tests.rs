@@ -50,6 +50,15 @@ fn every_cookbook_query_runs_against_the_demo_database() {
 
     let mut empty = Vec::new();
     for (i, sql) in blocks.iter().enumerate() {
+        // The month-setup INSERT is a write, so it goes through the write path.
+        // Demo data already includes the current budget month, so its guard
+        // makes it a no-op — it must still parse and execute cleanly.
+        if sql.trim_start().to_ascii_uppercase().starts_with("INSERT") {
+            repo.execute_sql(sql).unwrap_or_else(|e| {
+                panic!("cookbook write #{} failed: {}\n---\n{}", i + 1, e, sql)
+            });
+            continue;
+        }
         let result = repo
             .execute_query(sql)
             .unwrap_or_else(|e| panic!("cookbook query #{} failed: {}\n---\n{}", i + 1, e, sql));
