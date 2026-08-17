@@ -272,9 +272,10 @@ SELECT c.type, c.name, c.expected,
 FROM cats c
 LEFT JOIN transactions t
   ON strftime(t.transaction_date, '%Y-%m') = c.month
+ AND len(c.tags) > 0
  AND (CASE WHEN c.require_all THEN list_has_all(COALESCE(t.tags, []), c.tags)
            ELSE list_has_any(COALESCE(t.tags, []), c.tags) END)
- AND (c.amount_sign IS NULL
+ AND (c.amount_sign IS NULL OR c.amount_sign = 'any'
       OR (c.amount_sign = 'positive' AND t.amount > 0)
       OR (c.amount_sign = 'negative' AND t.amount < 0))
 LEFT JOIN roll_in r ON r.to_category = c.name
