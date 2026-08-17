@@ -491,6 +491,59 @@ const migrations: PluginMigration[] = [
 - **Migrations run once** - Treeline tracks which versions have run in `plugin_<id>.schema_migrations`
 - **Use your schema name** - All tables should be in `plugin_<id>.*`
 
+## Doctor Checks
+
+Your plugin's UI only runs inside the desktop app. Its schema, on the other hand,
+is readable everywhere. So health checks are published as a view: create
+`plugin_<id>.doctor` in a migration and Treeline picks it up automatically in
+`tl doctor`, `tl doctor --json`, and the MCP `doctor` tool.
+
+```typescript
+{
+  version: 2,
+  name: "create_doctor_view",
+  up: `
+    CREATE OR REPLACE VIEW plugin_my_plugin.doctor AS
+    SELECT
+      'stale_items' AS check_id,
+      'Stale items' AS name,
+      CASE WHEN COUNT(*) = 0 THEN 'pass' ELSE 'warning' END AS status,
+      COUNT(*) || ' item(s) not updated in 90 days' AS message,
+      list({'id': id, 'name': name}) AS details
+    FROM plugin_my_plugin.items
+    WHERE updated_at < CURRENT_DATE - INTERVAL 90 DAY
+  `,
+}
+```
+
+One row per check:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `check_id` | VARCHAR | Stable snake_case id, unique within your plugin |
+| `name` | VARCHAR | Human label |
+| `status` | VARCHAR | `pass`, `warning`, or `error` |
+| `message` | VARCHAR | One line summarizing the result |
+| `details` | any | Optional supporting rows, usually a list of structs. Omit the column if unused |
+
+Checks appear as `<plugin_id>.<check_id>`, so the example above shows up as
+`my-plugin.stale_items`.
+
+### Rules
+
+- **Create it in a migration** - Treeline never runs plugin code to gather checks;
+  it only reads the view.
+- **SQL only** - a check can look at anything in the database. It cannot make
+  network calls or run JavaScript.
+- **Always return a row** - a check that returns nothing is simply absent. Use
+  `CASE` to report `pass`, as above.
+- **Keep `details` small** - only the first 50 entries are kept.
+- **An unknown `status` is reported as an error**, and a view that fails to
+  query reports one error check rather than breaking the rest of `tl doctor`.
+- **Before your first launch** - if the plugin is installed but the app has
+  never loaded it, its schema doesn't exist yet and doctor reports
+  `<plugin_id>.initialized` as a warning.
+
 ## Build and Test
 
 ### Build Your Plugin

@@ -601,6 +601,10 @@ interface PluginMigration {
 }
 ```
 
+A migration can also create a `plugin_<id>.doctor` view, which `tl doctor` and
+the MCP `doctor` tool read directly. See
+[Doctor checks](/plugins/creating-plugins/#doctor-checks).
+
 ## Complete Example
 
 Here's a complete example using multiple SDK features:

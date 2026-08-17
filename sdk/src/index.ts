@@ -380,6 +380,10 @@ export interface PluginContext {
  * The app automatically creates `plugin_<id>.schema_migrations` to track
  * which migrations have been run.
  *
+ * A migration can also create a `plugin_<id>.doctor` view (columns: check_id,
+ * name, status, message, optional details) — Treeline reads it for `tl doctor`
+ * and the MCP `doctor` tool.
+ *
  * @example
  * ```typescript
  * const migrations: PluginMigration[] = [

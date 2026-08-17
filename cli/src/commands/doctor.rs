@@ -76,7 +76,12 @@ pub fn run(verbose: bool, json: bool) -> Result<()> {
     table.set_content_arrangement(ContentArrangement::Dynamic);
     table.set_header(vec!["Check", "Status", "Message"]);
 
-    for (check_name, check_result) in &result.checks {
+    // Built-in checks first, then plugin checks (keyed `<plugin_id>.<check_id>`)
+    // grouped by plugin. Sorting also keeps the output stable run to run.
+    let mut rows: Vec<_> = result.checks.iter().collect();
+    rows.sort_by_key(|(name, _)| (name.contains('.'), name.as_str()));
+
+    for (check_name, check_result) in rows {
         let status_cell = match check_result.status.as_str() {
             "pass" => Cell::new("PASS").fg(Color::Green),
             "warning" => Cell::new("WARN").fg(Color::Yellow),

@@ -2185,6 +2185,19 @@ impl DuckDbRepository {
         })
     }
 
+    /// Check if a schema exists
+    pub fn schema_exists(&self, schema_name: &str) -> Result<bool> {
+        self.with_connection(|conn| {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM information_schema.schemata
+                 WHERE schema_name = ?",
+                [schema_name],
+                |row| row.get(0),
+            )?;
+            Ok(count > 0)
+        })
+    }
+
     // ========================================================================
     // Auto-Tag Rules
     // ========================================================================

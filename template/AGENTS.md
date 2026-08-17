@@ -141,6 +141,15 @@ FROM transactions GROUP BY tag ORDER BY cnt DESC
 - **Write to own schema**: Plugins automatically have write access to `plugin_{id}.*`
 - **Schema naming**: Each plugin gets a schema like `plugin_hello_world`
 
+## Doctor Checks
+
+Create a view `plugin_{id}.doctor` in a migration and `tl doctor` (and the MCP
+`doctor` tool) will report its rows. Columns: `check_id` (stable snake_case),
+`name`, `status` (`pass` / `warning` / `error`), `message`, optional `details`.
+Checks show up as `<plugin_id>.<check_id>`. It's SQL only — no network, no JS —
+and only the first 50 `details` entries are kept. See `src/index.ts` for a
+commented example.
+
 ## Styling
 
 Plugins inherit the app's theme automatically via CSS variables. **Never hardcode colors.**

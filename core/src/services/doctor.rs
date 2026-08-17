@@ -1,5 +1,6 @@
 //! Doctor service - database health checks
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -8,11 +9,16 @@ use serde::Serialize;
 use serde_json::json;
 
 use crate::adapters::duckdb::DuckDbRepository;
+use crate::services::plugin::PluginService;
+
+/// Most `details` entries kept from a plugin's doctor view.
+const MAX_PLUGIN_DETAILS: usize = 50;
+/// Longest plugin-supplied message kept, in characters.
+const MAX_PLUGIN_MESSAGE: usize = 500;
 
 /// Doctor service for health checks
 pub struct DoctorService {
     repository: Arc<DuckDbRepository>,
-    #[allow(dead_code)]
     treeline_dir: PathBuf,
 }
 
@@ -48,6 +54,7 @@ impl DoctorService {
         checks.insert(
             "orphaned_transactions".to_string(),
             CheckResult {
+                name: None,
                 status: if orphaned_txs.is_empty() {
                     "pass"
                 } else {
@@ -89,6 +96,7 @@ impl DoctorService {
         checks.insert(
             "orphaned_snapshots".to_string(),
             CheckResult {
+                name: None,
                 status: if orphaned_snaps.is_empty() {
                     "pass"
                 } else {
@@ -132,6 +140,7 @@ impl DoctorService {
         checks.insert(
             "date_sanity".to_string(),
             CheckResult {
+                name: None,
                 status: if insane_dates.is_empty() {
                     "pass"
                 } else {
@@ -165,6 +174,7 @@ impl DoctorService {
         checks.insert(
             "untagged_transactions".to_string(),
             CheckResult {
+                name: None,
                 status: if untagged == 0 { "pass" } else { "warning" }.to_string(),
                 message: if untagged == 0 {
                     "All transactions are tagged".to_string()
@@ -203,6 +213,7 @@ impl DoctorService {
         checks.insert(
             "duplicate_transactions".to_string(),
             CheckResult {
+                name: None,
                 status: if total_duplicates == 0 {
                     "pass"
                 } else {
@@ -227,57 +238,13 @@ impl DoctorService {
             },
         );
 
-        // Budget double-counting check
-        let budget_exists = self.repository.table_exists("plugin_budget.categories")?;
-        if budget_exists {
-            // For now, just pass - full implementation would check for transactions matching multiple categories
-            checks.insert(
-                "budget_double_counting".to_string(),
-                CheckResult {
-                    status: "pass".to_string(),
-                    message: "No double-counted transactions found".to_string(),
-                    details: None,
-                },
-            );
-        } else {
-            checks.insert(
-                "budget_double_counting".to_string(),
-                CheckResult {
-                    status: "pass".to_string(),
-                    message: "No budget configured".to_string(),
-                    details: None,
-                },
-            );
-        }
-
-        // Uncategorized expenses check
-        if budget_exists {
-            // For now, just pass - full implementation would check for expenses not in any category
-            checks.insert(
-                "uncategorized_expenses".to_string(),
-                CheckResult {
-                    status: "pass".to_string(),
-                    message: "All expenses are categorized in budget".to_string(),
-                    details: None,
-                },
-            );
-        } else {
-            checks.insert(
-                "uncategorized_expenses".to_string(),
-                CheckResult {
-                    status: "pass".to_string(),
-                    message: "No budget configured".to_string(),
-                    details: None,
-                },
-            );
-        }
-
         // Integration connectivity - test via dry-run sync
         let integrations = self.repository.get_integrations()?;
         if integrations.is_empty() {
             checks.insert(
                 "integration_connectivity".to_string(),
                 CheckResult {
+                    name: None,
                     status: "pass".to_string(),
                     message: "No integrations configured".to_string(),
                     details: None,
@@ -289,12 +256,16 @@ impl DoctorService {
             checks.insert(
                 "integration_connectivity".to_string(),
                 CheckResult {
+                    name: None,
                     status: "pass".to_string(),
                     message: format!("All {} integration(s) connected", integrations.len()),
                     details: None,
                 },
             );
         }
+
+        // Plugin-published checks (see run_plugin_checks)
+        self.run_plugin_checks(&mut checks);
 
         // Calculate summary
         let passed = checks.values().filter(|c| c.status == "pass").count() as i64;
@@ -310,6 +281,168 @@ impl DoctorService {
             },
         })
     }
+
+    /// Collect checks published by installed plugins.
+    ///
+    /// A plugin's headless surface is its schema, so doctor checks are
+    /// discovered by convention rather than by running plugin code: if a
+    /// plugin owns a view `<schema>.doctor`, core selects from it and turns
+    /// each row into a check keyed `<plugin_id>.<check_id>`. Expected columns
+    /// are `check_id`, `name`, `status` ('pass' | 'warning' | 'error'),
+    /// `message`, and an optional `details`.
+    ///
+    /// A misbehaving plugin must never abort the run: every failure here is
+    /// contained to that plugin's own checks.
+    fn run_plugin_checks(&self, checks: &mut HashMap<String, CheckResult>) {
+        let plugin_service = PluginService::new(&self.treeline_dir);
+        let manifests = match plugin_service.list_manifests() {
+            Ok(manifests) => manifests,
+            Err(_) => return,
+        };
+
+        for manifest in manifests {
+            let schema = manifest.schema_name();
+            // Schema names are interpolated into SQL, so only accept plain
+            // identifiers. A manifest that declares anything else is ignored.
+            if !is_plain_identifier(&schema) {
+                continue;
+            }
+            let plugin_id = manifest.id;
+
+            // Schema missing means the desktop app has never loaded the
+            // plugin, so its migrations have not run.
+            match self.repository.schema_exists(&schema) {
+                Ok(true) => {}
+                Ok(false) => {
+                    checks.insert(
+                        format!("{}.initialized", plugin_id),
+                        CheckResult {
+                            name: None,
+                            status: "warning".to_string(),
+                            message:
+                                "Plugin installed but not initialized — open the desktop app once"
+                                    .to_string(),
+                            details: None,
+                        },
+                    );
+                    continue;
+                }
+                Err(_) => continue,
+            }
+
+            // No doctor view is fine - the convention is opt-in.
+            match self.repository.table_exists(&format!("{}.doctor", schema)) {
+                Ok(true) => {}
+                _ => continue,
+            }
+
+            // to_json() gives one JSON object per row, which keeps `details`
+            // intact whatever shape the plugin used and makes the column
+            // optional for free.
+            let sql = format!("SELECT to_json(d)::VARCHAR FROM {}.doctor d", schema);
+            let rows = match self.repository.execute_query(&sql) {
+                Ok(result) => result.rows,
+                Err(e) => {
+                    checks.insert(
+                        format!("{}.doctor", plugin_id),
+                        CheckResult {
+                            name: None,
+                            status: "error".to_string(),
+                            message: format!(
+                                "doctor view failed: {}",
+                                sanitize(&e.to_string(), 200)
+                            ),
+                            details: None,
+                        },
+                    );
+                    continue;
+                }
+            };
+
+            for (index, row) in rows.iter().enumerate() {
+                let Some(row) = row
+                    .first()
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+                else {
+                    continue;
+                };
+
+                let check_id = row
+                    .get("check_id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| sanitize(s, 64))
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| format!("check_{}", index + 1));
+
+                let raw_status = row.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                let message = row
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .map(|s| sanitize(s, MAX_PLUGIN_MESSAGE))
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| "(no message)".to_string());
+
+                let (status, message) = match raw_status.trim().to_lowercase().as_str() {
+                    "pass" => ("pass".to_string(), message),
+                    "warning" => ("warning".to_string(), message),
+                    "error" => ("error".to_string(), message),
+                    _ => (
+                        "error".to_string(),
+                        format!(
+                            "unknown status '{}' from plugin doctor view (expected pass, warning, or error)",
+                            sanitize(raw_status, 40)
+                        ),
+                    ),
+                };
+
+                let details = match row.get("details") {
+                    None | Some(serde_json::Value::Null) => None,
+                    Some(serde_json::Value::Array(items)) if items.is_empty() => None,
+                    Some(serde_json::Value::Array(items)) => {
+                        Some(items.iter().take(MAX_PLUGIN_DETAILS).cloned().collect())
+                    }
+                    Some(other) => Some(vec![other.clone()]),
+                };
+
+                checks.insert(
+                    format!("{}.{}", plugin_id, check_id),
+                    CheckResult {
+                        name: row
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .map(|s| sanitize(s, 100))
+                            .filter(|s| !s.is_empty()),
+                        status,
+                        message,
+                        details,
+                    },
+                );
+            }
+        }
+    }
+}
+
+/// True for names safe to interpolate into SQL as a bare identifier.
+fn is_plain_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Collapse whitespace and clamp length, so plugin-supplied text (and DuckDB
+/// error text, which can echo the plugin's SQL) can't wreck the output.
+fn sanitize(text: &str, max_chars: usize) -> String {
+    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.chars().count() <= max_chars {
+        collapsed
+    } else {
+        let truncated: String = collapsed.chars().take(max_chars).collect();
+        format!("{}…", truncated)
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -320,6 +453,10 @@ pub struct DoctorResult {
 
 #[derive(Debug, Serialize)]
 pub struct CheckResult {
+    /// Human label. Only plugin-published checks set this; built-in checks are
+    /// identified by their key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     pub status: String,
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]

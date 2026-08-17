@@ -60,6 +60,23 @@ pub struct PluginManifest {
     pub permissions: serde_json::Value,
 }
 
+impl PluginManifest {
+    /// Schema this plugin owns.
+    ///
+    /// `permissions.schemaName` when declared, otherwise `plugin_<id>` with
+    /// hyphens converted to underscores. Mirrors `getPluginSchemaName()` in
+    /// `desktop/src/lib/plugins/index.ts` — the two must agree, since the
+    /// desktop creates the schema and core reads it.
+    pub fn schema_name(&self) -> String {
+        self.permissions
+            .get("schemaName")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("plugin_{}", self.id.replace('-', "_")))
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct PluginInfo {
     pub id: String,
@@ -520,12 +537,15 @@ impl PluginService {
         })
     }
 
-    /// List installed plugins
-    pub fn list_plugins(&self) -> Result<Vec<PluginInfo>> {
-        let mut plugins = Vec::new();
+    /// Read the manifest of every installed plugin.
+    ///
+    /// Unreadable or malformed manifests are skipped rather than failing the
+    /// whole listing.
+    pub fn list_manifests(&self) -> Result<Vec<PluginManifest>> {
+        let mut manifests = Vec::new();
 
         if !self.plugins_dir.exists() {
-            return Ok(plugins);
+            return Ok(manifests);
         }
 
         for entry in fs::read_dir(&self.plugins_dir)? {
@@ -543,19 +563,28 @@ impl PluginService {
 
             if let Ok(content) = fs::read_to_string(&manifest_path) {
                 if let Ok(manifest) = serde_json::from_str::<PluginManifest>(&content) {
-                    plugins.push(PluginInfo {
-                        id: manifest.id,
-                        name: manifest.name,
-                        version: manifest.version,
-                        description: manifest.description,
-                        author: manifest.author,
-                        source: manifest.source,
-                    });
+                    manifests.push(manifest);
                 }
             }
         }
 
-        Ok(plugins)
+        Ok(manifests)
+    }
+
+    /// List installed plugins
+    pub fn list_plugins(&self) -> Result<Vec<PluginInfo>> {
+        Ok(self
+            .list_manifests()?
+            .into_iter()
+            .map(|manifest| PluginInfo {
+                id: manifest.id,
+                name: manifest.name,
+                version: manifest.version,
+                description: manifest.description,
+                author: manifest.author,
+                source: manifest.source,
+            })
+            .collect())
     }
 
     /// Fetch manifest from GitHub release
