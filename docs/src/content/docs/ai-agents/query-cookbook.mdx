@@ -284,6 +284,67 @@ ORDER BY c.type DESC, c.sort_order;
 
 Swap the `month` filter for any `'YYYY-MM'` string to look at past months. A positive `balance` on an expense category is room left to spend; negative is overspend.
 
+## Budget coverage: double counted and unbudgeted (Budget plugin)
+
+Tag matching has two blind spots the budget table can't show you. A transaction
+carrying several tags can match several categories and be counted once in each.
+A transaction can match no category at all — a tag nobody budgeted, or a typo.
+Budget plugin 0.3.0 and later expose both through
+`plugin_budget.coverage('YYYY-MM')`, a table macro that returns one row per
+transaction in that month with the categories it matched. It applies the same
+rules as the query above, so its answers agree with what the user sees on
+screen. Older installs don't have it — fall back to the join above, and say so.
+
+```sql title="Budget plugin 0.3.0+"
+SELECT * FROM plugin_budget.coverage('2026-08')
+WHERE match_count <> 1
+ORDER BY match_count DESC, ABS(amount) DESC;
+```
+
+`match_count >= 2` is double counted, `0` is unbudgeted. **Neither is
+automatically wrong.** Overlap is how people build umbrella categories — an
+"Everything discretionary" line sitting over "Food" and "Shopping" — so report
+it and ask, rather than assuming a category needs narrowing.
+
+Unbudgeted tags are easier to read grouped. `plugin_budget.ignored_tags` is the
+user's list of tags that deliberately have no category, so exclude it:
+
+```sql title="Budget plugin 0.3.0+"
+SELECT tag, COUNT(*) AS txns, ROUND(SUM(amount), 2) AS total
+FROM (
+  SELECT UNNEST(tags) AS tag, amount
+  FROM plugin_budget.coverage('2026-08')
+  WHERE match_count = 0 AND LEN(tags) > 0
+)
+WHERE tag NOT IN (SELECT tag FROM plugin_budget.ignored_tags)
+GROUP BY tag
+ORDER BY ABS(total) DESC;
+```
+
+What's left is a mix, and the mix is the point. `transfer` or `payment` will sit
+there until the user either budgets it or adds it to `ignored_tags` — that's
+their call, not yours. A tag one character away from one the categories already
+watch (`spendig` next to `spending`) is worth raising as a possible typo, but a
+brand-new tag is just as likely to be a category the user hasn't created yet.
+Ask which it is.
+
+Untagged transactions are a separate problem with its own queue — see
+[Untagged transactions](#untagged-transactions) above.
+
+For a summary across the current month and the two before it, without writing
+any of this yourself:
+
+```sql title="Budget plugin 0.3.0+"
+SELECT * FROM plugin_budget.doctor;
+```
+
+Two rows, `double_counted` and `unbudgeted_tags`, each with a status, a one-line
+message, and sample rows in `details`. `tl doctor` reports the same two as
+`budget.double_counted` and `budget.unbudgeted_tags` alongside its built-in
+checks. Months with no categories are skipped rather than counted as entirely
+unbudgeted. To work across months yourself, query the `plugin_budget.coverage_all`
+view the macro is built on — same columns plus `month`.
+
 ## Setting up a new budget month
 
 Because each month is self-contained, someone — the user or their agent — has to create it. First see what exists:
