@@ -35,22 +35,26 @@ function getPluginSchemaName(pluginId: string, permissions?: { schemaName?: stri
 /**
  * Run pending migrations for a plugin.
  * Creates the schema and schema_migrations table if needed.
+ *
+ * The schema is created even for plugins with no migrations: its existence is
+ * how core (tl doctor) tells "installed and loaded once" from "installed but
+ * never initialized".
  */
 async function runPluginMigrations(
   pluginId: string,
   schemaName: string,
   migrations: PluginMigration[]
 ): Promise<void> {
-  if (!migrations || migrations.length === 0) {
-    return;
-  }
-
-  // Sort migrations by version
-  const sortedMigrations = [...migrations].sort((a, b) => a.version - b.version);
-
   try {
     // 1. Create schema if not exists
     await executeQuery(`CREATE SCHEMA IF NOT EXISTS ${schemaName}`, { readonly: false });
+
+    if (!migrations || migrations.length === 0) {
+      return;
+    }
+
+    // Sort migrations by version
+    const sortedMigrations = [...migrations].sort((a, b) => a.version - b.version);
 
     // 2. Create schema_migrations table if not exists
     // Note: No DEFAULT on executed_at to avoid WAL replay issues with function defaults
