@@ -50,6 +50,8 @@ async function runPluginMigrations(
     await executeQuery(`CREATE SCHEMA IF NOT EXISTS ${schemaName}`, { readonly: false });
 
     if (!migrations || migrations.length === 0) {
+      // Flush the DDL so the schema is visible to the CLI right away
+      await executeQuery("CHECKPOINT", { readonly: false });
       return;
     }
 
@@ -255,11 +257,11 @@ export async function initializePlugins(): Promise<void> {
       };
       registry.setPluginPermissions(pluginId, tablePermissions);
 
-      // Run plugin migrations (if any) before activation
+      // Ensure the plugin schema exists and run pending migrations (if any)
+      // before activation. Always called — the schema's existence is what
+      // tells core the plugin has been initialized.
       const schemaName = getPluginSchemaName(pluginId, tablePermissions);
-      if (plugin.migrations && plugin.migrations.length > 0) {
-        await runPluginMigrations(pluginId, schemaName, plugin.migrations);
-      }
+      await runPluginMigrations(pluginId, schemaName, plugin.migrations ?? []);
 
       // Create context with plugin API
       const context: PluginContext = {
