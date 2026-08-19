@@ -12,11 +12,13 @@
   import RulesManagementModal from "./RulesManagementModal.svelte";
   import PinnedTagsModal from "./PinnedTagsModal.svelte";
 
-  // Props - accountId can be passed to filter to a specific account
+  // Props - accountId can be passed to filter to a specific account,
+  // filterMode to open straight into the untagged filter (deep link from a plugin)
   interface Props {
     accountId?: string;
+    filterMode?: "all" | "untagged";
   }
-  let { accountId }: Props = $props();
+  let { accountId, filterMode: filterModeProp }: Props = $props();
 
   // Initialize suggester
   const suggester = new FrequencyBasedSuggester();
@@ -345,6 +347,11 @@
   // Track previous accountId to detect changes (for when tab is already open)
   let prevAccountId: string | undefined = undefined;
 
+  // Track previous filterMode prop to detect changes (for when tab is already open).
+  // The prop is legitimately undefined, so a separate flag marks the first run.
+  let filterModePropSeen = false;
+  let prevFilterModeProp: "all" | "untagged" | undefined = undefined;
+
   // Watch for accountId prop changes (when navigating to existing tab)
   $effect(() => {
     // Skip on initial mount (handled by onMount)
@@ -363,6 +370,28 @@
           selectedAccounts = new Set([account.name]);
           loadTransactions();
         }
+      }
+    }
+  });
+
+  // Watch for filterMode prop changes (when navigating to existing tab)
+  $effect(() => {
+    const next = filterModeProp;
+
+    // Skip on initial mount (handled by onMount)
+    if (!filterModePropSeen) {
+      filterModePropSeen = true;
+      prevFilterModeProp = next;
+      return;
+    }
+
+    // Only react if the prop actually changed
+    if (next !== prevFilterModeProp) {
+      prevFilterModeProp = next;
+
+      if (next) {
+        filterMode = next;
+        loadTransactions();
       }
     }
   });
@@ -2056,6 +2085,11 @@
           persistSelectedAccounts();
         }
       }
+    }
+
+    // If filterMode prop was passed, open straight into that filter
+    if (filterModeProp) {
+      filterMode = filterModeProp;
     }
 
     await loadTransactions();
