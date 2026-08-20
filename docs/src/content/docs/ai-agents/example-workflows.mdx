@@ -13,20 +13,33 @@ Treeline's DuckDB runs without the ICU extension, so use `now()::TIMESTAMP::DATE
 
 > "What's my financial snapshot?"
 
-The agent runs `tl status` to get account balances, then queries for recent transaction volume and trends.
+The agent runs `tl status` to get the account list and transaction counts, then queries for recent transaction volume and trends.
 
 > "What's my net worth and how has it changed over the last 6 months?"
 
 ```sql
-SELECT
-  DATE_TRUNC('month', snapshot_time) as month,
-  SUM(CASE WHEN a.classification = 'asset' THEN b.balance ELSE -b.balance END) as net_worth
-FROM balance_snapshots b
-JOIN accounts a USING (account_id)
+WITH months AS (
+  SELECT DISTINCT DATE_TRUNC('month', snapshot_time) AS month
+  FROM balance_snapshots
+),
+carried AS (
+  SELECT m.month, s.account_id, s.balance,
+    ROW_NUMBER() OVER (
+      PARTITION BY m.month, s.account_id
+      ORDER BY s.snapshot_time DESC
+    ) AS rn
+  FROM months m
+  JOIN balance_snapshots s ON s.snapshot_time < m.month + INTERVAL 1 MONTH
+)
+SELECT month, ROUND(SUM(balance), 2) AS net_worth
+FROM carried
+WHERE rn = 1
 GROUP BY month
 ORDER BY month DESC
 LIMIT 6
 ```
+
+Each month takes every account's last balance *as of* that month's end, and sums the raw balances — liabilities are already stored negative, so flipping signs by `classification` would double-count debt. See the [Query Cookbook](/ai-agents/query-cookbook/) for the reasoning.
 
 ## Spending Analysis
 

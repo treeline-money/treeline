@@ -47,6 +47,7 @@ my-plugin/
 │   └── workflows/
 │       └── release.yml    # GitHub Actions build
 ├── vite.config.ts
+├── svelte.config.js
 └── tsconfig.json
 ```
 
@@ -85,7 +86,7 @@ The manifest defines your plugin's identity and permissions:
 
 - **`read`** - Core tables your plugin can SELECT from (e.g., `transactions`, `accounts`)
 - **`write`** - Tables outside your schema that your plugin can write to (optional)
-- **`schemaName`** - Your plugin's database schema (defaults to `plugin_<id>`)
+- **`schemaName`** - Your plugin's database schema. Defaults to `plugin_<id>` with hyphens replaced by underscores, so `my-plugin` gets `plugin_my_plugin`
 
 Your plugin automatically has full read/write access to its own schema. You don't need to declare write permissions for tables in your schema. If your plugin needs to write to tables outside its schema, list them explicitly in `permissions.write`.
 

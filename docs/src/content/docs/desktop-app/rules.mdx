@@ -19,6 +19,8 @@ Or press `Shift+R` on any transaction to create a rule from its pattern.
 |------|---------|---------|
 | Contains | `starbucks` | "STARBUCKS #1234", "STARBUCKS COFFEE" |
 | Starts with | `AMZN` | "AMZN MARKETPLACE", "AMZN DIGITAL" |
+| Ends with | `autopay` | "CHASE CARD AUTOPAY" |
+| Exact match | `Rent` | "RENT" and nothing else |
 | Regex | `coffee\|starbucks` | "COFFEE HOUSE", "STARBUCKS" |
 
 All matches are case-insensitive.
@@ -33,7 +35,7 @@ Available columns: `description`, `amount`, `account_name`, `transaction_date`
 
 ## Applying to Existing Transactions
 
-Rules only apply to future imports by default. Check **Apply to existing transactions** when creating a rule to retroactively tag matches.
+A rule always tags matching transactions as they arrive from future imports and syncs. **Apply to existing transactions** additionally tags the matches already in your database — it's checked by default when you create a rule, and unchecked when you edit one. Existing tags are kept either way.
 
 ## Managing Rules
 

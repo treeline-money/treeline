@@ -61,12 +61,12 @@ tl backup create
 tl backup list
 
 # Restore from a backup (use the backup name from `tl backup list`)
-tl backup restore treeline-20260115143022-123456.zip
+tl backup restore treeline-2026-01-15T14-30-22-123456.zip
 ```
 
-Backup files are ZIP archives named with timestamps: `treeline-{timestamp}-{micros}.zip`
+Backup files are ZIP archives named with timestamps: `treeline-{YYYY-MM-DDTHH-MM-SS}-{micros}.zip`
 
-**Recommendation:** Periodically copy backups to external storage or a cloud backup service. Backup archives contain the DuckDB database file.
+**Recommendation:** Periodically copy backups to external storage or a cloud backup service. Backup archives contain the DuckDB database file plus `settings.json` and `encryption.json` when those exist.
 
 ## Plugins Directory
 

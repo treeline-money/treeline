@@ -28,6 +28,7 @@ The primary view for transaction data. Joins transaction records with their acco
 | `account_id` | VARCHAR | Foreign key to accounts |
 | `amount` | DECIMAL(15,2) | Transaction amount (negative = expense) |
 | `description` | VARCHAR | Transaction description from bank |
+| `notes` | VARCHAR | Free-form note you attach to the transaction |
 | `transaction_date` | DATE | When the transaction occurred |
 | `posted_date` | DATE | When the transaction posted |
 | `tags` | VARCHAR[] | Array of user-applied tags |
@@ -151,6 +152,7 @@ The underlying transaction storage. Includes soft-delete support (`deleted_at`) 
 | `account_id` | VARCHAR | Foreign key to sys_accounts |
 | `amount` | DECIMAL(15,2) | Transaction amount |
 | `description` | VARCHAR | Transaction description |
+| `notes` | VARCHAR | Free-form note you attach to the transaction |
 | `transaction_date` | DATE | When the transaction occurred |
 | `posted_date` | DATE | When the transaction posted |
 | `tags` | VARCHAR[] | Array of tags |

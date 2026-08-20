@@ -74,7 +74,7 @@ To discard one side wholesale instead, `tl hub push --force` (this device wins, 
 
 ## Manage tokens
 
-Every linked device and connected agent holds its own scoped token. List and revoke them from any linked device:
+Every linked device and connected agent holds its own scoped token. The tokens live on the Hub and never travel with the bundle, so list and revoke them **on the Hub itself** — the machine running `tl serve`, or a shell into the container:
 
 ```sh
 tl hub tokens list
