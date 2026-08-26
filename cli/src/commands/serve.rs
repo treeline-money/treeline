@@ -272,7 +272,14 @@ pub fn run(host: &str, port: u16) -> Result<()> {
     std::fs::create_dir_all(&treeline_dir)?;
 
     let master_token = HubService::load_or_create_token(&treeline_dir)?;
-    let hub_service = HubService::new(treeline_dir.clone(), "treeline.duckdb".to_string());
+    // Demo mode serves `demo.duckdb`, and the hub has to agree with the rest
+    // of the CLI about that: the MCP tools resolve their database through
+    // `get_context()`, which is demo-aware, but the has_database() gate in
+    // front of them was hardcoded to `treeline.duckdb`. On a demo hub that
+    // gate refused every data tool with "no database on hub yet" while the
+    // tools behind it would have worked fine.
+    let config = treeline_core::config::Config::load(&treeline_dir).unwrap_or_default();
+    let hub_service = HubService::new(treeline_dir.clone(), config.db_filename().to_string());
     let has_db = hub_service.has_database();
     let oauth_store = Arc::new(OAuthStore::new(treeline_dir.clone()));
 

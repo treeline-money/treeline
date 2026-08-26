@@ -195,6 +195,20 @@ impl Config {
         Ok(())
     }
 
+    /// Which DuckDB file this configuration points at.
+    ///
+    /// Demo mode swaps the whole database, so anything that opens one — or
+    /// merely checks whether one exists — has to ask here rather than assume
+    /// `treeline.duckdb`. `tl serve` assumed, and a demo hub therefore
+    /// answered every data tool with "no database on hub yet".
+    pub fn db_filename(&self) -> &'static str {
+        if self.demo_mode {
+            "demo.duckdb"
+        } else {
+            "treeline.duckdb"
+        }
+    }
+
     /// Enable demo mode
     pub fn enable_demo_mode(&mut self) {
         self.demo_mode = true;
